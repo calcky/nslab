@@ -1,0 +1,519 @@
+from __future__ import annotations
+
+import json
+from collections import deque
+from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
+
+from nslab.errors import NslabError
+from nslab.planner import LinkPlan, NodePlan, TopologyPlan
+
+
+@dataclass(frozen=True, slots=True)
+class _DisplayEdge:
+    link: LinkPlan
+    parent: str
+    child: str
+    parent_interface: str
+    child_interface: str
+
+
+@dataclass(frozen=True, slots=True)
+class _DisplayComponent:
+    root: str
+    children: Mapping[str, tuple[_DisplayEdge, ...]]
+    cross_links: tuple[LinkPlan, ...]
+
+
+def _oriented_edge(link: LinkPlan, parent: str, child: str) -> _DisplayEdge:
+    if link.left.node == parent and link.right.node == child:
+        return _DisplayEdge(link, parent, child, link.left.interface, link.right.interface)
+    return _DisplayEdge(link, parent, child, link.right.interface, link.left.interface)
+
+
+def _build_display_forest(plan: TopologyPlan) -> tuple[_DisplayComponent, ...]:
+    order = {name: index for index, name in enumerate(plan.nodes)}
+    adjacency: dict[str, list[tuple[LinkPlan, str]]] = {name: [] for name in plan.nodes}
+    for link in plan.links:
+        adjacency[link.left.node].append((link, link.right.node))
+        adjacency[link.right.node].append((link, link.left.node))
+
+    remaining = set(plan.nodes)
+    components: list[_DisplayComponent] = []
+    for first in plan.nodes:
+        if first not in remaining:
+            continue
+
+        member_queue = deque([first])
+        remaining.remove(first)
+        members: list[str] = []
+        while member_queue:
+            current = member_queue.popleft()
+            members.append(current)
+            for _, neighbor in adjacency[current]:
+                if neighbor in remaining:
+                    remaining.remove(neighbor)
+                    member_queue.append(neighbor)
+
+        root = min(members, key=lambda name: (-len(adjacency[name]), order[name]))
+        children: dict[str, list[_DisplayEdge]] = {name: [] for name in members}
+        seen = {root}
+        tree_links: set[int] = set()
+        tree_queue = deque([root])
+        while tree_queue:
+            parent = tree_queue.popleft()
+            for link, child in adjacency[parent]:
+                if child in seen:
+                    continue
+                seen.add(child)
+                tree_links.add(link.index)
+                children[parent].append(_oriented_edge(link, parent, child))
+                tree_queue.append(child)
+
+        member_set = set(members)
+        cross_links = tuple(
+            link
+            for link in plan.links
+            if link.index not in tree_links
+            and link.left.node in member_set
+            and link.right.node in member_set
+        )
+        components.append(
+            _DisplayComponent(
+                root=root,
+                children=MappingProxyType({name: tuple(edges) for name, edges in children.items()}),
+                cross_links=cross_links,
+            )
+        )
+    return tuple(components)
+
+
+def _on_off(value: bool | None) -> str:
+    return "on" if value else "off"
+
+
+def _node_kind_text(node: NodePlan, *, detail: bool) -> str:
+    if node.kind == "bridge":
+        summary = f"bridge · {node.bridge_name}"
+        if detail:
+            summary += f" · stp {_on_off(node.stp)} · vlan filtering {_on_off(node.vlan_filtering)}"
+        return summary
+    return "linux"
+
+
+def _node_summary(node: NodePlan, *, detail: bool) -> str:
+    return f"{node.name} [{_node_kind_text(node, detail=detail)}]"
+
+
+def _node_details(node: NodePlan) -> tuple[str, ...]:
+    return tuple(
+        f"{interface}: {', '.join(str(address) for address in addresses)}"
+        for interface, addresses in node.interfaces.items()
+        if addresses
+    )
+
+
+def _append_tree_children(
+    lines: list[str],
+    plan: TopologyPlan,
+    component: _DisplayComponent,
+    parent: str,
+    prefix: str,
+    *,
+    detail: bool,
+) -> None:
+    children = component.children[parent]
+    stack: list[tuple[_DisplayEdge, str, bool]] = []
+    for index in range(len(children) - 1, -1, -1):
+        stack.append((children[index], prefix, index == len(children) - 1))
+
+    while stack:
+        edge, edge_prefix, is_last = stack.pop()
+        branch = "└─ " if is_last else "├─ "
+        continuation = "   " if is_last else "│  "
+        edge_text = f"{edge.parent_interface} ↔ {edge.child_interface}  "
+        child = plan.nodes[edge.child]
+        lines.append(f"{edge_prefix}{branch}{edge_text}{_node_summary(child, detail=detail)}")
+        child_prefix = f"{edge_prefix}{continuation}{' ' * len(edge_text)}"
+        lines.extend(f"{child_prefix}{node_detail}" for node_detail in _node_details(child))
+
+        grandchildren = component.children[edge.child]
+        for index in range(len(grandchildren) - 1, -1, -1):
+            stack.append(
+                (
+                    grandchildren[index],
+                    child_prefix,
+                    index == len(grandchildren) - 1,
+                )
+            )
+
+
+def _cross_link_line(link: LinkPlan) -> str:
+    return (
+        f"  ↩ [L{link.index}] {link.left.node}:{link.left.interface} ↔ "
+        f"{link.right.node}:{link.right.interface}"
+    )
+
+
+def _render_tree(plan: TopologyPlan, *, detail: bool) -> str:
+    lines = [f"Topology: {plan.name}", ""]
+    components = _build_display_forest(plan)
+    for component_index, component in enumerate(components):
+        root = plan.nodes[component.root]
+        lines.append(_node_summary(root, detail=detail))
+        lines.extend(f"  {node_detail}" for node_detail in _node_details(root))
+        _append_tree_children(lines, plan, component, component.root, "", detail=detail)
+        if component.cross_links:
+            lines.append("Cross-links:")
+            lines.extend(_cross_link_line(link) for link in component.cross_links)
+        if component_index != len(components) - 1:
+            lines.append("")
+    return "\n".join(lines)
+
+
+_UP, _RIGHT, _DOWN, _LEFT = 1, 2, 4, 8
+_LINE_GLYPHS = {
+    _UP: "│",
+    _DOWN: "│",
+    _LEFT: "─",
+    _RIGHT: "─",
+    _UP | _DOWN: "│",
+    _LEFT | _RIGHT: "─",
+    _RIGHT | _DOWN: "┌",
+    _LEFT | _DOWN: "┐",
+    _RIGHT | _UP: "└",
+    _LEFT | _UP: "┘",
+    _UP | _RIGHT | _DOWN: "├",
+    _UP | _LEFT | _DOWN: "┤",
+    _LEFT | _RIGHT | _DOWN: "┬",
+    _LEFT | _RIGHT | _UP: "┴",
+    _UP | _RIGHT | _DOWN | _LEFT: "┼",
+}
+
+
+class _Canvas:
+    def __init__(self) -> None:
+        self._lines: dict[tuple[int, int], int] = {}
+        self._text: dict[tuple[int, int], str] = {}
+
+    def _connect(self, first: tuple[int, int], second: tuple[int, int]) -> None:
+        first_x, first_y = first
+        second_x, second_y = second
+        if second_x == first_x + 1 and second_y == first_y:
+            first_flag, second_flag = _RIGHT, _LEFT
+        elif second_x == first_x and second_y == first_y + 1:
+            first_flag, second_flag = _DOWN, _UP
+        else:
+            raise ValueError("canvas segments must connect adjacent cells")
+        self._lines[first] = self._lines.get(first, 0) | first_flag
+        self._lines[second] = self._lines.get(second, 0) | second_flag
+
+    def add_horizontal(self, *, y: int, start: int, end: int) -> None:
+        for x in range(min(start, end), max(start, end)):
+            self._connect((x, y), (x + 1, y))
+
+    def add_vertical(self, *, x: int, start: int, end: int) -> None:
+        for y in range(min(start, end), max(start, end)):
+            self._connect((x, y), (x, y + 1))
+
+    def add_text(self, *, x: int, y: int, value: str) -> None:
+        for offset, character in enumerate(value):
+            self._text[(x + offset, y)] = character
+
+    def render(self) -> str:
+        occupied = set(self._lines) | set(self._text)
+        if not occupied:
+            return ""
+        start_x = min(0, min(x for x, _ in occupied))
+        row_max: dict[int, int] = {}
+        for x, y in occupied:
+            row_max[y] = max(row_max.get(y, x), x)
+        max_y = max(y for _, y in occupied)
+        rows: list[str] = []
+        for y in range(max_y + 1):
+            row = "".join(
+                self._text.get((x, y), _LINE_GLYPHS.get(self._lines.get((x, y), 0), " "))
+                for x in range(start_x, row_max.get(y, start_x - 1) + 1)
+            )
+            rows.append(row.rstrip())
+        return "\n".join(rows).rstrip()
+
+
+@dataclass(frozen=True, slots=True)
+class _Box:
+    lines: tuple[str, ...]
+    width: int
+    height: int
+
+
+@dataclass(frozen=True, slots=True)
+class _Placement:
+    node: str
+    x: int
+    y: int
+    box: _Box
+
+
+_SIBLING_GAP = 5
+_LAYER_GAP = 5
+
+
+def _make_box(node: NodePlan, *, detail: bool) -> _Box:
+    content = (
+        node.name,
+        _node_kind_text(node, detail=detail),
+        *_node_details(node),
+    )
+    width = max(len(line) for line in content) + 4
+    return _Box(lines=content, width=width, height=len(content) + 2)
+
+
+def _tree_depths(component: _DisplayComponent) -> dict[str, int]:
+    depths = {component.root: 0}
+    queue = deque([component.root])
+    while queue:
+        parent = queue.popleft()
+        for edge in component.children[parent]:
+            depths[edge.child] = depths[parent] + 1
+            queue.append(edge.child)
+    return depths
+
+
+def _subtree_widths(component: _DisplayComponent, boxes: Mapping[str, _Box]) -> dict[str, int]:
+    traversal: list[str] = []
+    stack = [component.root]
+    while stack:
+        node = stack.pop()
+        traversal.append(node)
+        stack.extend(edge.child for edge in component.children[node])
+
+    widths: dict[str, int] = {}
+    for node in reversed(traversal):
+        child_spans: list[int] = []
+        for edge in component.children[node]:
+            label_width = len(f"{edge.parent_interface} ↔ {edge.child_interface}")
+            child_span = max(widths[edge.child], label_width)
+            widths[edge.child] = child_span
+            child_spans.append(child_span)
+        children_width = (
+            sum(child_spans) + _SIBLING_GAP * (len(child_spans) - 1) if child_spans else 0
+        )
+        widths[node] = max(boxes[node].width, children_width)
+    return widths
+
+
+def _place_component(
+    component: _DisplayComponent, boxes: Mapping[str, _Box]
+) -> tuple[_Placement, ...]:
+    depths = _tree_depths(component)
+    layer_heights: dict[int, int] = {}
+    for name, depth in depths.items():
+        layer_heights[depth] = max(layer_heights.get(depth, 0), boxes[name].height)
+
+    layer_tops: dict[int, int] = {}
+    next_top = 0
+    for depth in range(max(depths.values()) + 1):
+        layer_tops[depth] = next_top
+        next_top += layer_heights[depth] + _LAYER_GAP
+
+    widths = _subtree_widths(component, boxes)
+    placements: list[_Placement] = []
+    stack: list[tuple[str, int]] = [(component.root, 0)]
+    while stack:
+        node, left = stack.pop()
+        span = widths[node]
+        box = boxes[node]
+        placements.append(
+            _Placement(
+                node=node,
+                x=left + (span - box.width) // 2,
+                y=layer_tops[depths[node]],
+                box=box,
+            )
+        )
+        children = component.children[node]
+        if not children:
+            continue
+        children_width = sum(widths[edge.child] for edge in children)
+        children_width += _SIBLING_GAP * (len(children) - 1)
+        child_left = left + (span - children_width) // 2
+        child_positions: list[tuple[str, int]] = []
+        for edge in children:
+            child_positions.append((edge.child, child_left))
+            child_left += widths[edge.child] + _SIBLING_GAP
+        stack.extend(reversed(child_positions))
+    return tuple(placements)
+
+
+def _draw_box(canvas: _Canvas, placement: _Placement) -> None:
+    left = placement.x
+    right = left + placement.box.width - 1
+    top = placement.y
+    bottom = top + placement.box.height - 1
+    canvas.add_horizontal(y=top, start=left, end=right)
+    canvas.add_horizontal(y=bottom, start=left, end=right)
+    canvas.add_vertical(x=left, start=top, end=bottom)
+    canvas.add_vertical(x=right, start=top, end=bottom)
+    for offset, line in enumerate(placement.box.lines, start=1):
+        canvas.add_text(x=left + 2, y=top + offset, value=line)
+
+
+def _draw_tree_edge(
+    canvas: _Canvas,
+    parent: _Placement,
+    child: _Placement,
+    edge: _DisplayEdge,
+) -> None:
+    parent_x = parent.x + parent.box.width // 2
+    parent_bottom = parent.y + parent.box.height - 1
+    child_x = child.x + child.box.width // 2
+    child_top = child.y
+    branch_y = parent_bottom + 2
+    label_y = child_top - 2
+    label = f"{edge.parent_interface} ↔ {edge.child_interface}"
+
+    canvas.add_vertical(x=parent_x, start=parent_bottom, end=branch_y)
+    canvas.add_horizontal(y=branch_y, start=parent_x, end=child_x)
+    canvas.add_vertical(x=child_x, start=branch_y, end=label_y - 1)
+    canvas.add_text(x=child_x - len(label) // 2, y=label_y, value=label)
+    canvas.add_vertical(x=child_x, start=label_y + 1, end=child_top)
+
+
+def _render_box_component(
+    plan: TopologyPlan,
+    component: _DisplayComponent,
+    *,
+    detail: bool,
+) -> str:
+    boxes: Mapping[str, _Box] = MappingProxyType(
+        {name: _make_box(plan.nodes[name], detail=detail) for name in component.children}
+    )
+    placements = _place_component(component, boxes)
+    by_name = {placement.node: placement for placement in placements}
+    canvas = _Canvas()
+    for parent, edges in component.children.items():
+        for edge in edges:
+            _draw_tree_edge(canvas, by_name[parent], by_name[edge.child], edge)
+    for placement in placements:
+        _draw_box(canvas, placement)
+    return canvas.render()
+
+
+def _box_cross_link_line(link: LinkPlan) -> str:
+    return (
+        f"  [L{link.index}] {link.left.node}:{link.left.interface} ↔ "
+        f"{link.right.node}:{link.right.interface}"
+    )
+
+
+def _render_box(plan: TopologyPlan, *, detail: bool) -> str:
+    rendered_components: list[str] = []
+    for component in _build_display_forest(plan):
+        canvas = _render_box_component(plan, component, detail=detail)
+        lines = [canvas]
+        if component.cross_links:
+            lines.append("Cross-links:")
+            lines.extend(_box_cross_link_line(link) for link in component.cross_links)
+        rendered_components.append("\n".join(lines))
+    return f"Topology: {plan.name}\n\n" + "\n\n".join(rendered_components)
+
+
+def _escape_label(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\r", "\\r").replace("\n", "\\n")
+
+
+def _render_mermaid(plan: TopologyPlan) -> str:
+    lines = ["flowchart LR"]
+    node_ids = {name: f"n{index}" for index, name in enumerate(plan.nodes)}
+    for name, node in plan.nodes.items():
+        label = _escape_label(f"{node.name}\n{node.kind}")
+        lines.append(f'    {node_ids[name]}["{label}"]')
+    for link in plan.links:
+        label = _escape_label(f"{link.left.interface} <-> {link.right.interface}")
+        left = node_ids[link.left.node]
+        right = node_ids[link.right.node]
+        lines.append(f'    {left} -- "{label}" --- {right}')
+    return "\n".join(lines)
+
+
+def _quoted_dot(value: str) -> str:
+    return f'"{_escape_label(value)}"'
+
+
+def _render_dot(plan: TopologyPlan) -> str:
+    lines = ["graph nslab {"]
+    for node in plan.nodes.values():
+        identifier = _quoted_dot(node.name)
+        label = _quoted_dot(f"{node.name}\n{node.kind}")
+        lines.append(f"    {identifier} [label={label}];")
+    for link in plan.links:
+        left = _quoted_dot(link.left.node)
+        right = _quoted_dot(link.right.node)
+        label = _quoted_dot(f"{link.left.interface} <-> {link.right.interface}")
+        lines.append(f"    {left} -- {right} [label={label}];")
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def _node_document(node: NodePlan) -> dict[str, object]:
+    return {
+        "kind": node.kind,
+        "name": node.name,
+        "namespace": node.namespace,
+    }
+
+
+def _endpoint_document(node: str, interface: str) -> dict[str, object]:
+    return {"interface": interface, "node": node}
+
+
+def _link_document(link: LinkPlan) -> dict[str, object]:
+    return {
+        "endpoints": [
+            _endpoint_document(link.left.node, link.left.interface),
+            _endpoint_document(link.right.node, link.right.interface),
+        ],
+        "index": link.index,
+        "kind": link.kind,
+        "mtu": link.mtu,
+    }
+
+
+def _render_json(plan: TopologyPlan) -> str:
+    document: dict[str, object] = {
+        "links": [_link_document(link) for link in plan.links],
+        "name": plan.name,
+        "nodes": [_node_document(node) for node in plan.nodes.values()],
+    }
+    return json.dumps(document, ensure_ascii=False, sort_keys=True, indent=2)
+
+
+def render_graph(
+    plan: TopologyPlan,
+    output_format: str,
+    *,
+    detail: bool = False,
+) -> str:
+    supported_formats = {"tree", "box", "mermaid", "dot", "json"}
+    if output_format not in supported_formats:
+        raise NslabError(
+            code="GRAPH_FORMAT_INVALID",
+            message=f"unsupported graph format: {output_format}",
+            details={"format": output_format},
+        )
+    if detail and output_format not in {"tree", "box"}:
+        raise NslabError(
+            code="GRAPH_DETAIL_UNSUPPORTED",
+            message=f"graph detail is not supported for format: {output_format}",
+            details={"format": output_format},
+        )
+    if output_format == "tree":
+        return _render_tree(plan, detail=detail)
+    if output_format == "box":
+        return _render_box(plan, detail=detail)
+    if output_format == "mermaid":
+        return _render_mermaid(plan)
+    if output_format == "dot":
+        return _render_dot(plan)
+    return _render_json(plan)

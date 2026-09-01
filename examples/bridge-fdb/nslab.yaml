@@ -1,0 +1,26 @@
+version: 1
+name: bridge-fdb
+
+topology:
+  nodes:
+    h1:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.10.0.1/24]
+    sw1:
+      kind: bridge
+      bridge:
+        name: br0
+        stp: false
+        vlan_filtering: false
+    h2:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.10.0.2/24]
+  links:
+    - endpoints: [h1:eth0, sw1:swp1]
+      mtu: 1500
+    - endpoints: [h2:eth0, sw1:swp2]
+      mtu: 1500

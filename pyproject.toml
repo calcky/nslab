@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nslab"
+version = "0.1.0"
+description = "Declarative Linux network namespace labs"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+license = { file = "LICENSE" }
+dependencies = [
+  "pydantic>=2.11,<3",
+  "pyroute2>=0.7.12,<1",
+  "PyYAML>=6,<7",
+]
+
+[project.scripts]
+nslab = "nslab.cli:entrypoint"
+
+[dependency-groups]
+dev = [
+  "mypy>=1.15,<2",
+  "pytest>=8.3,<9",
+  "ruff>=0.11,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nslab"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["root: mutates real Linux networking and requires EUID 0"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["nslab"]
+
+[[tool.mypy.overrides]]
+module = ["pyroute2", "pyroute2.*"]
+ignore_missing_imports = true
