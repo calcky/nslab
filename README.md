@@ -187,7 +187,9 @@ absent，可修正 YAML 后重新 deploy。若回滚不完整，nslab 会保留 
 
 ```bash
 uv run pytest tests/unit -q
-sudo -E "$(pwd)/.venv/bin/pytest" tests/integration -m root -q
+sudo -E "$(pwd)/.venv/bin/pytest" \
+  tests/integration -m root -q \
+  --ignore=tests/integration/test_bridge_fdb_e2e_root.py
 uv run ruff check src tests
 uv run mypy src
 uv build

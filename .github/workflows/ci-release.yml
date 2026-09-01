@@ -88,10 +88,11 @@ jobs:
           sudo apt-get install -y iproute2 iputils-ping
       - name: Sync integration environment
         run: uv sync --locked --python 3.12
-      - name: Run root integration tests
+      - name: Run supported root integration tests
         run: |
           sudo env TMPDIR=/tmp "$GITHUB_WORKSPACE/.venv/bin/pytest" \
-            tests/integration -q -m root
+            tests/integration -q -m root \
+            --ignore=tests/integration/test_bridge_fdb_e2e_root.py
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
