@@ -307,13 +307,16 @@ class StateStore:
         path = self._path(snapshot.name)
         try:
             validated = StateSnapshot.from_dict(snapshot.to_dict())
-            serialized = json.dumps(
-                validated.to_dict(),
-                ensure_ascii=False,
-                sort_keys=True,
-                indent=2,
-                allow_nan=False,
-            ) + "\n"
+            serialized = (
+                json.dumps(
+                    validated.to_dict(),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    indent=2,
+                    allow_nan=False,
+                )
+                + "\n"
+            )
         except (TypeError, ValueError) as error:
             raise NslabError(
                 code="STATE_INVALID",

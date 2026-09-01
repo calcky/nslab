@@ -1,0 +1,180 @@
+name: CI and Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  UV_NO_PROGRESS: "1"
+
+jobs:
+  checks:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.30"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Verify runner architecture
+        run: test "$(uname -m)" = x86_64
+      - name: Sync development environment
+        run: uv sync --locked
+      - name: Lint
+        run: uv run ruff check src tests
+      - name: Check formatting
+        run: uv run ruff format --check src tests
+      - name: Type check
+        run: uv run mypy src
+      - name: Validate lock file
+        run: uv lock --check
+      - name: Build Python package
+        run: uv build
+
+  tests:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.12"
+          - "3.13"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.30"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Verify runner architecture
+        run: test "$(uname -m)" = x86_64
+      - name: Sync test environment
+        run: uv sync --locked --python "${{ matrix.python-version }}"
+      - name: Run non-root tests
+        run: TMPDIR=/tmp uv run pytest -q -m "not root"
+
+  root-integration:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.30"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Verify runner architecture
+        run: test "$(uname -m)" = x86_64
+      - name: Install Linux networking tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iproute2 iputils-ping
+      - name: Sync integration environment
+        run: uv sync --locked --python 3.12
+      - name: Run root integration tests
+        run: |
+          sudo env TMPDIR=/tmp "$GITHUB_WORKSPACE/.venv/bin/pytest" \
+            tests/integration -q -m root
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - checks
+      - tests
+      - root-integration
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.30"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Verify runner architecture
+        run: test "$(uname -m)" = x86_64
+      - name: Install Linux networking tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iproute2 iputils-ping
+      - name: Sync release environment
+        run: uv sync --locked --group release --python 3.12
+      - name: Build standalone executable
+        run: |
+          uv run --group release pyinstaller \
+            --clean --noconfirm --onefile --name nslab \
+            src/nslab/__main__.py
+          file dist/nslab
+          file dist/nslab | grep -F "ELF 64-bit LSB"
+          file dist/nslab | grep -F "x86-64"
+      - name: Smoke-test packaged CLI
+        run: |
+          ./dist/nslab --help >/dev/null
+          ./dist/nslab graph --topo examples/bridge-fdb/nslab.yaml \
+            | grep -F "Topology: bridge-fdb"
+      - name: Smoke-test packaged network lifecycle
+        run: |
+          set -euo pipefail
+          smoke_name="release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            sudo ./dist/nslab destroy \
+              --topo examples/bridge-fdb/nslab.yaml \
+              --name "$smoke_name" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          sudo ./dist/nslab deploy \
+            --topo examples/bridge-fdb/nslab.yaml \
+            --name "$smoke_name"
+          sudo ./dist/nslab exec \
+            --name "$smoke_name" \
+            --node h1 -- /usr/bin/ping -c 1 10.10.0.2
+          sudo ./dist/nslab inspect --name "$smoke_name" \
+            | grep -F "status: deployed"
+          sudo ./dist/nslab destroy \
+            --topo examples/bridge-fdb/nslab.yaml \
+            --name "$smoke_name"
+          trap - EXIT
+      - name: Package release assets
+        id: package
+        run: |
+          archive="nslab-${GITHUB_REF_NAME}-linux-x86_64.tar.gz"
+          mkdir -p release-package
+          install -m 0755 dist/nslab release-package/nslab
+          tar -C release-package -czf "dist/$archive" nslab
+          (cd dist && sha256sum "$archive" > SHA256SUMS)
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+        run: |
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" \
+              "dist/$ARCHIVE" dist/SHA256SUMS --clobber
+          else
+            gh release create "$TAG_NAME" \
+              "dist/$ARCHIVE" dist/SHA256SUMS \
+              --verify-tag --generate-notes --title "$TAG_NAME"
+          fi

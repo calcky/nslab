@@ -72,9 +72,7 @@ def test_compile_plan_preserves_manifest_order_and_desired_state(
     assert plan.nodes["sw1"].bridge_name == "br0"
     assert plan.nodes["sw1"].stp is False
     assert plan.nodes["sw1"].vlan_filtering is False
-    assert plan.nodes["sw1"].interfaces == {
-        "br0": (IPv4Interface("192.0.2.1/24"),)
-    }
+    assert plan.nodes["sw1"].interfaces == {"br0": (IPv4Interface("192.0.2.1/24"),)}
     assert plan.nodes["h1"].routes == (
         RoutePlan(
             dst=IPv4Network("0.0.0.0/0"),
@@ -172,14 +170,10 @@ def test_mutating_nested_manifest_dicts_after_compile_does_not_change_plan(
     h1 = bridge_manifest.topology.nodes["h1"]
     assert isinstance(h1, LinuxNode)
 
-    h1.interfaces["eth0"] = InterfaceConfig(
-        addresses=(IPv4Interface("198.51.100.1/24"),)
-    )
+    h1.interfaces["eth0"] = InterfaceConfig(addresses=(IPv4Interface("198.51.100.1/24"),))
     h1.sysctls["net.ipv4.ip_forward"] = 0
     bridge_manifest.topology.nodes["extra"] = h1
 
     assert tuple(plan.nodes) == ("h1", "sw1", "h2")
-    assert plan.nodes["h1"].interfaces == {
-        "eth0": (IPv4Interface("10.10.0.1/24"),)
-    }
+    assert plan.nodes["h1"].interfaces == {"eth0": (IPv4Interface("10.10.0.1/24"),)}
     assert plan.nodes["h1"].sysctls == {"net.ipv4.ip_forward": 1}

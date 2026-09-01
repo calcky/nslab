@@ -10,20 +10,42 @@ pyroute2 创建，不依赖 `ip`、`bridge` 或生命周期 shell hook。
 
 ## 环境要求
 
-- Windows 11 + WSL2
-- Ubuntu 24.04
-- Python 3.12 或 3.13
+- x86_64 Linux；推荐 Ubuntu 22.04 或更高版本
 - root 权限，用于 deploy、destroy、redeploy、inspect 和 exec
 - `iproute2` 与 `iputils-ping`，分别用于人工检查和示例 ping
-- [uv](https://docs.astral.sh/uv/)
 
-Ubuntu 中安装系统依赖并初始化开发环境：
+## 安装
+
+### Linux x86_64 发布包
+
+GitHub Release 提供基于 Ubuntu 22.04 构建的独立可执行程序，不要求系统预装 Python。
+安装最新版本时，将 `VERSION` 调整为目标 tag：
 
 ```bash
 sudo apt update
-sudo apt install -y iproute2 iputils-ping python3.12
-cd /home/captain/nslab
-uv sync --all-groups
+sudo apt install -y curl iproute2 iputils-ping
+
+VERSION=v0.1.0
+curl -fLO "https://github.com/calcky/nslab/releases/download/${VERSION}/nslab-${VERSION}-linux-x86_64.tar.gz"
+curl -fLO "https://github.com/calcky/nslab/releases/download/${VERSION}/SHA256SUMS"
+sha256sum --check --ignore-missing SHA256SUMS
+tar -xzf "nslab-${VERSION}-linux-x86_64.tar.gz"
+sudo install -m 0755 nslab /usr/local/bin/nslab
+nslab --help
+```
+
+### 从源码安装
+
+源码运行需要 Python 3.12 或 3.13 和 [uv](https://docs.astral.sh/uv/)。Ubuntu 中安装
+系统依赖并初始化开发环境：
+
+```bash
+sudo apt update
+sudo apt install -y iproute2 iputils-ping
+git clone https://github.com/calcky/nslab.git
+cd nslab
+uv python install 3.12
+uv sync --python 3.12
 ```
 
 生成拓扑图不需要 root，也不会读取 live state。默认输出适合终端阅读的 Unicode
@@ -114,8 +136,9 @@ YAML 精确证明预期资源应当不存在。
 ## Obsidian Execute Code
 
 nslab 不安装或修改 Obsidian 插件，也不修改 sudoers。Obsidian 现有的 Execute Code
-能力只需调用同一个 CLI。若 Obsidian 运行在 Windows，可执行以下 PowerShell 代码块；
-将 distribution 名称和 Linux 路径调整为本机实际值：
+能力只需调用同一个 CLI。在 Linux 上可以直接执行前面的 `nslab` 命令。若 Obsidian
+运行在 Windows，可选用以下 PowerShell 代码块调用 WSL；将 distribution 名称和
+Linux 路径调整为本机实际值：
 
 ```powershell
 $Distro = "Ubuntu-24.04"
@@ -133,7 +156,7 @@ wsl.exe --distribution $Distro --user root --cd $Repo $Nslab destroy -t $Topo
 “销毁”按钮。不要把不可信文本拼接进 `exec` 参数。
 
 > [!WARNING]
-> Network namespace 只隔离网络栈。以 root 运行的 `nslab exec` 进程仍拥有 WSL2
+> Network namespace 只隔离网络栈。以 root 运行的 `nslab exec` 进程仍拥有 Linux
 > 主机文件系统的 root 权限；它不是容器或安全沙箱。
 
 ## 状态与恢复
@@ -168,4 +191,13 @@ sudo -E "$(pwd)/.venv/bin/pytest" tests/integration -m root -q
 uv run ruff check src tests
 uv run mypy src
 uv build
+```
+
+GitHub Actions 会在 Ubuntu 22.04 x86_64 上执行静态检查、Python 3.12/3.13 测试和
+root network namespace 集成测试。推送 `v*` tag 后，只有所有检查通过才会发布 Linux
+x86_64 可执行程序：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
 ```

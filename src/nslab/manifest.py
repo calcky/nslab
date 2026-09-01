@@ -143,8 +143,7 @@ class _NodeBase(BaseModel):
         for route in self.routes:
             if route.dst in connected_networks:
                 raise ValueError(
-                    f"route destination conflicts with connected network: "
-                    f"{str(route.dst)!r}"
+                    f"route destination conflicts with connected network: {str(route.dst)!r}"
                 )
         return self
 
@@ -269,9 +268,7 @@ class Manifest(BaseModel):
 
 
 def _validation_issues(error: ValidationError) -> list[dict[str, Any]]:
-    issues: list[dict[str, Any]] = json.loads(
-        error.json(include_url=False, include_input=False)
-    )
+    issues: list[dict[str, Any]] = json.loads(error.json(include_url=False, include_input=False))
     return issues
 
 

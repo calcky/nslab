@@ -173,9 +173,9 @@ def test_rejects_invalid_names(
     if target == "deployment":
         manifest_data["name"] = invalid_name
     elif target == "node":
-        manifest_data["topology"]["nodes"][invalid_name] = manifest_data["topology"][
-            "nodes"
-        ].pop("h1")
+        manifest_data["topology"]["nodes"][invalid_name] = manifest_data["topology"]["nodes"].pop(
+            "h1"
+        )
         manifest_data["topology"]["links"][0]["endpoints"][0] = f"{invalid_name}:eth0"
     elif target == "interface":
         h1 = manifest_data["topology"]["nodes"]["h1"]
@@ -202,9 +202,7 @@ def test_rejects_malformed_endpoint(tmp_path: Path, manifest_data: ManifestData)
     _assert_invalid(tmp_path, manifest_data)
 
 
-def test_rejects_loopback_as_link_endpoint(
-    tmp_path: Path, manifest_data: ManifestData
-) -> None:
+def test_rejects_loopback_as_link_endpoint(tmp_path: Path, manifest_data: ManifestData) -> None:
     h1 = manifest_data["topology"]["nodes"]["h1"]
     h1["interfaces"]["lo"] = h1["interfaces"].pop("eth0")
     manifest_data["topology"]["links"][0]["endpoints"][0] = "h1:lo"
@@ -212,9 +210,7 @@ def test_rejects_loopback_as_link_endpoint(
     assert "lo" in json.dumps(error.details["issues"])
 
 
-def test_rejects_loopback_as_bridge_name(
-    tmp_path: Path, manifest_data: ManifestData
-) -> None:
+def test_rejects_loopback_as_bridge_name(tmp_path: Path, manifest_data: ManifestData) -> None:
     manifest_data["topology"]["nodes"]["sw1"]["bridge"]["name"] = "lo"
     error = _assert_invalid(tmp_path, manifest_data)
     assert "lo" in json.dumps(error.details["issues"])
@@ -231,9 +227,7 @@ def test_rejects_bridge_name_colliding_with_linked_port(
 def test_rejects_unreferenced_configured_interface(
     tmp_path: Path, manifest_data: ManifestData
 ) -> None:
-    manifest_data["topology"]["nodes"]["h1"]["interfaces"]["eth1"] = {
-        "addresses": ["192.0.2.1/24"]
-    }
+    manifest_data["topology"]["nodes"]["h1"]["interfaces"]["eth1"] = {"addresses": ["192.0.2.1/24"]}
     _assert_invalid(tmp_path, manifest_data)
 
 
@@ -265,9 +259,7 @@ def test_rejects_duplicate_address_on_same_interface(
         "eth0",
         "addresses",
     )
-    assert issue["msg"] == (
-        "Value error, duplicate interface address: '10.10.0.1/24'"
-    )
+    assert issue["msg"] == ("Value error, duplicate interface address: '10.10.0.1/24'")
 
 
 def test_load_manifest_wraps_network_declaration_issue_with_json_location(
@@ -292,9 +284,7 @@ def test_load_manifest_wraps_network_declaration_issue_with_json_location(
         "eth0",
         "addresses",
     ]
-    assert issues[0]["msg"] == (
-        "Value error, duplicate interface address: '10.10.0.1/24'"
-    )
+    assert issues[0]["msg"] == ("Value error, duplicate interface address: '10.10.0.1/24'")
 
 
 @pytest.mark.parametrize(
@@ -337,9 +327,7 @@ def test_rejects_duplicate_route_destinations(
         "linux",
         "routes",
     )
-    assert issue["msg"] == (
-        f"Value error, duplicate route destination: {expected_destination!r}"
-    )
+    assert issue["msg"] == (f"Value error, duplicate route destination: {expected_destination!r}")
 
 
 @pytest.mark.parametrize(
@@ -373,8 +361,7 @@ def test_rejects_declared_route_for_connected_network(
         "linux",
     )
     assert issue["msg"] == (
-        "Value error, route destination conflicts with connected network: "
-        "'10.10.0.0/24'"
+        "Value error, route destination conflicts with connected network: '10.10.0.0/24'"
     )
 
 
@@ -384,9 +371,10 @@ def test_accepts_distinct_addresses_in_same_connected_network(
     placement: str,
 ) -> None:
     if placement == "same-interface":
-        manifest_data["topology"]["nodes"]["h1"]["interfaces"]["eth0"][
-            "addresses"
-        ] = ["10.10.0.1/24", "10.10.0.3/24"]
+        manifest_data["topology"]["nodes"]["h1"]["interfaces"]["eth0"]["addresses"] = [
+            "10.10.0.1/24",
+            "10.10.0.3/24",
+        ]
     else:
         manifest_data["topology"]["nodes"]["h1"]["interfaces"]["eth1"] = {
             "addresses": ["10.10.0.3/24"]
@@ -420,9 +408,7 @@ def test_accepts_internal_bridge_interface_configuration(
 def test_accepts_route_using_internal_bridge_device(
     tmp_path: Path, manifest_data: ManifestData
 ) -> None:
-    manifest_data["topology"]["nodes"]["sw1"]["routes"] = [
-        {"dst": "192.0.2.0/24", "dev": "br0"}
-    ]
+    manifest_data["topology"]["nodes"]["sw1"]["routes"] = [{"dst": "192.0.2.0/24", "dev": "br0"}]
 
     manifest = load_manifest(_write_manifest(tmp_path, manifest_data))
 
@@ -443,16 +429,12 @@ def test_rejects_other_unlinked_bridge_interface(
 def test_rejects_route_using_other_unlinked_bridge_device(
     tmp_path: Path, manifest_data: ManifestData
 ) -> None:
-    manifest_data["topology"]["nodes"]["sw1"]["routes"] = [
-        {"dst": "192.0.2.0/24", "dev": "other0"}
-    ]
+    manifest_data["topology"]["nodes"]["sw1"]["routes"] = [{"dst": "192.0.2.0/24", "dev": "other0"}]
     _assert_invalid(tmp_path, manifest_data)
 
 
 @pytest.mark.parametrize("key", ["net.ipv6.conf.all.forwarding", "kernel.hostname"])
-def test_rejects_unsupported_sysctl(
-    tmp_path: Path, manifest_data: ManifestData, key: str
-) -> None:
+def test_rejects_unsupported_sysctl(tmp_path: Path, manifest_data: ManifestData, key: str) -> None:
     manifest_data["topology"]["nodes"]["h1"]["sysctls"] = {key: 1}
     _assert_invalid(tmp_path, manifest_data)
 
@@ -461,9 +443,7 @@ def test_rejects_unsupported_sysctl(
 def test_rejects_sysctl_value_outside_integer_zero_or_one(
     tmp_path: Path, manifest_data: ManifestData, value: object
 ) -> None:
-    manifest_data["topology"]["nodes"]["h1"]["sysctls"] = {
-        "net.ipv4.ip_forward": value
-    }
+    manifest_data["topology"]["nodes"]["h1"]["sysctls"] = {"net.ipv4.ip_forward": value}
     _assert_invalid(tmp_path, manifest_data)
 
 

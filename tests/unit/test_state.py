@@ -78,12 +78,15 @@ def test_snapshot_round_trip_is_frozen_deterministic_json_with_exact_modes(
 
     path = root / "bridge-fdb.json"
     document = json.loads(path.read_text(encoding="utf-8"))
-    expected_text = json.dumps(
-        document,
-        ensure_ascii=False,
-        sort_keys=True,
-        indent=2,
-    ) + "\n"
+    expected_text = (
+        json.dumps(
+            document,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n"
+    )
 
     assert store.load("bridge-fdb") == snapshot
     assert snapshot.status == "deployed"
@@ -488,9 +491,7 @@ def test_missing_load_and_repeated_delete_are_idempotent(
 
 
 @pytest.mark.parametrize("status", ["deploying", "deployed", "destroying"])
-def test_snapshot_status_round_trips(
-    tmp_path: Path, snapshot: StateSnapshot, status: str
-) -> None:
+def test_snapshot_status_round_trips(tmp_path: Path, snapshot: StateSnapshot, status: str) -> None:
     candidate = replace(snapshot, status=status)  # type: ignore[arg-type]
 
     StateStore(tmp_path).save(candidate)
@@ -550,9 +551,7 @@ def test_schema_one_snapshot_without_status_migrates_to_deployed(
     ],
     ids=["invalid-json", "missing-fields", "unsupported-schema"],
 )
-def test_malformed_snapshot_is_a_domain_error_with_path(
-    tmp_path: Path, content: str
-) -> None:
+def test_malformed_snapshot_is_a_domain_error_with_path(tmp_path: Path, content: str) -> None:
     path = tmp_path / "bridge-fdb.json"
     path.write_text(content, encoding="utf-8")
 
@@ -565,9 +564,7 @@ def test_malformed_snapshot_is_a_domain_error_with_path(
 
 
 @pytest.mark.parametrize("field", ["manifest", "interfaces"])
-def test_snapshot_object_fields_reject_non_string_keys(
-    snapshot: StateSnapshot, field: str
-) -> None:
+def test_snapshot_object_fields_reject_non_string_keys(snapshot: StateSnapshot, field: str) -> None:
     document = snapshot.to_dict()
     document[field] = {1: "must not be dropped"}
 
