@@ -39,7 +39,7 @@ succeeds.
 | [Getting started](getting-started.md) | Installation, privileges, lifecycle, and recovery |
 | [Manifest](manifest.md) | `nslab.yaml` fields, constraints, and complete snippets |
 | [CLI reference](cli.md) | Commands, options, output formats, and completion |
-| [Examples](examples/index.md) | Bridge, STP, VLAN, forwarding, netem, OSPF, and BGP labs |
+| [Examples](examples/index.md) | Bridge, forwarding, netem, XDP, OSPF, and BGP labs |
 
 ## Scope
 

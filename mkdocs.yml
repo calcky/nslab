@@ -57,9 +57,11 @@ plugins:
             Layer 2 switching: 二层交换
             IP forwarding: IP 转发
             Link conditions: 链路条件
+            Packet processing: 数据包处理
             Dynamic routing: 动态路由
             IPv4 forwarding: IPv4 转发
             IPv6 forwarding: IPv6 转发
+            XDP receive and transmit: XDP 收发包
           theme:
             palette:
               - media: "(prefers-color-scheme: light)"
@@ -108,6 +110,8 @@ nav:
           - IPv6 forwarding: examples/ipv6-forward.md
       - Link conditions:
           - netem: examples/netem.md
+      - Packet processing:
+          - XDP receive and transmit: examples/xdp.md
       - Dynamic routing:
           - OSPF: examples/ospf.md
           - BGP: examples/bgp.md

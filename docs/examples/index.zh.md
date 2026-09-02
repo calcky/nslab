@@ -35,6 +35,12 @@ sudo nslab destroy
 | --- | --- |
 | [netem](netem.md) | 双向延迟、抖动、随机丢包和 qdisc 统计 |
 
+## 数据包处理
+
+| 示例 | 学习内容 |
+| --- | --- |
+| [XDP 收发包](xdp.md) | `XDP_PASS`、`XDP_DROP`、`XDP_TX`、`XDP_REDIRECT` 和 BPF map 计数器 |
+
 ## 动态路由
 
 | 示例 | 学习内容 |
@@ -45,4 +51,5 @@ sudo nslab destroy
 !!! note "权限和依赖"
 
     `graph` 不需要 root。创建 namespace、bridge、veth 或 qdisc 需要 root。OSPF/BGP
-    页面还需要系统安装 `frr` 和 `frr-pythontools`。
+    页面还需要系统安装 `frr` 和 `frr-pythontools`。XDP 页面需要 Clang、libbpf
+    头文件和 bpftool。

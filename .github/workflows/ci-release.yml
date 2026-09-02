@@ -87,10 +87,12 @@ jobs:
       - name: Install Linux networking tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y iproute2 iputils-ping frr frr-pythontools
+          sudo apt-get install -y bpftool clang jq libbpf-dev iproute2 iputils-ping frr frr-pythontools
           sudo systemctl disable --now frr.service || true
       - name: Sync integration environment
         run: uv sync --locked --python 3.12
+      - name: Compile XDP example
+        run: make -C examples/xdp
       - name: Run supported root integration tests
         run: |
           sudo env TMPDIR=/tmp "$GITHUB_WORKSPACE/.venv/bin/pytest" \
@@ -116,6 +118,65 @@ jobs:
           sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" exec \
             --name "$smoke_name" --node h1 -- \
             /usr/bin/ping -c 1 -W 2 198.51.100.2
+          sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" destroy \
+            --topo "$topology" --name "$smoke_name"
+          trap - EXIT
+      - name: Smoke-test XDP actions
+        run: |
+          set -euo pipefail
+          run_suffix="${GITHUB_RUN_ID: -10}"
+          smoke_name="xdp-${run_suffix}-${GITHUB_RUN_ATTEMPT}"
+          nslab_bin="$GITHUB_WORKSPACE/.venv/bin/nslab"
+          topology="$GITHUB_WORKSPACE/examples/xdp/nslab.yaml"
+          object="$GITHUB_WORKSPACE/examples/xdp/xdp_lab.o"
+          cleanup() {
+            sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" destroy \
+              --topo "$topology" --name "$smoke_name" >/dev/null 2>&1 || true
+          }
+          attach() {
+            local section="$1"
+            sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" exec \
+              --name "$smoke_name" --node xdp1 -- \
+              /usr/sbin/ip link set dev eth0 xdpgeneric object "$object" section "$section"
+          }
+          detach() {
+            sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" exec \
+              --name "$smoke_name" --node xdp1 -- \
+              /usr/sbin/ip link set dev eth0 xdpgeneric off
+          }
+          ping_from_h1() {
+            local destination="$1"
+            sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" exec \
+              --name "$smoke_name" --node h1 -- \
+              /usr/bin/ping -c 1 -W 2 "$destination"
+          }
+          trap cleanup EXIT
+          sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" deploy \
+            --topo "$topology" --name "$smoke_name"
+
+          attach xdp/pass
+          ping_from_h1 10.40.1.254
+          detach
+
+          attach xdp/drop
+          if ping_from_h1 10.40.1.254; then
+            echo "XDP_DROP unexpectedly allowed ICMP" >&2
+            exit 1
+          fi
+          detach
+
+          attach xdp/tx
+          ping_from_h1 10.40.1.254
+          detach
+
+          sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" exec \
+            --name "$smoke_name" --node xdp1 -- \
+            /usr/bin/ping -c 1 -W 2 10.40.2.2
+          attach xdp/redirect
+          ping_from_h1 10.40.2.2
+          sudo /usr/sbin/bpftool -j map lookup name nslab_xdp_stats \
+            key hex 04 00 00 00 | /usr/bin/jq -e '.value > 0'
+
           sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" destroy \
             --topo "$topology" --name "$smoke_name"
           trap - EXIT

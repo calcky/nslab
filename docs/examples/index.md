@@ -35,6 +35,12 @@ sudo nslab destroy
 | --- | --- |
 | [netem](netem.md) | Bidirectional delay, jitter, random loss, and qdisc statistics |
 
+## Packet processing
+
+| Example | Focus |
+| --- | --- |
+| [XDP receive and transmit](xdp.md) | `XDP_PASS`, `XDP_DROP`, `XDP_TX`, `XDP_REDIRECT`, and BPF map counters |
+
 ## Dynamic routing
 
 | Example | Focus |
@@ -45,4 +51,5 @@ sudo nslab destroy
 !!! note "Privileges and dependencies"
 
     `graph` does not require root. Creating namespaces, bridges, veth pairs, or qdiscs does.
-    The OSPF and BGP pages also require the system `frr` and `frr-pythontools` packages.
+    The OSPF and BGP pages also require the system `frr` and `frr-pythontools` packages. The XDP
+    page requires Clang, libbpf headers, and bpftool.

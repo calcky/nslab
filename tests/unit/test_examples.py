@@ -228,3 +228,44 @@ def test_netem_example_compiles_bidirectional_link_impairment() -> None:
         jitter_ms=10,
         loss_percent=5,
     )
+
+
+def test_xdp_example_connects_routed_hosts_and_provides_all_program_modes() -> None:
+    plan = compile_plan(load_manifest(_EXAMPLES / "xdp" / "nslab.yaml"))
+    source = (_EXAMPLES / "xdp" / "xdp_lab.c").read_text(encoding="utf-8")
+
+    assert plan.name == "xdp"
+    assert tuple(plan.nodes) == ("h1", "xdp1", "h2")
+    assert len(plan.links) == 2
+    assert plan.nodes["h1"].interfaces["eth0"] == (IPv4Interface("10.40.1.1/24"),)
+    assert plan.nodes["xdp1"].interfaces == {
+        "eth0": (IPv4Interface("10.40.1.254/24"),),
+        "eth1": (IPv4Interface("10.40.2.254/24"),),
+    }
+    assert plan.nodes["xdp1"].sysctls == {"net.ipv4.ip_forward": 1}
+    assert plan.nodes["h2"].interfaces["eth0"] == (IPv4Interface("10.40.2.2/24"),)
+    assert plan.nodes["h1"].routes == (
+        RoutePlan(
+            dst=IPv4Network("10.40.2.0/24"),
+            via=IPv4Address("10.40.1.254"),
+            dev="eth0",
+        ),
+    )
+    assert plan.nodes["h2"].routes == (
+        RoutePlan(
+            dst=IPv4Network("10.40.1.0/24"),
+            via=IPv4Address("10.40.2.254"),
+            dev="eth0",
+        ),
+    )
+    for section in (
+        'SEC("xdp/pass")',
+        'SEC("xdp/drop")',
+        'SEC("xdp/tx")',
+        'SEC("xdp/redirect")',
+    ):
+        assert section in source
+    assert "return XDP_PASS;" in source
+    assert "return XDP_DROP;" in source
+    assert "return XDP_TX;" in source
+    assert "return bpf_redirect(fib.ifindex, 0);" in source
