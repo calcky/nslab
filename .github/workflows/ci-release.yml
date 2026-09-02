@@ -268,7 +268,7 @@ jobs:
           test "$package_version" = "${GITHUB_REF_NAME#v}"
       - name: Build standalone executable
         run: |
-          commit_file="$RUNNER_TEMP/nslab-commit"
+          commit_file="$RUNNER_TEMP/_commit"
           printf '%s\n' "$GITHUB_SHA" > "$commit_file"
           uv run --group release pyinstaller \
             --clean --noconfirm --onefile --name nslab \
