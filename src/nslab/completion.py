@@ -243,7 +243,9 @@ def _zsh_option_cases() -> str:
 def render_completion_script(shell: str) -> str:
     replacements = {
         "@COMMAND_PATTERN@": _command_pattern(),
-        "@ROOT_CANDIDATES@": _shell_words((*PUBLIC_COMMANDS, "-h", "--help", "--debug")),
+        "@ROOT_CANDIDATES@": _shell_words(
+            (*PUBLIC_COMMANDS, "-h", "--help", "--version", "--debug")
+        ),
         "@SHELL_CANDIDATES@": _shell_words(COMPLETION_SHELLS),
         "@INSPECT_FORMATS@": _shell_words(INSPECT_FORMATS),
         "@GRAPH_FORMATS@": _shell_words(GRAPH_FORMATS),

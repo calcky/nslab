@@ -260,16 +260,27 @@ jobs:
           sudo apt-get install -y iproute2 iputils-ping zsh
       - name: Sync release environment
         run: uv sync --locked --group release --python 3.12
+      - name: Verify release version matches tag
+        run: |
+          package_version="$(uv run python -c 'from nslab import __version__; print(__version__)')"
+          test "$package_version" = "${GITHUB_REF_NAME#v}"
       - name: Build standalone executable
         run: |
+          commit_file="$RUNNER_TEMP/nslab-commit"
+          printf '%s\n' "$GITHUB_SHA" > "$commit_file"
           uv run --group release pyinstaller \
             --clean --noconfirm --onefile --name nslab \
+            --copy-metadata nslab \
+            --add-data "$commit_file:nslab" \
             src/nslab/__main__.py
           file dist/nslab
           file dist/nslab | grep -F "ELF 64-bit LSB"
           file dist/nslab | grep -F "x86-64"
       - name: Smoke-test packaged CLI
         run: |
+          short_sha="${GITHUB_SHA:0:12}"
+          test "$(./dist/nslab --version)" = \
+            "nslab ${GITHUB_REF_NAME#v} (commit $short_sha)"
           ./dist/nslab --help >/dev/null
           ./dist/nslab completion bash | bash -n
           ./dist/nslab completion zsh | zsh -n

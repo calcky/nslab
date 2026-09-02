@@ -33,6 +33,7 @@ from nslab.manifest import Manifest, load_manifest
 from nslab.planner import TopologyPlan, compile_plan
 from nslab.snapshot import validate_snapshot
 from nslab.state import DeploymentLock, StateSnapshot, StateStore
+from nslab.version import version_text
 
 COMMANDS = PUBLIC_COMMANDS
 
@@ -55,6 +56,12 @@ def _add_selection_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="nslab")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=version_text(),
+        help="show version and commit hash",
+    )
     parser.add_argument("--debug", action="store_true", help="show exception tracebacks")
     subparsers = parser.add_subparsers(dest="command", required=True)
 

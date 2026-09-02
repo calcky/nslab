@@ -1,6 +1,7 @@
 # CLI 参考
 
 ```text
+nslab --version
 nslab deploy    [-t PATH] [-n NAME]
 nslab destroy   [-t PATH] [-n NAME]
 nslab redeploy  [-t PATH] [-n NAME]
@@ -11,6 +12,9 @@ nslab graph     [-t PATH] [-n NAME] [--detail]
                 [--format tree|box|mermaid|dot|json]
 nslab completion bash|zsh
 ```
+
+`nslab --version` 输出当前安装包或独立可执行程序的版本和源码提交，例如
+`nslab 0.2.0 (commit 685d41187de5)`。
 
 所有生命周期子命令也接受 `-t`/`--topo` 和 `-n`/`--name`。`--debug` 可在命令失败时
 显示 Python 异常 traceback。

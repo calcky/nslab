@@ -82,6 +82,7 @@ sudo nslab destroy
 
 | 命令 | 用途 |
 | --- | --- |
+| `nslab --version` | 显示版本和 commit hash |
 | `nslab deploy` | 创建拓扑 |
 | `nslab destroy` | 销毁拓扑 |
 | `nslab redeploy` | 校验后重建拓扑 |

@@ -52,6 +52,7 @@ def test_completion_command_outputs_valid_shell_script(
 
     assert registration in script
     assert "deploy" in script
+    assert "--version" in script
     assert "-N" in script
     assert "--node" in script
     assert "-N|--node)" in script

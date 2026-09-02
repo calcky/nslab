@@ -1,6 +1,7 @@
 # CLI reference
 
 ```text
+nslab --version
 nslab deploy    [-t PATH] [-n NAME]
 nslab destroy   [-t PATH] [-n NAME]
 nslab redeploy  [-t PATH] [-n NAME]
@@ -11,6 +12,9 @@ nslab graph     [-t PATH] [-n NAME] [--detail]
                 [--format tree|box|mermaid|dot|json]
 nslab completion bash|zsh
 ```
+
+`nslab --version` prints the installed package or standalone executable version and its source
+commit, for example `nslab 0.2.0 (commit 685d41187de5)`.
 
 All lifecycle subcommands accept `-t`/`--topo` and `-n`/`--name`. Use `--debug` to include a
 Python traceback when a command fails.
