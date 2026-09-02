@@ -4,6 +4,7 @@ import errno
 import os
 import signal
 import socket
+import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
@@ -20,7 +21,13 @@ from subprocess import PIPE
 from typing import Any
 from uuid import uuid4
 
-from pyroute2 import IPRoute, NetNS, NSPopen, netns
+from pyroute2 import (
+    IPRoute,
+    NetNS,
+    NSPopen,
+    netns,
+)
+from pyroute2 import config as pyroute2_config
 from pyroute2.netlink.exceptions import NetlinkError
 from pyroute2.netlink.rtnl.tcmsg.common import percent2u32, time2tick
 
@@ -45,8 +52,9 @@ from nslab.routing import FrrRuntime
 
 _BRIDGE_VLAN_INFO_PVID = 2
 _BRIDGE_VLAN_INFO_UNTAGGED = 4
-_VETH_VISIBILITY_TIMEOUT = 1.0
-_VETH_VISIBILITY_INTERVAL = 0.01
+_VETH_VISIBILITY_TIMEOUT = 5.0
+_VETH_VISIBILITY_INTERVAL = 0.05
+_PYROUTE2_CONFIG_LOCK = threading.Lock()
 
 _IFF_UP = 1
 _ARPHRD_LOOPBACK = 772
@@ -105,7 +113,17 @@ _UNSUPPORTED_ROUTE_ATTRIBUTES = (
 
 
 def _open_existing_namespace(namespace: str) -> Any:
-    return NetNS(namespace, flags=0)
+    # pyroute2 forks while opening a namespace socket. Its child must not
+    # inherit nslab's SIGTERM cancellation handler during library cleanup.
+    if not hasattr(pyroute2_config, "disable_mp_signal"):
+        return NetNS(namespace, flags=0)
+    with _PYROUTE2_CONFIG_LOCK:
+        previous = pyroute2_config.disable_mp_signal
+        pyroute2_config.disable_mp_signal = True
+        try:
+            return NetNS(namespace, flags=0)
+        finally:
+            pyroute2_config.disable_mp_signal = previous
 
 
 def _enter_existing_namespace(namespace: str) -> None:
@@ -181,19 +199,83 @@ def _required_index(handle: Any, name: str, operation: str, resource: str) -> in
     )
 
 
-def _wait_for_required_index(handle: Any, name: str, operation: str, resource: str) -> int:
-    deadline = time.monotonic() + _VETH_VISIBILITY_TIMEOUT
+def _veth_missing_error(
+    operation: str,
+    resource: str,
+    *,
+    phase: str,
+    interface: str,
+    namespace: str | None = None,
+    cause: BaseException | None = None,
+) -> NslabError:
+    location = interface if namespace is None else f"{namespace}:{interface}"
+    details: dict[str, object] = {
+        "operation": operation,
+        "resource": resource,
+        "phase": phase,
+        "interface": interface,
+    }
+    if namespace is not None:
+        details["namespace"] = namespace
+    if isinstance(cause, NetlinkError):
+        details["errno"] = abs(cause.code)
+    elif isinstance(cause, OSError) and cause.errno is not None:
+        details["errno"] = abs(cause.errno)
+    if cause is not None:
+        details["last_error"] = type(cause).__name__
+    return NslabError(
+        code="RESOURCE_MISSING",
+        message=f"network resource is missing during {phase}: {location} ({resource})",
+        details=details,
+    )
+
+
+def _is_transient_veth_error(error: BaseException) -> bool:
+    if isinstance(error, NslabError):
+        return error.code == "RESOURCE_MISSING"
+    if isinstance(error, NetlinkError):
+        return _is_missing_error(error.code)
+    if isinstance(error, TimeoutError):
+        return True
+    return isinstance(error, OSError) and error.errno is not None and _is_missing_error(error.errno)
+
+
+def _wait_for_required_index(
+    handle: Any,
+    name: str,
+    operation: str,
+    resource: str,
+    *,
+    phase: str,
+    namespace: str | None = None,
+    deadline: float | None = None,
+) -> int:
+    if deadline is None:
+        deadline = time.monotonic() + _VETH_VISIBILITY_TIMEOUT
+    last_error: BaseException | None = None
     while True:
-        indexes = handle.link_lookup(ifname=name)
+        try:
+            indexes = handle.link_lookup(ifname=name)
+        except (NetlinkError, OSError) as error:
+            if not _is_transient_veth_error(error):
+                raise
+            indexes = ()
+            last_error = error
         if indexes:
             return int(indexes[0])
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise NslabError(
-                code="RESOURCE_MISSING",
-                message=f"network resource is missing: {resource}",
-                details={"operation": operation, "resource": resource},
+            missing = _veth_missing_error(
+                operation,
+                resource,
+                phase=phase,
+                interface=name,
+                namespace=namespace,
+                cause=last_error,
             )
+            if last_error is not None:
+                raise missing from last_error
+            raise missing
         time.sleep(min(_VETH_VISIBILITY_INTERVAL, remaining))
 
 
@@ -658,40 +740,14 @@ class Pyroute2Backend:
                     },
                 )
                 created = True
-                left_index = _wait_for_required_index(
-                    root,
-                    link.left.temporary_name,
-                    "create_veth",
-                    resource,
-                )
-                right_index = _wait_for_required_index(
-                    root,
-                    link.right.temporary_name,
-                    "create_veth",
-                    resource,
-                )
-                root.link(
-                    "set",
-                    index=left_index,
-                    ifalias=ownership_token,
-                )
-                root.link(
-                    "set",
-                    index=right_index,
-                    ifalias=ownership_token,
-                )
-                root.link(
-                    "set",
-                    index=left_index,
-                    net_ns_fd=link.left.namespace,
-                )
-                moved_endpoints.add(link.left)
-                root.link(
-                    "set",
-                    index=right_index,
-                    net_ns_fd=link.right.namespace,
-                )
-                moved_endpoints.add(link.right)
+                for endpoint in (link.left, link.right):
+                    self._move_veth_endpoint(
+                        root,
+                        endpoint,
+                        resource,
+                        ownership_token,
+                    )
+                    moved_endpoints.add(endpoint)
 
             self._configure_veth_endpoint(
                 link.left,
@@ -699,6 +755,7 @@ class Pyroute2Backend:
                 link.netem,
                 resource,
                 renamed_endpoints,
+                ownership_token,
             )
             self._configure_veth_endpoint(
                 link.right,
@@ -706,6 +763,7 @@ class Pyroute2Backend:
                 link.netem,
                 resource,
                 renamed_endpoints,
+                ownership_token,
             )
         except (Exception, KeyboardInterrupt) as error:
             add_reported_existing = (
@@ -727,7 +785,54 @@ class Pyroute2Backend:
                     operation="create_veth",
                     resource=resource,
                 ) from error
+            if isinstance(error, OSError):
+                raise _translate_os_error(
+                    error,
+                    operation="create_veth",
+                    resource=resource,
+                ) from error
             raise
+
+    @staticmethod
+    def _move_veth_endpoint(
+        root: Any,
+        endpoint: EndpointPlan,
+        resource: str,
+        ownership_token: str,
+    ) -> None:
+        deadline = time.monotonic() + _VETH_VISIBILITY_TIMEOUT
+        phase = "root-after-create"
+        while True:
+            try:
+                phase = "root-after-create"
+                index = _wait_for_required_index(
+                    root,
+                    endpoint.temporary_name,
+                    "create_veth",
+                    resource,
+                    phase=phase,
+                    deadline=deadline,
+                )
+                phase = "root-set-ownership"
+                root.link("set", index=index, ifalias=ownership_token)
+                phase = "root-move-to-namespace"
+                root.link("set", index=index, net_ns_fd=endpoint.namespace)
+                return
+            except (Exception, KeyboardInterrupt) as error:
+                if not _is_transient_veth_error(error):
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    missing = _veth_missing_error(
+                        "create_veth",
+                        resource,
+                        phase=phase,
+                        interface=endpoint.temporary_name,
+                        namespace=endpoint.namespace if phase == "root-move-to-namespace" else None,
+                        cause=error,
+                    )
+                    raise missing from error
+                time.sleep(min(_VETH_VISIBILITY_INTERVAL, remaining))
 
     def _configure_veth_endpoint(
         self,
@@ -736,28 +841,81 @@ class Pyroute2Backend:
         netem: NetemPlan | None,
         resource: str,
         renamed_endpoints: set[EndpointPlan],
+        ownership_token: str,
     ) -> None:
-        with _managed_handle(self._netns_factory(endpoint.namespace)) as namespace:
-            index = _wait_for_required_index(
-                namespace,
-                endpoint.temporary_name,
-                "create_veth",
-                resource,
-            )
-            namespace.link("set", index=index, ifname=endpoint.interface)
-            renamed_endpoints.add(endpoint)
-            namespace.link("set", index=index, mtu=mtu)
-            namespace.link("set", index=index, state="up")
-            if netem is not None:
-                namespace.tc(
-                    "add",
-                    "netem",
-                    index,
-                    "1:",
-                    delay=netem.delay_ms * 1000,
-                    jitter=netem.jitter_ms * 1000,
-                    loss=netem.loss_percent,
-                )
+        deadline = time.monotonic() + _VETH_VISIBILITY_TIMEOUT
+        phase = "namespace-after-move"
+        while True:
+            try:
+                with _managed_handle(self._netns_factory(endpoint.namespace)) as namespace:
+                    phase = "namespace-after-move"
+                    renamed = endpoint in renamed_endpoints
+                    lookup_name = endpoint.interface if renamed else endpoint.temporary_name
+                    indexes = namespace.link_lookup(ifname=lookup_name)
+
+                    if not indexes and not renamed:
+                        final_indexes = namespace.link_lookup(ifname=endpoint.interface)
+                        if final_indexes:
+                            final_index = int(final_indexes[0])
+                            messages = namespace.get_links(final_index)
+                            if (
+                                messages
+                                and _attribute(messages[0], "IFLA_IFALIAS") == ownership_token
+                            ):
+                                indexes = (final_index,)
+                                renamed_endpoints.add(endpoint)
+                                renamed = True
+
+                    if not indexes:
+                        raise _veth_missing_error(
+                            "create_veth",
+                            resource,
+                            phase=phase,
+                            interface=lookup_name,
+                            namespace=endpoint.namespace,
+                        )
+
+                    index = int(indexes[0])
+                    if not renamed:
+                        phase = "namespace-rename"
+                        namespace.link("set", index=index, ifname=endpoint.interface)
+                        renamed_endpoints.add(endpoint)
+
+                    phase = "namespace-set-mtu"
+                    namespace.link("set", index=index, mtu=mtu)
+                    phase = "namespace-set-up"
+                    namespace.link("set", index=index, state="up")
+                    if netem is not None:
+                        phase = "namespace-set-netem"
+                        namespace.tc(
+                            "add",
+                            "netem",
+                            index,
+                            "1:",
+                            delay=netem.delay_ms * 1000,
+                            jitter=netem.jitter_ms * 1000,
+                            loss=netem.loss_percent,
+                        )
+                return
+            except (Exception, KeyboardInterrupt) as error:
+                if not _is_transient_veth_error(error):
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    missing = _veth_missing_error(
+                        "create_veth",
+                        resource,
+                        phase=phase,
+                        interface=(
+                            endpoint.interface
+                            if endpoint in renamed_endpoints
+                            else endpoint.temporary_name
+                        ),
+                        namespace=endpoint.namespace,
+                        cause=error,
+                    )
+                    raise missing from error
+                time.sleep(min(_VETH_VISIBILITY_INTERVAL, remaining))
 
     def _cleanup_veth(
         self,

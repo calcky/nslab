@@ -19,17 +19,6 @@ shell hook。
 运行环境为 x86_64 Linux，推荐 Ubuntu 22.04 或更高版本。网络拓扑操作需要 root；
 OSPF/BGP 示例还需要 `frr` 与 `frr-pythontools`。
 
-从 [GitHub Releases](https://github.com/calcky/nslab/releases) 安装独立可执行程序：
-
-```bash
-VERSION=v0.1.0
-curl -fLO "https://github.com/calcky/nslab/releases/download/${VERSION}/nslab-${VERSION}-linux-x86_64.tar.gz"
-curl -fLO "https://github.com/calcky/nslab/releases/download/${VERSION}/SHA256SUMS"
-sha256sum --check --ignore-missing SHA256SUMS
-tar -xzf "nslab-${VERSION}-linux-x86_64.tar.gz"
-sudo install -m 0755 nslab /usr/local/bin/nslab
-```
-
 从源码运行：
 
 ```bash

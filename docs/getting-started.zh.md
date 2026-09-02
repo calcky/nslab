@@ -20,24 +20,6 @@ sudo apt install -y frr frr-pythontools
 
 ## 安装 nslab
 
-### Linux x86_64 发布包
-
-从 [GitHub Releases](https://github.com/calcky/nslab/releases) 下载目标版本，并校验
-SHA-256：
-
-```bash
-VERSION=v0.1.0
-curl -fLO "https://github.com/calcky/nslab/releases/download/${VERSION}/nslab-${VERSION}-linux-x86_64.tar.gz"
-curl -fLO "https://github.com/calcky/nslab/releases/download/${VERSION}/SHA256SUMS"
-sha256sum --check --ignore-missing SHA256SUMS
-tar -xzf "nslab-${VERSION}-linux-x86_64.tar.gz"
-sudo install -m 0755 nslab /usr/local/bin/nslab
-nslab --help
-```
-
-发布包是 Ubuntu 22.04 x86_64 上构建的独立程序，不要求系统预装 Python。FRR 仍需
-单独安装。
-
 ### 从源码运行
 
 源码开发需要 Python 3.12 或 3.13 以及 [uv](https://docs.astral.sh/uv/)：

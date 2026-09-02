@@ -20,24 +20,6 @@ rendering and manifest validation do not read live state and can run without roo
 
 ## Install nslab
 
-### Linux x86_64 release
-
-Download the required version from [GitHub Releases](https://github.com/calcky/nslab/releases)
-and verify its SHA-256 checksum:
-
-```bash
-VERSION=v0.1.0
-curl -fLO "https://github.com/calcky/nslab/releases/download/${VERSION}/nslab-${VERSION}-linux-x86_64.tar.gz"
-curl -fLO "https://github.com/calcky/nslab/releases/download/${VERSION}/SHA256SUMS"
-sha256sum --check --ignore-missing SHA256SUMS
-tar -xzf "nslab-${VERSION}-linux-x86_64.tar.gz"
-sudo install -m 0755 nslab /usr/local/bin/nslab
-nslab --help
-```
-
-The standalone binary is built on Ubuntu 22.04 x86_64 and does not require a system Python.
-FRRouting must still be installed separately.
-
 ### Run from source
 
 Source development requires Python 3.12 or 3.13 and [uv](https://docs.astral.sh/uv/):

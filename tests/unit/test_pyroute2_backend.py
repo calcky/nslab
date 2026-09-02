@@ -23,6 +23,7 @@ from types import FrameType
 from unittest.mock import Mock, PropertyMock, call
 
 import pytest
+from pyroute2 import config as pyroute2_config
 from pyroute2.netlink.exceptions import NetlinkError
 
 import nslab.backend.pyroute2 as pyroute2_backend
@@ -368,6 +369,62 @@ def test_default_namespace_opener_never_creates_missing_inventory_namespaces(
         for endpoint in (link.left, link.right)
     ]
     root.close.assert_called_once_with()
+
+
+def test_default_namespace_opener_resets_signals_in_pyroute2_forked_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handle = Mock()
+
+    def constructor(namespace: str, *, flags: int) -> Mock:
+        assert namespace == "nslab-existing"
+        assert flags == 0
+        assert pyroute2_config.disable_mp_signal is True
+        return handle
+
+    monkeypatch.setattr(pyroute2_backend, "NetNS", constructor)
+    monkeypatch.setattr(pyroute2_config, "disable_mp_signal", False)
+
+    assert pyroute2_backend._open_existing_namespace("nslab-existing") is handle
+    assert pyroute2_config.disable_mp_signal is False
+
+
+def test_default_namespace_opener_restores_pyroute2_config_after_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failure = RuntimeError("socket startup failed")
+
+    def constructor(_namespace: str, *, flags: int) -> None:
+        assert flags == 0
+        assert pyroute2_config.disable_mp_signal is True
+        raise failure
+
+    monkeypatch.setattr(pyroute2_backend, "NetNS", constructor)
+    monkeypatch.setattr(pyroute2_config, "disable_mp_signal", False)
+
+    with pytest.raises(RuntimeError) as caught:
+        pyroute2_backend._open_existing_namespace("nslab-existing")
+
+    assert caught.value is failure
+    assert pyroute2_config.disable_mp_signal is False
+
+
+def test_default_namespace_opener_supports_pyroute2_without_signal_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handle = Mock()
+
+    def constructor(namespace: str, *, flags: int) -> Mock:
+        assert namespace == "nslab-existing"
+        assert flags == 0
+        assert not hasattr(pyroute2_config, "disable_mp_signal")
+        return handle
+
+    monkeypatch.setattr(pyroute2_backend, "NetNS", constructor)
+    monkeypatch.delattr(pyroute2_config, "disable_mp_signal")
+
+    assert pyroute2_backend._open_existing_namespace("nslab-existing") is handle
+    assert not hasattr(pyroute2_config, "disable_mp_signal")
 
 
 def test_default_namespace_enter_uses_non_creating_setns(
@@ -745,21 +802,21 @@ def test_create_veth_moves_renames_sizes_and_brings_up_both_endpoints(
             },
         ),
         call.link_lookup(ifname=veth_link.left.temporary_name),
-        call.link_lookup(ifname=veth_link.right.temporary_name),
         call.link(
             "set",
             index=101,
-            ifalias=_OWNERSHIP_TOKEN,
-        ),
-        call.link(
-            "set",
-            index=102,
             ifalias=_OWNERSHIP_TOKEN,
         ),
         call.link(
             "set",
             index=101,
             net_ns_fd=veth_link.left.namespace,
+        ),
+        call.link_lookup(ifname=veth_link.right.temporary_name),
+        call.link(
+            "set",
+            index=102,
+            ifalias=_OWNERSHIP_TOKEN,
         ),
         call.link(
             "set",
@@ -790,7 +847,20 @@ def test_create_veth_moves_renames_sizes_and_brings_up_both_endpoints(
 
 def test_create_veth_retries_until_owned_endpoints_are_visible(
     veth_link: LinkPlan,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    current_time = 0.0
+
+    def monotonic() -> float:
+        return current_time
+
+    def sleep(duration: float) -> None:
+        nonlocal current_time
+        current_time += duration
+
+    monkeypatch.setattr(pyroute2_backend.time, "monotonic", monotonic)
+    monkeypatch.setattr(pyroute2_backend.time, "sleep", sleep)
+
     root = Mock()
     root_lookup_count: dict[str, int] = {}
 
@@ -803,24 +873,118 @@ def test_create_veth_retries_until_owned_endpoints_are_visible(
 
     root.link_lookup.side_effect = root_lookup
 
-    def delayed_namespace(index: int) -> Mock:
-        handle = Mock()
-        lookup_count = 0
+    left_stale = Mock()
+    left_stale.link_lookup.return_value = []
+    left = Mock()
+    left.link_lookup.return_value = [201]
+    right_stale = Mock()
+    right_stale.link_lookup.return_value = []
+    right = Mock()
+    right.link_lookup.return_value = [301]
+    handles = {
+        veth_link.left.namespace: iter((left_stale, left)),
+        veth_link.right.namespace: iter((right_stale, right)),
+    }
+    netns_factory = Mock(side_effect=lambda namespace: next(handles[namespace]))
+    backend = Pyroute2Backend(
+        iproute_factory=Mock(return_value=root),
+        netns_factory=netns_factory,
+        ownership_token_factory=Mock(return_value=_OWNERSHIP_TOKEN),
+    )
 
-        def lookup(*, ifname: str) -> list[int]:
-            nonlocal lookup_count
-            assert ifname in {
-                veth_link.left.temporary_name,
-                veth_link.right.temporary_name,
-            }
-            lookup_count += 1
-            return [] if lookup_count == 1 else [index]
+    backend.create_veth(veth_link)
 
-        handle.link_lookup.side_effect = lookup
-        return handle
+    assert root_lookup_count == {
+        veth_link.left.temporary_name: 3,
+        veth_link.right.temporary_name: 3,
+    }
+    assert netns_factory.call_args_list == [
+        call(veth_link.left.namespace),
+        call(veth_link.left.namespace),
+        call(veth_link.right.namespace),
+        call(veth_link.right.namespace),
+    ]
+    left_stale.close.assert_called_once_with()
+    right_stale.close.assert_called_once_with()
+    left.link_lookup.assert_called_once_with(ifname=veth_link.left.temporary_name)
+    right.link_lookup.assert_called_once_with(ifname=veth_link.right.temporary_name)
 
-    left = delayed_namespace(201)
-    right = delayed_namespace(301)
+
+def test_create_veth_retries_transient_namespace_configuration_failure(
+    veth_link: LinkPlan,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pyroute2_backend.time, "sleep", Mock())
+    root = Mock()
+    lookup_count: dict[str, int] = {}
+
+    def root_lookup(*, ifname: str) -> list[int]:
+        occurrence = lookup_count.get(ifname, 0)
+        lookup_count[ifname] = occurrence + 1
+        if occurrence == 0:
+            return []
+        return [101 if ifname == veth_link.left.temporary_name else 102]
+
+    root.link_lookup.side_effect = root_lookup
+    left_stale = Mock()
+    left_stale.link_lookup.return_value = [201]
+    left_stale.link.side_effect = NetlinkError(errno.ENODEV, "interface settling")
+    left = Mock()
+    left.link_lookup.return_value = [201]
+    right = Mock()
+    right.link_lookup.return_value = [301]
+    handles = {
+        veth_link.left.namespace: iter((left_stale, left)),
+        veth_link.right.namespace: iter((right,)),
+    }
+    netns_factory = Mock(side_effect=lambda namespace: next(handles[namespace]))
+    backend = Pyroute2Backend(
+        iproute_factory=Mock(return_value=root),
+        netns_factory=netns_factory,
+        ownership_token_factory=Mock(return_value=_OWNERSHIP_TOKEN),
+    )
+
+    backend.create_veth(veth_link)
+
+    assert netns_factory.call_args_list == [
+        call(veth_link.left.namespace),
+        call(veth_link.left.namespace),
+        call(veth_link.right.namespace),
+    ]
+    left_stale.close.assert_called_once_with()
+    assert call.link("set", index=201, ifname=veth_link.left.interface) in left.mock_calls
+
+
+def test_create_veth_retries_transient_root_move_failure(
+    veth_link: LinkPlan,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pyroute2_backend.time, "sleep", Mock())
+    root = Mock()
+    lookup_count: dict[str, int] = {}
+
+    def root_lookup(*, ifname: str) -> list[int]:
+        occurrence = lookup_count.get(ifname, 0)
+        lookup_count[ifname] = occurrence + 1
+        if occurrence == 0:
+            return []
+        return [101 if ifname == veth_link.left.temporary_name else 102]
+
+    left_move_count = 0
+
+    def root_link(command: str, **kwargs: object) -> None:
+        nonlocal left_move_count
+        if command == "set" and kwargs.get("net_ns_fd") == veth_link.left.namespace:
+            left_move_count += 1
+            if left_move_count == 1:
+                raise NetlinkError(errno.ENODEV, "interface settling")
+
+    root.link_lookup.side_effect = root_lookup
+    root.link.side_effect = root_link
+    left = Mock()
+    left.link_lookup.return_value = [201]
+    right = Mock()
+    right.link_lookup.return_value = [301]
     handles = {
         veth_link.left.namespace: left,
         veth_link.right.namespace: right,
@@ -833,12 +997,60 @@ def test_create_veth_retries_until_owned_endpoints_are_visible(
 
     backend.create_veth(veth_link)
 
-    assert root_lookup_count == {
-        veth_link.left.temporary_name: 3,
-        veth_link.right.temporary_name: 3,
-    }
-    assert left.link_lookup.call_count == 2
-    assert right.link_lookup.call_count == 2
+    assert left_move_count == 2
+    assert lookup_count[veth_link.left.temporary_name] == 3
+
+
+def test_create_veth_visibility_timeout_identifies_namespace_phase(
+    veth_link: LinkPlan,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_time = 0.0
+
+    def monotonic() -> float:
+        return current_time
+
+    def sleep(duration: float) -> None:
+        nonlocal current_time
+        current_time += duration
+
+    monkeypatch.setattr(pyroute2_backend, "_VETH_VISIBILITY_TIMEOUT", 0.1)
+    monkeypatch.setattr(pyroute2_backend, "_VETH_VISIBILITY_INTERVAL", 0.05)
+    monkeypatch.setattr(pyroute2_backend.time, "monotonic", monotonic)
+    monkeypatch.setattr(pyroute2_backend.time, "sleep", sleep)
+
+    root = Mock()
+    lookup_count: dict[str, int] = {}
+
+    def root_lookup(*, ifname: str) -> list[int]:
+        occurrence = lookup_count.get(ifname, 0)
+        lookup_count[ifname] = occurrence + 1
+        if occurrence == 0:
+            return []
+        return [101 if ifname == veth_link.left.temporary_name else 102]
+
+    root.link_lookup.side_effect = root_lookup
+
+    def empty_namespace(_namespace: str) -> Mock:
+        handle = Mock()
+        handle.link_lookup.return_value = []
+        return handle
+
+    backend = Pyroute2Backend(
+        iproute_factory=Mock(return_value=root),
+        netns_factory=Mock(side_effect=empty_namespace),
+        ownership_token_factory=Mock(return_value=_OWNERSHIP_TOKEN),
+    )
+
+    with pytest.raises(NslabError) as caught:
+        backend.create_veth(veth_link)
+
+    assert caught.value.code == "RESOURCE_MISSING"
+    assert caught.value.details["phase"] == "namespace-after-move"
+    assert caught.value.details["namespace"] == veth_link.left.namespace
+    assert caught.value.details["interface"] == veth_link.left.temporary_name
+    assert "namespace-after-move" in caught.value.message
+    assert f"{veth_link.left.namespace}:{veth_link.left.temporary_name}" in caught.value.message
 
 
 def test_create_veth_adds_same_netem_qdisc_to_both_endpoints(veth_link: LinkPlan) -> None:
