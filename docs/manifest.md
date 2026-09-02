@@ -10,7 +10,7 @@ topology
 ├─ nodes
 │  └─ <node-name>
 │     ├─ kind: linux
-│     │  ├─ interfaces / devices / routes / sysctls
+│     │  ├─ interfaces / devices / routes / rules / sysctls
 │     │  ├─ devices → <device-name> → type: vlan | vrf
 │     │  └─ routing
 │     └─ kind: bridge
@@ -78,9 +78,12 @@ An interface may contain multiple addresses or no address. Duplicate addresses a
 | `dst` | Yes | None | IPv4/IPv6 destination prefix; `default` means `0.0.0.0/0` |
 | `via` | No | `null` | Next-hop address in the same address family as `dst` |
 | `dev` | Yes | None | Egress interface: a linked interface or the node's bridge device |
+| `table` | No | Automatic | Routing table ID in `1..4294967295`, excluding local table `255` |
 
 A node cannot repeat a destination within one routing table or declare one of that table's
-connected networks as a static route. VRF member interfaces select their VRF table automatically.
+connected networks as a static route. An omitted `table` uses main table 254, except that VRF
+member interfaces select their VRF table automatically. An explicit table on a VRF member route
+must equal that VRF's table.
 
 ##### `sysctls`
 
@@ -94,7 +97,7 @@ Only these keys are accepted, and values must be integer `0` or `1`:
 #### `kind: linux`
 
 A Linux node represents a regular network namespace and accepts the common fields plus
-namespace-local devices and dynamic routing:
+namespace-local devices, policy rules, and dynamic routing:
 
 ```yaml
 r1:
@@ -111,6 +114,62 @@ r1:
   sysctls:
     net.ipv4.ip_forward: 1
 ```
+
+##### `rules[]`
+
+`rules` declares Linux routing policy database (RPDB) entries. Rules are evaluated by ascending
+`priority`; each rule combines every selector it declares. The address family is inferred from
+`from` or `to`, and otherwise defaults to IPv4.
+
+```yaml
+routes:
+  - dst: 203.0.113.0/24
+    via: 10.0.0.2
+    dev: eth1
+    table: 100
+rules:
+  - priority: 100
+    from: 192.0.2.0/24
+    to: 203.0.113.0/24
+    iif: eth0
+    table: 100
+```
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `priority` | Yes | None | Rule preference in `1..4294967295`; unique within its address family |
+| `family` | No | Inferred or IPv4 | `ipv4` or `ipv6`; set it for selector-free IPv6 rules |
+| `action` | No | `lookup` | `lookup`, `goto`, `nop`, `blackhole`, `unreachable`, or `prohibit` |
+| `table` | Conditional | `null` | Table ID in `1..4294967295`; required by `lookup` unless `l3mdev: true` |
+| `goto` | Conditional | `null` | Greater priority to jump to; required by `action: goto` |
+| `from` | No | All sources | Source IPv4/IPv6 prefix |
+| `to` | No | All destinations | Destination IPv4/IPv6 prefix |
+| `not` | No | `false` | Invert the result of the complete selector |
+| `tos` | No | Unspecified | IPv4 TOS or IPv6 traffic class in `0..255`; zero is normalized to unspecified |
+| `fwmark` | No | `null` | Packet mark in `0..4294967295` |
+| `fwmask` | No | Full mask | Mark mask in `0..4294967295`; requires `fwmark` |
+| `iif` | No | Any | Input interface name, including `lo` or a declared Linux device |
+| `oif` | No | Any | Output interface name, including `lo` or a declared Linux device |
+| `l3mdev` | No | `false` | Match packets associated with an L3 master and use its routing table |
+| `uid_range` | No | `null` | Local socket UID range as `{start, end}`, each in `0..4294967295` |
+| `protocol` | No | `0` | Rule-origin protocol number in `0..255` |
+| `ip_protocol` | No | `null` | IP protocol in `0..255`; zero is normalized to unspecified |
+| `source_port` | No | `null` | Source port range as `{start, end}`, each in `0..65535` |
+| `destination_port` | No | `null` | Destination port range as `{start, end}`, each in `0..65535` |
+| `tunnel_id` | No | `null` | Tunnel key in `0..18446744073709551615`; zero means unspecified |
+| `suppress_prefix_length` | No | `null` | Ignore lookup results whose prefix length is at most this value |
+| `suppress_interface_group` | No | `null` | Ignore results using interface group `0..4294967294` |
+| `realms` | No | `null` | Route realms as `{source, destination}`, each in `0..65535` |
+
+`from` and `to` must use the selected family. Port ranges require a nonzero `ip_protocol`, range starts
+cannot exceed their ends, and at least one realm must be nonzero. Suppress options are valid only
+for `lookup`. A `goto` target must be numerically greater than its rule but may remain unresolved;
+Linux will resolve it if a suitable rule is added later. Lookup rules may select the standard
+tables 253 (`default`), 254 (`main`), and 255 (`local`) by number.
+
+When a node declares a VRF, Linux installs its own priority-1000 `l3mdev` rule, so that priority is
+reserved on the node. The deprecated route-NAT rule action is not supported because current Linux
+does not preserve its address through the netlink inventory used for deterministic drift checks.
 
 ##### `devices`
 

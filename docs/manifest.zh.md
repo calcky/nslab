@@ -10,7 +10,7 @@ topology
 ├─ nodes
 │  └─ <node-name>
 │     ├─ kind: linux
-│     │  ├─ interfaces / devices / routes / sysctls
+│     │  ├─ interfaces / devices / routes / rules / sysctls
 │     │  ├─ devices → <device-name> → type: vlan | vrf
 │     │  └─ routing
 │     └─ kind: bridge
@@ -77,9 +77,11 @@ Namespace 内部的 VLAN 和 VRF 设备应声明在 `devices`，而不是 `inter
 | `dst` | 是 | 无 | IPv4/IPv6 目标前缀；`default` 等价于 `0.0.0.0/0` |
 | `via` | 否 | `null` | 下一跳地址，地址族必须与 `dst` 一致 |
 | `dev` | 是 | 无 | 出接口名，必须是该节点可用的链接接口或 bridge 设备 |
+| `table` | 否 | 自动 | 路由表 ID，范围 `1..4294967295`，不能使用 local table `255` |
 
 同一路由表中不能重复声明目标前缀，也不能把该表的直连网段再次声明为静态路由。
-VRF 成员接口会自动选择对应 VRF table。
+省略 `table` 时使用 main table 254，VRF 成员接口则自动使用对应 VRF table。若对 VRF
+成员路由显式指定 `table`，其值必须与该 VRF 的 table 相同。
 
 ##### `sysctls`
 
@@ -92,7 +94,8 @@ VRF 成员接口会自动选择对应 VRF table。
 
 #### `kind: linux`
 
-Linux 节点表示普通 network namespace，可配置公共字段、namespace 内部设备以及动态路由：
+Linux 节点表示普通 network namespace，可配置公共字段、namespace 内部设备、策略规则以及
+动态路由：
 
 ```yaml
 r1:
@@ -109,6 +112,62 @@ r1:
   sysctls:
     net.ipv4.ip_forward: 1
 ```
+
+##### `rules[]`
+
+`rules` 声明 Linux routing policy database（RPDB）条目。内核按 `priority` 从小到大
+匹配；一条 rule 中声明的所有 selector 会同时生效。地址族优先从 `from` 或 `to` 推断，
+无法推断时默认为 IPv4。
+
+```yaml
+routes:
+  - dst: 203.0.113.0/24
+    via: 10.0.0.2
+    dev: eth1
+    table: 100
+rules:
+  - priority: 100
+    from: 192.0.2.0/24
+    to: 203.0.113.0/24
+    iif: eth0
+    table: 100
+```
+
+| 字段 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `priority` | 是 | 无 | Rule preference，范围 `1..4294967295`，同一地址族内不能重复 |
+| `family` | 否 | 自动推断或 IPv4 | `ipv4` 或 `ipv6`；无地址 selector 的 IPv6 rule 需显式设置 |
+| `action` | 否 | `lookup` | `lookup`、`goto`、`nop`、`blackhole`、`unreachable` 或 `prohibit` |
+| `table` | 条件必填 | `null` | Table ID，范围 `1..4294967295`；`lookup` 必填，`l3mdev: true` 除外 |
+| `goto` | 条件必填 | `null` | 要跳转到的更大 priority；`action: goto` 时必填 |
+| `from` | 否 | 任意源 | 源 IPv4/IPv6 前缀 |
+| `to` | 否 | 任意目的 | 目的 IPv4/IPv6 前缀 |
+| `not` | 否 | `false` | 对整组 selector 的匹配结果取反 |
+| `tos` | 否 | 未指定 | IPv4 TOS 或 IPv6 traffic class，范围 `0..255`；零会归一化为未指定 |
+| `fwmark` | 否 | `null` | Packet mark，范围 `0..4294967295` |
+| `fwmask` | 否 | 全位 mask | Mark mask，范围 `0..4294967295`；要求同时声明 `fwmark` |
+| `iif` | 否 | 任意 | 入接口名，可以是 `lo` 或已声明的 Linux device |
+| `oif` | 否 | 任意 | 出接口名，可以是 `lo` 或已声明的 Linux device |
+| `l3mdev` | 否 | `false` | 匹配与 L3 master 关联的包，并使用该 master 的路由表 |
+| `uid_range` | 否 | `null` | 本地 socket UID 范围 `{start, end}`，端点范围 `0..4294967295` |
+| `protocol` | 否 | `0` | Rule 来源协议编号，范围 `0..255` |
+| `ip_protocol` | 否 | `null` | IP 协议编号，范围 `0..255`；零会归一化为未指定 |
+| `source_port` | 否 | `null` | 源端口范围 `{start, end}`，端点范围 `0..65535` |
+| `destination_port` | 否 | `null` | 目的端口范围 `{start, end}`，端点范围 `0..65535` |
+| `tunnel_id` | 否 | `null` | Tunnel key，范围 `0..18446744073709551615`；零表示未指定 |
+| `suppress_prefix_length` | 否 | `null` | 忽略前缀长度不大于该值的 lookup 结果 |
+| `suppress_interface_group` | 否 | `null` | 忽略使用 interface group `0..4294967294` 的结果 |
+| `realms` | 否 | `null` | Route realms `{source, destination}`，端点范围 `0..65535` |
+
+`from`、`to` 必须与选定地址族一致。端口范围要求非零 `ip_protocol`，所有 range 的
+start 不能大于 end，两个 realm 不能同时为零。Suppress 选项只适用于 `lookup`。`goto`
+目标必须大于当前 rule 的 priority，但可以暂时 unresolved；后续出现合适 rule 时由 Linux
+完成解析。Lookup rule 可用数字选择标准表 253（`default`）、254（`main`）和
+255（`local`）。
+
+节点声明 VRF 时，Linux 会自动安装 priority 1000 的 `l3mdev` rule，因此该节点不能再
+声明相同 priority。旧式 route-NAT rule action 不受支持，因为当前 Linux 无法通过用于
+确定性 drift 检查的 netlink inventory 保留其地址。
 
 ##### `devices`
 

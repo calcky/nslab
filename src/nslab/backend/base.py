@@ -13,6 +13,7 @@ from nslab.planner import (
     NetemPlan,
     NodeKind,
     NodePlan,
+    PolicyRulePlan,
     RoutePlan,
     TopologyPlan,
     VlanDevicePlan,
@@ -62,6 +63,7 @@ class NamespaceInventory:
     interfaces: Mapping[str, InterfaceInventory]
     routes: tuple[RoutePlan, ...]
     sysctls: Mapping[str, int]
+    rules: tuple[PolicyRulePlan, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -71,6 +73,7 @@ class NamespaceInventory:
         )
         object.__setattr__(self, "routes", tuple(self.routes))
         object.__setattr__(self, "sysctls", MappingProxyType(dict(self.sysctls)))
+        object.__setattr__(self, "rules", tuple(self.rules))
 
 
 @dataclass(frozen=True, slots=True)
@@ -441,6 +444,8 @@ def inventory_matches_plan(plan: TopologyPlan, inventory: LiveInventory) -> bool
             expected_routes(node),
             observed.routes,
         ):
+            return False
+        if frozenset(observed.rules) != frozenset(node.rules):
             return False
         if not _declared_sysctls_match(node.sysctls, observed.sysctls):
             return False

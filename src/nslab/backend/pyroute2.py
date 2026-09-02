@@ -45,6 +45,7 @@ from nslab.planner import (
     LinkPlan,
     NetemPlan,
     NodePlan,
+    PolicyRulePlan,
     RoutePlan,
     TopologyPlan,
     VlanDevicePlan,
@@ -66,6 +67,24 @@ _RT_TABLE_MAIN = 254
 _RTN_UNICAST = 1
 _RTPROT_KERNEL = 2
 _RT_SCOPE_LINK = 253
+_FR_ACT_TO_TBL = 1
+_FIB_RULE_INVERT = 2
+_RULE_ACTION_TO_NETLINK = {
+    "lookup": "to_tbl",
+    "goto": "goto",
+    "nop": "nop",
+    "blackhole": "blackhole",
+    "unreachable": "unreachable",
+    "prohibit": "prohibit",
+}
+_RULE_ACTION_FROM_NETLINK = {
+    1: "lookup",
+    2: "goto",
+    3: "nop",
+    6: "blackhole",
+    7: "unreachable",
+    8: "prohibit",
+}
 # FRR uses the Linux-assigned protocol identifiers for protocol-originated
 # routes.  ``RTPROT_ZEBRA`` is included for FRR releases that use the generic
 # Zebra identifier for an imported/redistributed route.
@@ -84,6 +103,30 @@ _UNSUPPORTED_ROUTE_TYPES = {
     11: "xresolve",
 }
 _VRF_KERNEL_LOCAL_ROUTE_TYPES = frozenset({2, 3})
+_ALLOWED_RULE_ATTRIBUTES = frozenset(
+    {
+        "FRA_DST",
+        "FRA_SRC",
+        "FRA_IIFNAME",
+        "FRA_GOTO",
+        "FRA_PRIORITY",
+        "FRA_FWMARK",
+        "FRA_FLOW",
+        "FRA_TUN_ID",
+        "FRA_SUPPRESS_IFGROUP",
+        "FRA_SUPPRESS_PREFIXLEN",
+        "FRA_TABLE",
+        "FRA_FWMASK",
+        "FRA_OIFNAME",
+        "FRA_PAD",
+        "FRA_L3MDEV",
+        "FRA_UID_RANGE",
+        "FRA_PROTOCOL",
+        "FRA_IP_PROTO",
+        "FRA_SPORT_RANGE",
+        "FRA_DPORT_RANGE",
+    }
+)
 _ALLOWED_ROUTE_ATTRIBUTES = frozenset(
     {
         "RTA_TABLE",
@@ -338,6 +381,18 @@ def _unsupported_inventory_route(namespace: str, reason: str) -> NslabError:
     return NslabError(
         code="INVENTORY_UNSUPPORTED",
         message=f"unsupported route in network inventory: {namespace}",
+        details={
+            "operation": "inventory",
+            "resource": namespace,
+            "reason": reason,
+        },
+    )
+
+
+def _unsupported_inventory_rule(namespace: str, reason: str) -> NslabError:
+    return NslabError(
+        code="INVENTORY_UNSUPPORTED",
+        message=f"unsupported policy rule in network inventory: {namespace}",
         details={
             "operation": "inventory",
             "resource": namespace,
@@ -1138,6 +1193,63 @@ class Pyroute2Backend:
                     if route.table != _RT_TABLE_MAIN:
                         route_arguments["table"] = route.table
                     namespace.route("add", **route_arguments)
+
+                for rule in sorted(
+                    node.rules,
+                    key=lambda item: (item.family, -item.priority),
+                ):
+                    rule_arguments: dict[str, object] = {
+                        "family": socket.AF_INET if rule.family == 4 else socket.AF_INET6,
+                        "priority": rule.priority,
+                        "action": _RULE_ACTION_TO_NETLINK[rule.action],
+                    }
+                    if rule.table is not None:
+                        rule_arguments["table"] = rule.table
+                    if rule.goto is not None:
+                        rule_arguments["goto"] = rule.goto
+                    if rule.source is not None:
+                        rule_arguments.update(
+                            src=str(rule.source.network_address),
+                            src_len=rule.source.prefixlen,
+                        )
+                    if rule.destination is not None:
+                        rule_arguments.update(
+                            dst=str(rule.destination.network_address),
+                            dst_len=rule.destination.prefixlen,
+                        )
+                    if rule.invert:
+                        rule_arguments["flags"] = _FIB_RULE_INVERT
+                    if rule.tos is not None:
+                        rule_arguments["tos"] = rule.tos
+                    for key, value in (
+                        ("fwmark", rule.fwmark),
+                        ("fwmask", rule.fwmask),
+                        ("iifname", rule.iif),
+                        ("oifname", rule.oif),
+                        ("ip_proto", rule.ip_protocol),
+                        ("tun_id", rule.tunnel_id),
+                        ("suppress_prefixlen", rule.suppress_prefix_length),
+                        ("suppress_ifgroup", rule.suppress_interface_group),
+                    ):
+                        if value is not None:
+                            rule_arguments[key] = value
+                    if rule.l3mdev:
+                        rule_arguments["l3mdev"] = 1
+                    if rule.uid_range is not None:
+                        rule_arguments["uid_range"] = f"{rule.uid_range[0]}:{rule.uid_range[1]}"
+                    if rule.protocol:
+                        rule_arguments["protocol"] = rule.protocol
+                    if rule.source_port is not None:
+                        rule_arguments["sport_range"] = (
+                            f"{rule.source_port[0]}:{rule.source_port[1]}"
+                        )
+                    if rule.destination_port is not None:
+                        rule_arguments["dport_range"] = (
+                            f"{rule.destination_port[0]}:{rule.destination_port[1]}"
+                        )
+                    if rule.realms is not None:
+                        rule_arguments["flow"] = (rule.realms[0] << 16) | rule.realms[1]
+                    namespace.rule("add", **rule_arguments)
         except NetlinkError as error:
             raise _translate_netlink_error(
                 error,
@@ -1310,6 +1422,14 @@ class Pyroute2Backend:
                 for family in families
                 for table in node_route_tables(node)
             )
+            rule_families = tuple(
+                dict.fromkeys(
+                    socket.AF_INET if rule.family == 4 else socket.AF_INET6 for rule in node.rules
+                )
+            )
+            rule_messages = tuple(
+                (family, tuple(handle.get_rules(family=family))) for family in rule_families
+            )
         interfaces, names_by_index = self._inventory_interfaces(
             link_messages,
             address_messages,
@@ -1339,6 +1459,18 @@ class Pyroute2Backend:
                 )
             )
         )
+        rules = tuple(
+            rule
+            for family, messages in rule_messages
+            for rule in self._inventory_rules(
+                messages,
+                node.namespace,
+                family=family,
+                ignore_l3mdev_kernel_rule=any(
+                    isinstance(device, VrfDevicePlan) for device in node.devices.values()
+                ),
+            )
+        )
         sysctls = self._read_sysctls(node)
         return NamespaceInventory(
             node=node.name,
@@ -1348,6 +1480,7 @@ class Pyroute2Backend:
             interfaces=interfaces,
             routes=routes,
             sysctls=sysctls,
+            rules=rules,
         )
 
     @staticmethod
@@ -1359,6 +1492,7 @@ class Pyroute2Backend:
                 for address in addresses
             )
             or any(route.dst.version == 6 for route in node.routes)
+            or any(rule.family == 6 for rule in node.rules)
             or "net.ipv6.conf.all.forwarding" in node.sysctls
         )
         if has_ipv6:
@@ -1375,6 +1509,7 @@ class Pyroute2Backend:
             interfaces={},
             routes=(),
             sysctls={},
+            rules=(),
         )
 
     @staticmethod
@@ -1872,6 +2007,247 @@ class Pyroute2Backend:
             if route not in routes:
                 routes.append(route)
         return tuple(routes)
+
+    @staticmethod
+    def _inventory_rules(
+        rule_messages: Sequence[Any],
+        namespace: str,
+        *,
+        family: int = socket.AF_INET,
+        ignore_l3mdev_kernel_rule: bool = False,
+    ) -> tuple[PolicyRulePlan, ...]:
+        if family not in {socket.AF_INET, socket.AF_INET6}:
+            raise _unsupported_inventory_rule(namespace, "address_family")
+
+        def integer_attribute(message: Any, name: str) -> int | None:
+            value = _attribute(message, name)
+            if value is None:
+                return None
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                raise _unsupported_inventory_rule(namespace, name.lower()) from None
+
+        def range_attribute(
+            message: Any,
+            name: str,
+            *,
+            maximum: int,
+        ) -> tuple[int, int] | None:
+            value = _attribute(message, name)
+            if value is None:
+                return None
+            parts = str(value).replace("-", ":").split(":")
+            if len(parts) != 2:
+                raise _unsupported_inventory_rule(namespace, name.lower())
+            try:
+                start, end = (int(part) for part in parts)
+            except ValueError:
+                raise _unsupported_inventory_rule(namespace, name.lower()) from None
+            if start < 0 or end < start or end > maximum:
+                raise _unsupported_inventory_rule(namespace, name.lower())
+            return start, end
+
+        def network_selector(
+            message: Any,
+            name: str,
+            prefixlen: int,
+        ) -> IPv4Network | IPv6Network | None:
+            maximum = 32 if family == socket.AF_INET else 128
+            if prefixlen < 0 or prefixlen > maximum:
+                raise _unsupported_inventory_rule(namespace, f"{name.lower()}_prefixlen")
+            value = _attribute(message, name)
+            if value is None:
+                if prefixlen != 0:
+                    raise _unsupported_inventory_rule(namespace, f"missing_{name.lower()}")
+                return None
+            if prefixlen == 0:
+                return None
+            try:
+                if family == socket.AF_INET:
+                    return IPv4Network(f"{value}/{prefixlen}", strict=False)
+                return IPv6Network(f"{value}/{prefixlen}", strict=False)
+            except (TypeError, ValueError):
+                raise _unsupported_inventory_rule(namespace, name.lower()) from None
+
+        rules: list[PolicyRulePlan] = []
+        for message in rule_messages:
+            try:
+                table_value = _attribute(message, "FRA_TABLE")
+                if table_value is None:
+                    table_value = _value(message, "table", 0)
+                raw_table = int(table_value)
+                priority_value = _attribute(message, "FRA_PRIORITY")
+                priority = 0 if priority_value is None else int(priority_value)
+                protocol_value = _attribute(message, "FRA_PROTOCOL")
+                protocol = 0 if protocol_value is None else int(protocol_value)
+                action_value = int(_value(message, "action", _FR_ACT_TO_TBL))
+                flags = int(_value(message, "flags", 0))
+                tos = int(_value(message, "tos", 0))
+                source_prefixlen = int(_value(message, "src_len", 0))
+                destination_prefixlen = int(_value(message, "dst_len", 0))
+            except (TypeError, ValueError):
+                raise _unsupported_inventory_rule(namespace, "invalid_identity") from None
+
+            l3mdev_value = integer_attribute(message, "FRA_L3MDEV")
+            l3mdev = l3mdev_value == 1
+            if l3mdev_value not in {None, 0, 1}:
+                raise _unsupported_inventory_rule(namespace, "l3mdev")
+            attribute_names = _attribute_names(message)
+            default_attribute_names = {
+                "FRA_TABLE",
+                "FRA_SUPPRESS_IFGROUP",
+                "FRA_SUPPRESS_PREFIXLEN",
+                "FRA_PROTOCOL",
+                "FRA_PRIORITY",
+                "FRA_PAD",
+            }
+            suppress_prefix_value = integer_attribute(message, "FRA_SUPPRESS_PREFIXLEN")
+            suppress_ifgroup_value = integer_attribute(message, "FRA_SUPPRESS_IFGROUP")
+            if (
+                ignore_l3mdev_kernel_rule
+                and l3mdev
+                and priority == 1000
+                and raw_table == 0
+                and protocol in {0, _RTPROT_KERNEL}
+                and action_value == _FR_ACT_TO_TBL
+                and flags == 0
+                and tos == 0
+                and source_prefixlen == 0
+                and destination_prefixlen == 0
+                and attribute_names <= default_attribute_names | {"FRA_L3MDEV"}
+                and suppress_prefix_value in {None, 4_294_967_295}
+                and suppress_ifgroup_value in {None, 4_294_967_295}
+            ):
+                continue
+            if (
+                (priority, raw_table) in {(0, 255), (32766, 254), (32767, 253)}
+                and protocol in {0, _RTPROT_KERNEL}
+                and action_value == _FR_ACT_TO_TBL
+                and flags == 0
+                and tos == 0
+                and source_prefixlen == 0
+                and destination_prefixlen == 0
+                and not l3mdev
+                and attribute_names <= default_attribute_names
+                and suppress_prefix_value in {None, 4_294_967_295}
+                and suppress_ifgroup_value in {None, 4_294_967_295}
+            ):
+                continue
+
+            if not attribute_names <= _ALLOWED_RULE_ATTRIBUTES:
+                raise _unsupported_inventory_rule(namespace, "unsupported_attribute")
+            if priority < 1 or priority > 4_294_967_295:
+                raise _unsupported_inventory_rule(namespace, "priority")
+            if protocol < 0 or protocol > 255:
+                raise _unsupported_inventory_rule(namespace, "protocol")
+            action = _RULE_ACTION_FROM_NETLINK.get(action_value)
+            if action is None:
+                raise _unsupported_inventory_rule(namespace, "action")
+            if flags & ~_FIB_RULE_INVERT:
+                raise _unsupported_inventory_rule(namespace, "flags")
+            if action != "goto" and "FRA_GOTO" in attribute_names:
+                raise _unsupported_inventory_rule(namespace, "unexpected_goto")
+            if tos < 0 or tos > 255:
+                raise _unsupported_inventory_rule(namespace, "tos")
+
+            suppress_prefix_length = integer_attribute(message, "FRA_SUPPRESS_PREFIXLEN")
+            if suppress_prefix_length == 4_294_967_295:
+                suppress_prefix_length = None
+            maximum_prefixlen = 32 if family == socket.AF_INET else 128
+            if suppress_prefix_length is not None and not (
+                0 <= suppress_prefix_length <= maximum_prefixlen
+            ):
+                raise _unsupported_inventory_rule(namespace, "suppress_prefixlen")
+            suppress_interface_group = integer_attribute(message, "FRA_SUPPRESS_IFGROUP")
+            if suppress_interface_group == 4_294_967_295:
+                suppress_interface_group = None
+
+            if action == "lookup":
+                if l3mdev:
+                    if raw_table != 0:
+                        raise _unsupported_inventory_rule(namespace, "l3mdev_table")
+                    table: int | None = None
+                else:
+                    if raw_table < 1 or raw_table > 4_294_967_295:
+                        raise _unsupported_inventory_rule(namespace, "table")
+                    table = raw_table
+                goto = None
+            elif action == "goto":
+                if raw_table != 0:
+                    raise _unsupported_inventory_rule(namespace, "goto_table")
+                table = None
+                goto = integer_attribute(message, "FRA_GOTO")
+                if goto is None or goto < 1 or goto > 4_294_967_295:
+                    raise _unsupported_inventory_rule(namespace, "goto")
+            else:
+                if raw_table != 0:
+                    raise _unsupported_inventory_rule(namespace, "action_table")
+                table = None
+                goto = None
+            if action != "lookup" and (
+                suppress_prefix_length is not None or suppress_interface_group is not None
+            ):
+                raise _unsupported_inventory_rule(namespace, "suppress_action")
+
+            fwmark = integer_attribute(message, "FRA_FWMARK")
+            fwmask = integer_attribute(message, "FRA_FWMASK")
+            if fwmask is not None and fwmark is None:
+                raise _unsupported_inventory_rule(namespace, "fwmask")
+            ip_protocol = integer_attribute(message, "FRA_IP_PROTO")
+            if ip_protocol is not None and not 0 <= ip_protocol <= 255:
+                raise _unsupported_inventory_rule(namespace, "ip_protocol")
+            source_port = range_attribute(message, "FRA_SPORT_RANGE", maximum=65535)
+            destination_port = range_attribute(message, "FRA_DPORT_RANGE", maximum=65535)
+            if (source_port is not None or destination_port is not None) and ip_protocol is None:
+                raise _unsupported_inventory_rule(namespace, "port_protocol")
+            uid_range = range_attribute(message, "FRA_UID_RANGE", maximum=4_294_967_295)
+
+            realms_value = integer_attribute(message, "FRA_FLOW")
+            if realms_value is None or realms_value == 0:
+                realms = None
+            else:
+                realms = ((realms_value >> 16) & 65535, realms_value & 65535)
+            tunnel_id = integer_attribute(message, "FRA_TUN_ID")
+            if tunnel_id is not None and not 0 <= tunnel_id <= 18_446_744_073_709_551_615:
+                raise _unsupported_inventory_rule(namespace, "tunnel_id")
+
+            rule = PolicyRulePlan(
+                priority=priority,
+                family=4 if family == socket.AF_INET else 6,
+                action=action,
+                table=table,
+                goto=goto,
+                source=network_selector(message, "FRA_SRC", source_prefixlen),
+                destination=network_selector(message, "FRA_DST", destination_prefixlen),
+                invert=bool(flags & _FIB_RULE_INVERT),
+                tos=None if tos == 0 else tos,
+                fwmark=fwmark,
+                fwmask=fwmask,
+                iif=(
+                    None
+                    if _attribute(message, "FRA_IIFNAME") is None
+                    else str(_attribute(message, "FRA_IIFNAME"))
+                ),
+                oif=(
+                    None
+                    if _attribute(message, "FRA_OIFNAME") is None
+                    else str(_attribute(message, "FRA_OIFNAME"))
+                ),
+                l3mdev=l3mdev,
+                uid_range=uid_range,
+                protocol=protocol,
+                ip_protocol=ip_protocol,
+                source_port=source_port,
+                destination_port=destination_port,
+                tunnel_id=tunnel_id,
+                suppress_prefix_length=suppress_prefix_length,
+                suppress_interface_group=suppress_interface_group,
+                realms=realms,
+            )
+            if rule not in rules:
+                rules.append(rule)
+        return tuple(rules)
 
     def _read_sysctls(self, node: NodePlan) -> dict[str, int]:
         if not node.sysctls:

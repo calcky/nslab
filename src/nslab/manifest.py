@@ -98,7 +98,8 @@ class VlanDeviceConfig(InterfaceConfig):
         return parent
 
 
-VrfTableId = Annotated[StrictInt, Field(ge=1, le=4_294_967_295)]
+RouteTableId = Annotated[StrictInt, Field(ge=1, le=4_294_967_295)]
+VrfTableId = RouteTableId
 
 
 class VrfDeviceConfig(BaseModel):
@@ -144,6 +145,7 @@ class RouteConfig(BaseModel):
     dst: IPv4Network | IPv6Network
     via: IPv4Address | IPv6Address | None = None
     dev: str
+    table: RouteTableId | None = None
 
     @field_validator("dst", mode="before")
     @classmethod
@@ -166,10 +168,179 @@ class RouteConfig(BaseModel):
     def validate_device_name(cls, value: str) -> str:
         return _require_name(value, IFNAME_PATTERN, "route interface name")
 
+    @field_validator("table")
+    @classmethod
+    def validate_table(cls, value: int | None) -> int | None:
+        if value == 255:
+            raise ValueError("route cannot use reserved local table: 255")
+        return value
+
     @model_validator(mode="after")
     def validate_address_family(self) -> Self:
         if self.via is not None and self.dst.version != self.via.version:
             raise ValueError("route destination and gateway must use the same address family")
+        return self
+
+
+PolicyRulePriority = Annotated[StrictInt, Field(ge=1, le=4_294_967_295)]
+PolicyRuleUint32 = Annotated[StrictInt, Field(ge=0, le=4_294_967_295)]
+PolicyRuleUint64 = Annotated[StrictInt, Field(ge=0, le=18_446_744_073_709_551_615)]
+PolicyRuleUint16 = Annotated[StrictInt, Field(ge=0, le=65535)]
+PolicyRuleUint8 = Annotated[StrictInt, Field(ge=0, le=255)]
+PolicyRuleInterfaceGroup = Annotated[StrictInt, Field(ge=0, le=4_294_967_294)]
+PolicyRuleFamily = Literal["ipv4", "ipv6"]
+PolicyRuleAction = Literal[
+    "lookup",
+    "goto",
+    "nop",
+    "blackhole",
+    "unreachable",
+    "prohibit",
+]
+
+
+class PolicyRuleUidRangeConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    start: PolicyRuleUint32
+    end: PolicyRuleUint32
+
+    @model_validator(mode="after")
+    def validate_order(self) -> Self:
+        if self.start > self.end:
+            raise ValueError("policy rule UID range start cannot exceed end")
+        return self
+
+
+class PolicyRulePortRangeConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    start: PolicyRuleUint16
+    end: PolicyRuleUint16
+
+    @model_validator(mode="after")
+    def validate_order(self) -> Self:
+        if self.start > self.end:
+            raise ValueError("policy rule port range start cannot exceed end")
+        return self
+
+
+class PolicyRuleRealmsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source: PolicyRuleUint16 = 0
+    destination: PolicyRuleUint16 = 0
+
+    @model_validator(mode="after")
+    def validate_nonzero(self) -> Self:
+        if self.source == 0 and self.destination == 0:
+            raise ValueError("policy rule realms must select a source or destination realm")
+        return self
+
+
+class PolicyRuleConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+    priority: PolicyRulePriority
+    family: PolicyRuleFamily | None = None
+    action: PolicyRuleAction = "lookup"
+    table: RouteTableId | None = None
+    goto: PolicyRulePriority | None = None
+    source: IPv4Network | IPv6Network | None = Field(default=None, alias="from")
+    destination: IPv4Network | IPv6Network | None = Field(default=None, alias="to")
+    invert: StrictBool = Field(default=False, alias="not")
+    tos: PolicyRuleUint8 | None = None
+    fwmark: PolicyRuleUint32 | None = None
+    fwmask: PolicyRuleUint32 | None = None
+    iif: str | None = None
+    oif: str | None = None
+    l3mdev: StrictBool = False
+    uid_range: PolicyRuleUidRangeConfig | None = None
+    protocol: PolicyRuleUint8 = 0
+    ip_protocol: PolicyRuleUint8 | None = None
+    source_port: PolicyRulePortRangeConfig | None = None
+    destination_port: PolicyRulePortRangeConfig | None = None
+    tunnel_id: PolicyRuleUint64 | None = None
+    suppress_prefix_length: PolicyRuleUint8 | None = None
+    suppress_interface_group: PolicyRuleInterfaceGroup | None = None
+    realms: PolicyRuleRealmsConfig | None = None
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def validate_source_input(cls, value: object) -> object:
+        if value is not None and not isinstance(value, (str, IPv4Network, IPv6Network)):
+            raise ValueError("policy rule source must be an IPv4 or IPv6 prefix")
+        return value
+
+    @field_validator("destination", mode="before")
+    @classmethod
+    def validate_destination_input(cls, value: object) -> object:
+        if value is not None and not isinstance(value, (str, IPv4Network, IPv6Network)):
+            raise ValueError("policy rule destination must be an IPv4 or IPv6 prefix")
+        return value
+
+    @field_validator("iif", "oif")
+    @classmethod
+    def validate_interface_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _require_name(value, IFNAME_PATTERN, "policy rule interface name")
+
+    @property
+    def ip_version(self) -> Literal[4, 6]:
+        if self.family is not None:
+            return 4 if self.family == "ipv4" else 6
+        if self.source is not None:
+            return 4 if self.source.version == 4 else 6
+        if self.destination is not None:
+            return 4 if self.destination.version == 4 else 6
+        return 4
+
+    @model_validator(mode="after")
+    def validate_rule(self) -> Self:
+        version = self.ip_version
+        for label, network in (("source", self.source), ("destination", self.destination)):
+            if network is not None and network.version != version:
+                raise ValueError(f"policy rule {label} does not match IPv{version} rule family")
+        if (
+            self.source is not None
+            and self.destination is not None
+            and self.source.version != self.destination.version
+        ):
+            raise ValueError("policy rule source and destination families must match")
+        if self.fwmask is not None and self.fwmark is None:
+            raise ValueError("policy rule fwmask requires fwmark")
+        if (self.source_port is not None or self.destination_port is not None) and (
+            self.ip_protocol in {None, 0}
+        ):
+            raise ValueError("policy rule port ranges require a nonzero ip_protocol")
+        if self.suppress_prefix_length is not None:
+            maximum = 32 if version == 4 else 128
+            if self.suppress_prefix_length > maximum:
+                raise ValueError(
+                    f"policy rule suppress_prefix_length must be at most {maximum} for IPv{version}"
+                )
+
+        if self.action == "lookup":
+            if self.goto is not None:
+                raise ValueError("lookup policy rule cannot declare goto")
+            if self.l3mdev:
+                if self.table is not None:
+                    raise ValueError("l3mdev policy rule cannot declare table")
+            elif self.table is None:
+                raise ValueError("lookup policy rule requires table")
+        elif self.action == "goto":
+            if self.goto is None:
+                raise ValueError("goto policy rule requires goto")
+            if self.table is not None:
+                raise ValueError("goto policy rule cannot declare table")
+            if self.suppress_prefix_length is not None or self.suppress_interface_group is not None:
+                raise ValueError("goto policy rule cannot declare suppress options")
+        else:
+            if self.table is not None or self.goto is not None:
+                raise ValueError(f"{self.action} policy rule cannot declare table or goto")
+            if self.suppress_prefix_length is not None or self.suppress_interface_group is not None:
+                raise ValueError(f"{self.action} policy rule cannot declare suppress options")
         return self
 
 
@@ -318,7 +489,11 @@ def _validate_routes_by_table(
 ) -> None:
     seen_destinations: set[tuple[int, IPNetwork]] = set()
     for route in routes:
-        table = tables_by_interface.get(route.dev, MAIN_ROUTE_TABLE)
+        table = (
+            route.table
+            if route.table is not None
+            else tables_by_interface.get(route.dev, MAIN_ROUTE_TABLE)
+        )
         identity = (table, route.dst)
         if identity in seen_destinations:
             raise ValueError(f"duplicate route destination: {str(route.dst)!r}")
@@ -334,6 +509,7 @@ class LinuxNode(_NodeBase):
 
     kind: Literal["linux"]
     devices: dict[str, LinuxDeviceConfig] = Field(default_factory=dict)
+    rules: tuple[PolicyRuleConfig, ...] = ()
 
     @field_validator("devices")
     @classmethod
@@ -345,6 +521,32 @@ class LinuxNode(_NodeBase):
             if device_name == "lo":
                 raise ValueError("device name cannot be 'lo'")
         return devices
+
+    @field_validator("rules", mode="before")
+    @classmethod
+    def validate_rule_inputs(cls, value: object) -> object:
+        return _validate_sequence(value, "policy rules")
+
+    @field_validator("rules")
+    @classmethod
+    def validate_rule_priorities(
+        cls, rules: tuple[PolicyRuleConfig, ...]
+    ) -> tuple[PolicyRuleConfig, ...]:
+        seen: set[tuple[int, int]] = set()
+        for rule in rules:
+            identity = (rule.ip_version, rule.priority)
+            if identity in seen:
+                raise ValueError(
+                    f"duplicate policy rule priority for IPv{rule.ip_version}: {rule.priority}"
+                )
+            seen.add(identity)
+        for rule in rules:
+            if rule.action != "goto":
+                continue
+            assert rule.goto is not None
+            if rule.goto <= rule.priority:
+                raise ValueError("policy rule goto must target a greater priority")
+        return rules
 
     @model_validator(mode="after")
     def validate_devices_and_routes(self) -> Self:
@@ -396,6 +598,17 @@ class LinuxNode(_NodeBase):
 
         if self.routing is not None and vrf_devices:
             raise ValueError("dynamic routing with VRF devices is not supported")
+
+        if vrf_devices and any(rule.priority == 1000 for rule in self.rules):
+            raise ValueError("policy rule priority 1000 is reserved when VRF devices are present")
+
+        for route in self.routes:
+            vrf_table = tables_by_interface.get(route.dev)
+            if vrf_table is not None and route.table is not None and route.table != vrf_table:
+                raise ValueError(
+                    f"route table conflicts with VRF member interface {route.dev!r}: "
+                    f"expected {vrf_table}, got {route.table}"
+                )
 
         connected_networks = {
             (tables_by_interface.get(interface, MAIN_ROUTE_TABLE), address.network)
@@ -609,6 +822,14 @@ class Topology(BaseModel):
                                 f"VRF member interface is not linked or a VLAN device on node "
                                 f"{node_name!r}: {vrf_name!r} -> {interface!r}"
                             )
+                rule_interfaces = available | set(vrf_devices) | {"lo"}
+                for rule in node.rules:
+                    for rule_interface in (rule.iif, rule.oif):
+                        if rule_interface is not None and rule_interface not in rule_interfaces:
+                            raise ValueError(
+                                f"policy rule interface is not available on node "
+                                f"{node_name!r}: {rule_interface!r}"
+                            )
             if isinstance(node, BridgeNode):
                 if node.bridge.name in linked:
                     raise ValueError(
@@ -749,7 +970,9 @@ def load_manifest(path: Path) -> Manifest:
 
 
 def normalized_manifest(manifest: Manifest) -> dict[str, object]:
-    normalized: dict[str, object] = manifest.model_dump(mode="json", exclude_none=True)
+    normalized: dict[str, object] = manifest.model_dump(
+        mode="json", exclude_none=True, by_alias=True
+    )
     topology = normalized["topology"]
     assert isinstance(topology, dict)
     nodes = topology["nodes"]
@@ -759,6 +982,10 @@ def normalized_manifest(manifest: Manifest) -> dict[str, object]:
             node_document = nodes[node_name]
             assert isinstance(node_document, dict)
             node_document.pop("devices", None)
+        if isinstance(node, LinuxNode) and not node.rules:
+            node_document = nodes[node_name]
+            assert isinstance(node_document, dict)
+            node_document.pop("rules", None)
         if not isinstance(node, BridgeNode) or node.bridge.ports:
             continue
         node_document = nodes[node_name]

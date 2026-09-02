@@ -471,7 +471,13 @@ class LifecycleService:
                 return False
             if observed.namespace != node.namespace:
                 return False
-            if observed.exists or observed.interfaces or observed.routes or observed.sysctls:
+            if (
+                observed.exists
+                or observed.interfaces
+                or observed.routes
+                or observed.rules
+                or observed.sysctls
+            ):
                 return False
         return True
 

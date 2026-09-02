@@ -65,6 +65,7 @@ plugins:
             VLAN subinterfaces: VLAN 子接口
             Router on a stick: 单臂路由
             Linux VRF: Linux VRF
+            Policy routing: 策略路由
             XDP receive and transmit: XDP 收发包
           theme:
             palette:
@@ -116,6 +117,7 @@ nav:
           - Router on a stick: examples/router-on-a-stick.md
       - Routing isolation:
           - Linux VRF: examples/vrf.md
+          - Policy routing: examples/policy-routing.md
       - Link conditions:
           - netem: examples/netem.md
       - Packet processing:

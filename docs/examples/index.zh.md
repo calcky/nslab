@@ -36,6 +36,7 @@ sudo nslab destroy
 | 示例 | 学习内容 |
 | --- | --- |
 | [Linux VRF](vrf.md) | 多路由表、接口归属和重叠地址空间 |
+| [策略路由](policy-routing.md) | RPDB selector、packet mark 和 rule 指定路由表 |
 
 ## 链路条件
 

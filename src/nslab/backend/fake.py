@@ -19,6 +19,7 @@ from nslab.planner import (
     NetemPlan,
     NodeKind,
     NodePlan,
+    PolicyRulePlan,
     RoutePlan,
     TopologyPlan,
     VlanDevicePlan,
@@ -35,6 +36,7 @@ class _FakeNamespaceState:
     interfaces: dict[str, InterfaceInventory]
     routes: tuple[RoutePlan, ...]
     sysctls: dict[str, int]
+    rules: tuple[PolicyRulePlan, ...]
 
 
 type _EndpointKey = tuple[str, str]
@@ -141,6 +143,7 @@ class FakeNetworkBackend:
             interfaces={"lo": loopback},
             routes=expected_routes(node)[:1],
             sysctls={},
+            rules=(),
         )
 
     def delete_namespace(self, namespace: str) -> None:
@@ -351,6 +354,7 @@ class FakeNetworkBackend:
         state.interfaces = interfaces
         state.routes = expected_routes(node)
         state.sysctls = dict(node.sysctls)
+        state.rules = node.rules
 
     def start_routing(self, plan: TopologyPlan) -> None:
         if not any(node.routing is not None for node in plan.nodes.values()):
@@ -383,6 +387,7 @@ class FakeNetworkBackend:
                     interfaces={},
                     routes=(),
                     sysctls={},
+                    rules=(),
                 )
             else:
                 namespace_inventory = NamespaceInventory(
@@ -393,6 +398,7 @@ class FakeNetworkBackend:
                     interfaces=dict(state.interfaces),
                     routes=tuple(state.routes),
                     sysctls=dict(state.sysctls),
+                    rules=tuple(state.rules),
                 )
             namespaces[node.namespace] = namespace_inventory
         return LiveInventory(

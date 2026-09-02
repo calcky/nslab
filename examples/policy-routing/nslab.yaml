@@ -1,0 +1,70 @@
+version: 1
+name: policy-routing
+
+topology:
+  nodes:
+    h1:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [192.0.2.2/24]
+      routes:
+        - dst: default
+          via: 192.0.2.1
+          dev: eth0
+
+    r1:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [192.0.2.1/24]
+        eth1:
+          addresses: [10.0.1.1/30]
+        eth2:
+          addresses: [10.0.2.1/30]
+      routes:
+        - dst: 203.0.113.1/32
+          via: 10.0.1.2
+          dev: eth1
+          table: 100
+        - dst: 203.0.113.1/32
+          via: 10.0.2.2
+          dev: eth2
+          table: 200
+      rules:
+        - priority: 90
+          fwmark: 2
+          fwmask: 255
+          table: 200
+        - priority: 100
+          from: 192.0.2.0/24
+          to: 203.0.113.0/24
+          iif: eth0
+          table: 100
+      sysctls:
+        net.ipv4.ip_forward: 1
+
+    isp1:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.0.1.2/30, 203.0.113.1/32]
+      routes:
+        - dst: 192.0.2.0/24
+          via: 10.0.1.1
+          dev: eth0
+
+    isp2:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.0.2.2/30, 203.0.113.1/32]
+      routes:
+        - dst: 192.0.2.0/24
+          via: 10.0.2.1
+          dev: eth0
+
+  links:
+    - endpoints: [h1:eth0, r1:eth0]
+    - endpoints: [r1:eth1, isp1:eth0]
+    - endpoints: [r1:eth2, isp2:eth0]

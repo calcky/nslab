@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal, cast
@@ -20,6 +21,7 @@ from nslab.planner import (
     NetemPlan,
     NodeKind,
     NodePlan,
+    PolicyRulePlan,
     RoutePlan,
     TopologyPlan,
     VlanDevicePlan,
@@ -102,6 +104,76 @@ class RouteView:
 
 
 @dataclass(frozen=True, slots=True)
+class PolicyRuleView:
+    priority: int
+    family: str
+    action: str
+    table: int | None
+    goto: int | None
+    source: str | None
+    destination: str | None
+    invert: bool
+    tos: int | None
+    fwmark: int | None
+    fwmask: int | None
+    iif: str | None
+    oif: str | None
+    l3mdev: bool
+    uid_range: tuple[int, int] | None
+    protocol: int
+    ip_protocol: int | None
+    source_port: tuple[int, int] | None
+    destination_port: tuple[int, int] | None
+    tunnel_id: int | None
+    suppress_prefix_length: int | None
+    suppress_interface_group: int | None
+    realms: tuple[int, int] | None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "priority": self.priority,
+            "family": self.family,
+            "action": self.action,
+            "table": self.table,
+            "goto": self.goto,
+            "from": self.source,
+            "to": self.destination,
+            "not": self.invert,
+            "tos": self.tos,
+            "fwmark": self.fwmark,
+            "fwmask": self.fwmask,
+            "iif": self.iif,
+            "oif": self.oif,
+            "l3mdev": self.l3mdev,
+            "uid_range": (
+                None
+                if self.uid_range is None
+                else {"start": self.uid_range[0], "end": self.uid_range[1]}
+            ),
+            "protocol": self.protocol,
+            "ip_protocol": self.ip_protocol,
+            "source_port": (
+                None
+                if self.source_port is None
+                else {"start": self.source_port[0], "end": self.source_port[1]}
+            ),
+            "destination_port": (
+                None
+                if self.destination_port is None
+                else {"start": self.destination_port[0], "end": self.destination_port[1]}
+            ),
+            "tunnel_id": self.tunnel_id,
+            "suppress_prefix_length": self.suppress_prefix_length,
+            "suppress_interface_group": self.suppress_interface_group,
+            "realms": (
+                None
+                if self.realms is None
+                else {"source": self.realms[0], "destination": self.realms[1]}
+            ),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class SysctlView:
     name: str
     value: int | None
@@ -177,6 +249,7 @@ class NodeResourceView:
     present: bool
     interfaces: tuple[InterfaceView, ...]
     routes: tuple[RouteView, ...]
+    rules: tuple[PolicyRuleView, ...]
     sysctls: tuple[SysctlView, ...]
     links: tuple[LinkView, ...]
     root_temporaries: tuple[RootTemporaryView, ...]
@@ -184,6 +257,7 @@ class NodeResourceView:
     def __post_init__(self) -> None:
         object.__setattr__(self, "interfaces", tuple(self.interfaces))
         object.__setattr__(self, "routes", tuple(self.routes))
+        object.__setattr__(self, "rules", tuple(self.rules))
         object.__setattr__(self, "sysctls", tuple(self.sysctls))
         object.__setattr__(self, "links", tuple(self.links))
         object.__setattr__(self, "root_temporaries", tuple(self.root_temporaries))
@@ -196,6 +270,7 @@ class NodeResourceView:
             "present": self.present,
             "interfaces": [interface.to_dict() for interface in self.interfaces],
             "routes": [route.to_dict() for route in self.routes],
+            "rules": [rule.to_dict() for rule in self.rules],
             "sysctls": [sysctl.to_dict() for sysctl in self.sysctls],
             "links": [link.to_dict() for link in self.links],
             "root_temporaries": [item.to_dict() for item in self.root_temporaries],
@@ -350,6 +425,56 @@ def _ordered_actual_routes(
     actual_set = set(actual)
     ordered = [route for route in desired if route in actual_set]
     ordered.extend(sorted(actual_set - set(ordered), key=_route_key))
+    return tuple(ordered)
+
+
+def _rule_key(rule: PolicyRulePlan) -> tuple[int, int, str]:
+    return rule.family, rule.priority, _rule_string(rule)
+
+
+def _rule_view(rule: PolicyRulePlan) -> PolicyRuleView:
+    return PolicyRuleView(
+        priority=rule.priority,
+        family=f"ipv{rule.family}",
+        action=rule.action,
+        table=rule.table,
+        goto=rule.goto,
+        source=None if rule.source is None else str(rule.source),
+        destination=None if rule.destination is None else str(rule.destination),
+        invert=rule.invert,
+        tos=rule.tos,
+        fwmark=rule.fwmark,
+        fwmask=rule.fwmask,
+        iif=rule.iif,
+        oif=rule.oif,
+        l3mdev=rule.l3mdev,
+        uid_range=rule.uid_range,
+        protocol=rule.protocol,
+        ip_protocol=rule.ip_protocol,
+        source_port=rule.source_port,
+        destination_port=rule.destination_port,
+        tunnel_id=rule.tunnel_id,
+        suppress_prefix_length=rule.suppress_prefix_length,
+        suppress_interface_group=rule.suppress_interface_group,
+        realms=rule.realms,
+    )
+
+
+def _rule_string(rule: PolicyRulePlan) -> str:
+    return json.dumps(_rule_view(rule).to_dict(), sort_keys=True, separators=(",", ":"))
+
+
+def _rule_strings(rules: Sequence[PolicyRulePlan]) -> tuple[str, ...]:
+    return tuple(_rule_string(rule) for rule in sorted(set(rules), key=_rule_key))
+
+
+def _ordered_actual_rules(
+    desired: Sequence[PolicyRulePlan],
+    actual: Sequence[PolicyRulePlan],
+) -> tuple[PolicyRulePlan, ...]:
+    actual_set = set(actual)
+    ordered = [rule for rule in desired if rule in actual_set]
+    ordered.extend(sorted(actual_set - set(ordered), key=_rule_key))
     return tuple(ordered)
 
 
@@ -609,6 +734,7 @@ def _desired_node_view(node: NodePlan, plan: TopologyPlan) -> NodeResourceView:
         present=True,
         interfaces=_desired_interfaces(node, plan),
         routes=tuple(_route_view(route) for route in expected_routes(node)),
+        rules=tuple(_rule_view(rule) for rule in node.rules),
         sysctls=tuple(
             SysctlView(name=name, value=value) for name, value in sorted(node.sysctls.items())
         ),
@@ -644,6 +770,7 @@ def _state_node_view(
         present=True,
         interfaces=tuple(state_interfaces),
         routes=tuple(_route_view(route) for route in expected_routes(node)),
+        rules=tuple(_rule_view(rule) for rule in node.rules),
         sysctls=tuple(
             SysctlView(name=name, value=value) for name, value in sorted(node.sysctls.items())
         ),
@@ -724,6 +851,7 @@ def _actual_node_view(
     expected_interfaces = _desired_interfaces(node, plan)
     actual_interfaces: list[InterfaceView] = []
     actual_routes: tuple[RoutePlan, ...] = ()
+    actual_rules: tuple[PolicyRulePlan, ...] = ()
     actual_sysctls: Mapping[str, int] = {}
     if observed_namespace is not None:
         expected_names = {interface.name for interface in expected_interfaces}
@@ -739,6 +867,7 @@ def _actual_node_view(
             expected_routes(node),
             observed_namespace.routes,
         )
+        actual_rules = _ordered_actual_rules(node.rules, observed_namespace.rules)
         actual_sysctls = observed_namespace.sysctls
 
     planned_links = tuple(
@@ -752,6 +881,7 @@ def _actual_node_view(
         present=present,
         interfaces=tuple(actual_interfaces),
         routes=tuple(_route_view(route) for route in actual_routes),
+        rules=tuple(_rule_view(rule) for rule in actual_rules),
         sysctls=tuple(
             SysctlView(name=name, value=actual_sysctls.get(name)) for name in sorted(node.sysctls)
         ),
@@ -970,6 +1100,18 @@ def _live_differences(
                 )
             )
             impacted_nodes.add(node.name)
+        if frozenset(node.rules) != frozenset(observed.rules):
+            differences.append(
+                _difference(
+                    scope="node",
+                    source="live",
+                    node=node.name,
+                    property="rules",
+                    desired=_rule_strings(node.rules),
+                    actual=_rule_strings(observed.rules),
+                )
+            )
+            impacted_nodes.add(node.name)
         for name, value in node.sysctls.items():
             actual_sysctl = observed.sysctls.get(name)
             if actual_sysctl != value:
@@ -1143,6 +1285,7 @@ def _inventory_is_absent(plan: TopologyPlan, inventory: LiveInventory) -> bool:
             or observed.exists
             or observed.interfaces
             or observed.routes
+            or observed.rules
             or observed.sysctls
         ):
             return False

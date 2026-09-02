@@ -49,6 +49,33 @@ class RoutePlan:
 
 
 @dataclass(frozen=True, slots=True)
+class PolicyRulePlan:
+    priority: int
+    family: Literal[4, 6]
+    action: str = "lookup"
+    table: int | None = None
+    goto: int | None = None
+    source: IPNetwork | None = None
+    destination: IPNetwork | None = None
+    invert: bool = False
+    tos: int | None = None
+    fwmark: int | None = None
+    fwmask: int | None = None
+    iif: str | None = None
+    oif: str | None = None
+    l3mdev: bool = False
+    uid_range: tuple[int, int] | None = None
+    protocol: int = 0
+    ip_protocol: int | None = None
+    source_port: tuple[int, int] | None = None
+    destination_port: tuple[int, int] | None = None
+    tunnel_id: int | None = None
+    suppress_prefix_length: int | None = None
+    suppress_interface_group: int | None = None
+    realms: tuple[int, int] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class OspfPlan:
     router_id: IPv4Address
     area: IPv4Address
@@ -124,6 +151,7 @@ class NodePlan:
     interfaces: Mapping[str, tuple[IPInterface, ...]]
     routes: tuple[RoutePlan, ...]
     sysctls: Mapping[str, int]
+    rules: tuple[PolicyRulePlan, ...] = ()
     devices: Mapping[str, DevicePlan] = field(default_factory=_empty_devices)
     bridge_name: str | None = None
     stp: bool | None = None
@@ -208,10 +236,25 @@ def node_interface_route_table(node: NodePlan, interface: str) -> int:
 def node_route_tables(node: NodePlan) -> tuple[int, ...]:
     """Return the managed route tables for a node in deterministic order."""
 
-    return (
-        MAIN_ROUTE_TABLE,
-        *(device.table for device in node.devices.values() if isinstance(device, VrfDevicePlan)),
+    return tuple(
+        dict.fromkeys(
+            (
+                MAIN_ROUTE_TABLE,
+                *(
+                    device.table
+                    for device in node.devices.values()
+                    if isinstance(device, VrfDevicePlan)
+                ),
+                *(route.table for route in node.routes),
+            )
+        )
     )
+
+
+def _policy_rule_fwmask(fwmark: int | None, fwmask: int | None) -> int | None:
+    if fwmark is None:
+        return None
+    return 4_294_967_295 if fwmask is None else fwmask
 
 
 def _effective_deployment_name(manifest: Manifest, name_override: str | None) -> str:
@@ -263,9 +306,65 @@ def _compile_node(deployment: str, name: str, manifest_node: NodeConfig) -> Node
             dst=ip_network(str(route.dst)),
             via=ip_address(str(route.via)) if route.via is not None else None,
             dev=route.dev,
-            table=tables_by_interface.get(route.dev, MAIN_ROUTE_TABLE),
+            table=(
+                route.table
+                if route.table is not None
+                else tables_by_interface.get(route.dev, MAIN_ROUTE_TABLE)
+            ),
         )
         for route in manifest_node.routes
+    )
+    rules = (
+        tuple(
+            PolicyRulePlan(
+                priority=rule.priority,
+                family=rule.ip_version,
+                action=rule.action,
+                table=rule.table,
+                goto=rule.goto,
+                source=(
+                    None
+                    if rule.source is None or rule.source.prefixlen == 0
+                    else ip_network(str(rule.source))
+                ),
+                destination=(
+                    None
+                    if rule.destination is None or rule.destination.prefixlen == 0
+                    else ip_network(str(rule.destination))
+                ),
+                invert=rule.invert,
+                tos=None if rule.tos in {None, 0} else rule.tos,
+                fwmark=rule.fwmark,
+                fwmask=_policy_rule_fwmask(rule.fwmark, rule.fwmask),
+                iif=rule.iif,
+                oif=rule.oif,
+                l3mdev=rule.l3mdev,
+                uid_range=(
+                    None if rule.uid_range is None else (rule.uid_range.start, rule.uid_range.end)
+                ),
+                protocol=rule.protocol,
+                ip_protocol=None if rule.ip_protocol in {None, 0} else rule.ip_protocol,
+                source_port=(
+                    None
+                    if rule.source_port is None
+                    else (rule.source_port.start, rule.source_port.end)
+                ),
+                destination_port=(
+                    None
+                    if rule.destination_port is None
+                    else (rule.destination_port.start, rule.destination_port.end)
+                ),
+                tunnel_id=None if rule.tunnel_id in {None, 0} else rule.tunnel_id,
+                suppress_prefix_length=rule.suppress_prefix_length,
+                suppress_interface_group=rule.suppress_interface_group,
+                realms=(
+                    None if rule.realms is None else (rule.realms.source, rule.realms.destination)
+                ),
+            )
+            for rule in manifest_node.rules
+        )
+        if isinstance(manifest_node, LinuxNode)
+        else ()
     )
 
     routing = _compile_routing(manifest_node.routing)
@@ -306,6 +405,7 @@ def _compile_node(deployment: str, name: str, manifest_node: NodeConfig) -> Node
         interfaces=interfaces,
         routes=routes,
         sysctls=sysctls,
+        rules=rules,
         devices=devices,
         routing=routing,
         bridge_name=bridge_name,

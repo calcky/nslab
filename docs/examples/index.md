@@ -36,6 +36,7 @@ sudo nslab destroy
 | Example | Focus |
 | --- | --- |
 | [Linux VRF](vrf.md) | Multiple routing tables, interface membership, and overlapping address spaces |
+| [Policy routing](policy-routing.md) | RPDB selectors, packet marks, and per-rule routing tables |
 
 ## Link conditions
 
