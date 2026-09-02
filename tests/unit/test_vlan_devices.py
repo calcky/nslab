@@ -138,7 +138,10 @@ def test_manifest_and_plan_preserve_vlan_device_configuration() -> None:
     ("mutation", "message"),
     [
         (lambda node: node["devices"]["vlan10"].update({"id": 0}), "greater than or equal"),
-        (lambda node: node["devices"]["vlan10"].update({"type": "vxlan"}), "Input should be"),
+        (
+            lambda node: node["devices"]["vlan10"].update({"type": "vxlan"}),
+            "does not match any of the expected tags",
+        ),
         (lambda node: node["devices"]["vlan10"].update({"link": "lo"}), "cannot be 'lo'"),
         (
             lambda node: node["devices"].update(

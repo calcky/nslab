@@ -31,6 +31,12 @@ sudo nslab destroy
 | [IPv6 转发](ipv6-forward.md) | IPv6 默认路由、DAD 和 Linux 转发路径 |
 | [Router-on-a-stick](router-on-a-stick.md) | 通过一条 tagged trunk 完成 VLAN 间路由 |
 
+## 路由域隔离
+
+| 示例 | 学习内容 |
+| --- | --- |
+| [Linux VRF](vrf.md) | 多路由表、接口归属和重叠地址空间 |
+
 ## 链路条件
 
 | 示例 | 学习内容 |

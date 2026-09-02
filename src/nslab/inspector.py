@@ -8,7 +8,7 @@ from nslab.backend.base import (
     InterfaceInventory,
     LiveInventory,
     expected_bridge_port_vlans,
-    expected_main_table_routes,
+    expected_routes,
     inventory_matches_plan,
     recorded_link_ids_match_inventory,
 )
@@ -22,6 +22,9 @@ from nslab.planner import (
     NodePlan,
     RoutePlan,
     TopologyPlan,
+    VlanDevicePlan,
+    VrfDevicePlan,
+    node_interface_master,
 )
 from nslab.snapshot import SnapshotValidation, validate_snapshot
 from nslab.state import StateSnapshot
@@ -58,6 +61,7 @@ class InterfaceView:
     link_id: str | None = None
     parent: str | None = None
     vlan_id: int | None = None
+    vrf_table: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "addresses", tuple(self.addresses))
@@ -82,6 +86,7 @@ class InterfaceView:
             "link_id": self.link_id,
             "parent": self.parent,
             "vlan_id": self.vlan_id,
+            "vrf_table": self.vrf_table,
         }
 
 
@@ -90,9 +95,10 @@ class RouteView:
     dst: str
     via: str | None
     dev: str
+    table: int
 
     def to_dict(self) -> dict[str, object]:
-        return {"dst": self.dst, "via": self.via, "dev": self.dev}
+        return {"dst": self.dst, "via": self.via, "dev": self.dev, "table": self.table}
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,9 +313,10 @@ def _netem_string(netem: NetemPlan | None) -> str | None:
     return " ".join(values)
 
 
-def _route_key(route: RoutePlan) -> tuple[int, int, int, int, str]:
+def _route_key(route: RoutePlan) -> tuple[int, int, int, int, int, str]:
     gateway = -1 if route.via is None else int(route.via)
     return (
+        route.table,
         route.dst.version,
         int(route.dst.network_address),
         route.dst.prefixlen,
@@ -323,12 +330,13 @@ def _route_view(route: RoutePlan) -> RouteView:
         dst=str(route.dst),
         via=None if route.via is None else str(route.via),
         dev=route.dev,
+        table=route.table,
     )
 
 
 def _route_string(route: RoutePlan) -> str:
     gateway = "-" if route.via is None else str(route.via)
-    return f"{route.dst}|{gateway}|{route.dev}"
+    return f"{route.table}|{route.dst}|{gateway}|{route.dev}"
 
 
 def _route_strings(routes: Sequence[RoutePlan]) -> tuple[str, ...]:
@@ -380,7 +388,11 @@ def _desired_interfaces(node: NodePlan, plan: TopologyPlan) -> tuple[InterfaceVi
                 InterfaceView(
                     name=endpoint.interface,
                     kind="veth",
-                    master=node.bridge_name if node.kind == "bridge" else None,
+                    master=(
+                        node.bridge_name
+                        if node.kind == "bridge"
+                        else node_interface_master(node, endpoint.interface)
+                    ),
                     mtu=link.mtu,
                     up=True,
                     addresses=_address_strings(node.interfaces.get(endpoint.interface, ())),
@@ -392,19 +404,32 @@ def _desired_interfaces(node: NodePlan, plan: TopologyPlan) -> tuple[InterfaceVi
                     netem=_netem_string(link.netem),
                 )
             )
-    interfaces.extend(
-        InterfaceView(
-            name=device.name,
-            kind="vlan",
-            master=None,
-            mtu=None,
-            up=True,
-            addresses=_address_strings(device.addresses),
-            parent=device.link,
-            vlan_id=device.vlan_id,
-        )
-        for device in node.devices.values()
-    )
+    for device in node.devices.values():
+        if isinstance(device, VlanDevicePlan):
+            interfaces.append(
+                InterfaceView(
+                    name=device.name,
+                    kind="vlan",
+                    master=node_interface_master(node, device.name),
+                    mtu=None,
+                    up=True,
+                    addresses=_address_strings(device.addresses),
+                    parent=device.link,
+                    vlan_id=device.vlan_id,
+                )
+            )
+        else:
+            assert isinstance(device, VrfDevicePlan)
+            interfaces.append(
+                InterfaceView(
+                    name=device.name,
+                    kind="vrf",
+                    master=None,
+                    mtu=None,
+                    up=True,
+                    vrf_table=device.table,
+                )
+            )
     return tuple(interfaces)
 
 
@@ -427,6 +452,7 @@ def _interface_view(interface: InterfaceInventory) -> InterfaceView:
         link_id=interface.link_id,
         parent=interface.parent,
         vlan_id=interface.vlan_id,
+        vrf_table=interface.vrf_table,
     )
 
 
@@ -582,7 +608,7 @@ def _desired_node_view(node: NodePlan, plan: TopologyPlan) -> NodeResourceView:
         namespace=node.namespace,
         present=True,
         interfaces=_desired_interfaces(node, plan),
-        routes=tuple(_route_view(route) for route in expected_main_table_routes(node)),
+        routes=tuple(_route_view(route) for route in expected_routes(node)),
         sysctls=tuple(
             SysctlView(name=name, value=value) for name, value in sorted(node.sysctls.items())
         ),
@@ -617,7 +643,7 @@ def _state_node_view(
         namespace=node.namespace,
         present=True,
         interfaces=tuple(state_interfaces),
-        routes=tuple(_route_view(route) for route in expected_main_table_routes(node)),
+        routes=tuple(_route_view(route) for route in expected_routes(node)),
         sysctls=tuple(
             SysctlView(name=name, value=value) for name, value in sorted(node.sysctls.items())
         ),
@@ -710,7 +736,7 @@ def _actual_node_view(
             for name in sorted(set(observed_namespace.interfaces) - expected_names)
         )
         actual_routes = _ordered_actual_routes(
-            expected_main_table_routes(node),
+            expected_routes(node),
             observed_namespace.routes,
         )
         actual_sysctls = observed_namespace.sysctls
@@ -801,6 +827,7 @@ def _compare_interface(
     compare("netem", desired.netem, _netem_string(actual.netem))
     compare("parent", desired.parent, actual.parent)
     compare("vlan_id", desired.vlan_id, actual.vlan_id)
+    compare("vrf_table", desired.vrf_table, actual.vrf_table)
     return differences
 
 
@@ -923,7 +950,7 @@ def _live_differences(
                 differences.extend(interface_differences)
                 impacted_nodes.add(node.name)
 
-        desired_routes = expected_main_table_routes(node)
+        desired_routes = expected_routes(node)
         desired_route_set = frozenset(desired_routes)
         observed_route_set = frozenset(observed.routes)
         routes_match = (

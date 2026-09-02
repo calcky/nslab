@@ -16,7 +16,7 @@ from nslab.backend.base import (
 )
 from nslab.errors import NslabError, OperationCancelled
 from nslab.manifest import Manifest, manifest_fingerprint, normalized_manifest
-from nslab.planner import TopologyPlan, compile_plan
+from nslab.planner import TopologyPlan, VlanDevicePlan, VrfDevicePlan, compile_plan
 from nslab.snapshot import validate_snapshot
 from nslab.state import DeploymentLock, SnapshotStatus, StateSnapshot, StateStore
 
@@ -530,18 +530,25 @@ class LifecycleService:
                     ),
                 }
             for device in node.devices.values():
-                result[f"{node_name}:{device.name}"] = {
+                ownership: dict[str, object] = {
                     "name": device.name,
-                    "kind": "vlan",
                     "namespace": node.namespace,
-                    "parent": device.link,
-                    "vlan_id": device.vlan_id,
                     "ifindex": (
                         None
                         if inventory is None
                         else inventory.namespaces[node.namespace].interfaces[device.name].ifindex
                     ),
                 }
+                if isinstance(device, VlanDevicePlan):
+                    ownership.update(
+                        kind="vlan",
+                        parent=device.link,
+                        vlan_id=device.vlan_id,
+                    )
+                else:
+                    assert isinstance(device, VrfDevicePlan)
+                    ownership.update(kind="vrf", vrf_table=device.table)
+                result[f"{node_name}:{device.name}"] = ownership
             for endpoint in endpoints_by_node[node_name]:
                 result[f"{node_name}:{endpoint.interface}"] = {
                     "name": endpoint.interface,

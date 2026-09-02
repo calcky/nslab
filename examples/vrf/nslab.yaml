@@ -1,0 +1,44 @@
+version: 1
+name: vrf
+
+topology:
+  nodes:
+    h1:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.0.0.2/24, 192.0.2.2/32]
+
+    r1:
+      kind: linux
+      interfaces:
+        blue0:
+          addresses: [10.0.0.1/24]
+        red0:
+          addresses: [10.0.0.1/24]
+      devices:
+        blue:
+          type: vrf
+          table: 1001
+          interfaces: [blue0]
+        red:
+          type: vrf
+          table: 1002
+          interfaces: [red0]
+      routes:
+        - dst: 192.0.2.2/32
+          via: 10.0.0.2
+          dev: blue0
+        - dst: 192.0.2.2/32
+          via: 10.0.0.2
+          dev: red0
+
+    h2:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.0.0.2/24, 192.0.2.2/32]
+
+  links:
+    - endpoints: [h1:eth0, r1:blue0]
+    - endpoints: [r1:red0, h2:eth0]

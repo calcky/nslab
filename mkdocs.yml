@@ -56,6 +56,7 @@ plugins:
             Overview: 示例索引
             Layer 2 switching: 二层交换
             IP forwarding: IP 转发
+            Routing isolation: 路由域隔离
             Link conditions: 链路条件
             Packet processing: 数据包处理
             Dynamic routing: 动态路由
@@ -63,6 +64,7 @@ plugins:
             IPv6 forwarding: IPv6 转发
             VLAN subinterfaces: VLAN 子接口
             Router on a stick: 单臂路由
+            Linux VRF: Linux VRF
             XDP receive and transmit: XDP 收发包
           theme:
             palette:
@@ -112,6 +114,8 @@ nav:
           - IPv4 forwarding: examples/ipv4-forward.md
           - IPv6 forwarding: examples/ipv6-forward.md
           - Router on a stick: examples/router-on-a-stick.md
+      - Routing isolation:
+          - Linux VRF: examples/vrf.md
       - Link conditions:
           - netem: examples/netem.md
       - Packet processing:

@@ -3572,6 +3572,46 @@ def test_inventory_rejects_routes_that_cannot_be_represented_without_loss(
     handle.close.assert_called_once_with()
 
 
+def test_inventory_ignores_kernel_generated_vrf_local_and_broadcast_routes() -> None:
+    messages = (
+        _route_message("10.0.0.1", 32, 10, table=1001, route_type=2, proto=2),
+        _route_message("10.0.0.255", 32, 10, table=1001, route_type=3, proto=2),
+    )
+
+    routes = Pyroute2Backend._inventory_routes(
+        messages,
+        {10: "eth0"},
+        {},
+        "vrf-namespace",
+        expected_table=1001,
+    )
+
+    assert routes == ()
+
+
+@pytest.mark.parametrize("route_type", (2, 3), ids=("local", "broadcast"))
+def test_inventory_rejects_non_kernel_local_routes_in_vrf_table(route_type: int) -> None:
+    message = _route_message(
+        "192.0.2.1",
+        32,
+        10,
+        table=1001,
+        route_type=route_type,
+        proto=4,
+    )
+
+    with pytest.raises(NslabError) as caught:
+        Pyroute2Backend._inventory_routes(
+            (message,),
+            {10: "eth0"},
+            {},
+            "vrf-namespace",
+            expected_table=1001,
+        )
+
+    assert caught.value.code == "INVENTORY_UNSUPPORTED"
+
+
 def test_inventory_rejects_metric_distinct_routes_instead_of_deduplicating(
     linux_node: NodePlan,
 ) -> None:

@@ -10,7 +10,7 @@ from nslab.backend.base import (
     LiveInventory,
     NamespaceInventory,
     expected_bridge_port_vlans,
-    expected_main_table_routes,
+    expected_routes,
 )
 from nslab.errors import NslabError
 from nslab.planner import (
@@ -21,6 +21,9 @@ from nslab.planner import (
     NodePlan,
     RoutePlan,
     TopologyPlan,
+    VlanDevicePlan,
+    VrfDevicePlan,
+    node_interface_master,
 )
 
 
@@ -136,7 +139,7 @@ class FakeNetworkBackend:
             kind=node.kind,
             namespace=resource,
             interfaces={"lo": loopback},
-            routes=expected_main_table_routes(node)[:1],
+            routes=expected_routes(node)[:1],
             sysctls={},
         )
 
@@ -258,6 +261,27 @@ class FakeNetworkBackend:
             )
 
         for device in node.devices.values():
+            if not isinstance(device, VrfDevicePlan):
+                continue
+            if device.name in interfaces:
+                raise _resource_error(
+                    "RESOURCE_EXISTS",
+                    "configure_node",
+                    f"{resource}:{device.name}",
+                )
+            interfaces[device.name] = InterfaceInventory(
+                name=device.name,
+                kind="vrf",
+                ifindex=self._allocate_ifindex(resource),
+                master=None,
+                mtu=65536,
+                up=True,
+                vrf_table=device.table,
+            )
+
+        for device in node.devices.values():
+            if not isinstance(device, VlanDevicePlan):
+                continue
             parent = interfaces.get(device.link)
             if parent is None:
                 raise _resource_error(
@@ -275,13 +299,26 @@ class FakeNetworkBackend:
                 name=device.name,
                 kind="vlan",
                 ifindex=self._allocate_ifindex(resource),
-                master=None,
+                master=node_interface_master(node, device.name),
                 mtu=parent.mtu,
                 up=True,
                 addresses=device.addresses,
                 parent=device.link,
                 vlan_id=device.vlan_id,
             )
+
+        for device in node.devices.values():
+            if not isinstance(device, VrfDevicePlan):
+                continue
+            for member in device.interfaces:
+                interface = interfaces.get(member)
+                if interface is None:
+                    raise _resource_error(
+                        "RESOURCE_MISSING",
+                        "configure_node",
+                        f"{resource}:{member}",
+                    )
+                interfaces[member] = replace(interface, master=device.name)
 
         for link in plan.links:
             for endpoint in (link.left, link.right):
@@ -297,7 +334,11 @@ class FakeNetworkBackend:
                 port = node.bridge_ports.get(endpoint.interface)
                 interfaces[endpoint.interface] = replace(
                     interface,
-                    master=node.bridge_name if node.kind == "bridge" else None,
+                    master=(
+                        node.bridge_name
+                        if node.kind == "bridge"
+                        else node_interface_master(node, endpoint.interface)
+                    ),
                     mtu=link.mtu,
                     up=True,
                     addresses=node.interfaces.get(endpoint.interface, ()),
@@ -308,7 +349,7 @@ class FakeNetworkBackend:
                 )
 
         state.interfaces = interfaces
-        state.routes = expected_main_table_routes(node)
+        state.routes = expected_routes(node)
         state.sysctls = dict(node.sysctls)
 
     def start_routing(self, plan: TopologyPlan) -> None:

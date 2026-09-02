@@ -11,7 +11,7 @@ topology
 │  └─ <node-name>
 │     ├─ kind: linux
 │     │  ├─ interfaces / devices / routes / sysctls
-│     │  ├─ devices → <device-name> → type: vlan
+│     │  ├─ devices → <device-name> → type: vlan | vrf
 │     │  └─ routing
 │     └─ kind: bridge
 │        ├─ interfaces / routes / sysctls
@@ -60,7 +60,7 @@ topology:
 
 接口名必须为 1 到 15 个字符，可包含字母、数字、`_`、`.` 和 `-`。除 bridge 设备名外，
 `interfaces` 中声明的接口必须在 `links[].endpoints` 中出现。
-Namespace 内部的 VLAN 接口应声明在 `devices`，而不是 `interfaces`。
+Namespace 内部的 VLAN 和 VRF 设备应声明在 `devices`，而不是 `interfaces`。
 
 ##### `interfaces.<ifname>`
 
@@ -78,7 +78,8 @@ Namespace 内部的 VLAN 接口应声明在 `devices`，而不是 `interfaces`�
 | `via` | 否 | `null` | 下一跳地址，地址族必须与 `dst` 一致 |
 | `dev` | 是 | 无 | 出接口名，必须是该节点可用的链接接口或 bridge 设备 |
 
-同一节点不能重复声明目标前缀，也不能把直连网段再次声明为静态路由。
+同一路由表中不能重复声明目标前缀，也不能把该表的直连网段再次声明为静态路由。
+VRF 成员接口会自动选择对应 VRF table。
 
 ##### `sysctls`
 
@@ -111,15 +112,17 @@ r1:
 
 ##### `devices`
 
-`devices` 会在所有 veth endpoint 移入节点后，在 Linux 节点内部创建接口。设备名遵循
-接口名规则，不能是 `lo`，不能与 linked endpoint 或 `interfaces` key 冲突；设备名可用于
-`routes[].dev` 和 `routing.ospf.passive_interfaces`。
+`devices` 会在所有 veth endpoint 移入节点后，在 Linux 节点内部创建设备。设备名遵循
+接口名规则，不能是 `lo`，不能与 linked endpoint 或 `interfaces` key 冲突。必须通过
+`type` 选择 `vlan` 或 `vrf`。
 
-首个支持的设备类型是 802.1Q VLAN 子接口：
+###### `type: vlan`
+
+802.1Q VLAN 子接口可用于 `routes[].dev` 和 `routing.ospf.passive_interfaces`：
 
 | 字段 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `devices.<name>.type` | 是 | 无 | 设备 discriminator，目前只能是 `vlan` |
+| `devices.<name>.type` | 是 | 无 | 必须为 `vlan` |
 | `devices.<name>.link` | 是 | 无 | Lower interface，必须是同一节点中的 linked interface |
 | `devices.<name>.id` | 是 | 无 | VLAN ID，范围 `1..4094`，同一 lower interface 上不能重复 |
 | `devices.<name>.addresses` | 否 | `[]` | 配置到 VLAN 设备的唯一 IPv4/IPv6 CIDR 地址 |
@@ -127,6 +130,21 @@ r1:
 当前只支持一层设备：VLAN 设备不能再以另一个声明设备作为 lower interface。MTU 继承
 lower interface。直连路由、BGP 直连邻居检查以及 OSPF/BGP 自动 network statement 都会
 包含设备地址。
+
+###### `type: vrf`
+
+VRF 是三层 master，将成员接口放进独立的 Linux 路由表：
+
+| 字段 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `devices.<name>.type` | 是 | 无 | 必须为 `vrf` |
+| `devices.<name>.table` | 是 | 无 | Table ID 范围 `1..4294967295`，不能使用保留表 `253`、`254`、`255` |
+| `devices.<name>.interfaces` | 是 | 无 | 非空的 linked interface 或已声明 VLAN 设备列表 |
+
+同一节点中的 table ID 不能重复，一个接口也只能属于一个 VRF。成员接口的直连路由和
+声明式静态路由会自动进入对应 VRF table，因此相同目的前缀可在每个路由域中各出现一次。
+当前 VRF 设备不能与声明式 OSPF/BGP 同时使用；高级 VRF 动态路由实验可通过
+`nslab exec` 显式运行 daemon。
 
 ##### `routing`
 

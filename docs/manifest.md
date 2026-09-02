@@ -11,7 +11,7 @@ topology
 │  └─ <node-name>
 │     ├─ kind: linux
 │     │  ├─ interfaces / devices / routes / sysctls
-│     │  ├─ devices → <device-name> → type: vlan
+│     │  ├─ devices → <device-name> → type: vlan | vrf
 │     │  └─ routing
 │     └─ kind: bridge
 │        ├─ interfaces / routes / sysctls
@@ -61,7 +61,7 @@ and `bridge`.
 
 Interface names contain 1 to 15 letters, digits, `_`, `.`, or `-`. Except for a bridge device
 name, every interface declared in `interfaces` must appear in a `links[].endpoints` entry.
-Namespace-local VLAN interfaces belong under `devices`, not `interfaces`.
+Namespace-local VLAN and VRF devices belong under `devices`, not `interfaces`.
 
 ##### `interfaces.<ifname>`
 
@@ -79,7 +79,8 @@ An interface may contain multiple addresses or no address. Duplicate addresses a
 | `via` | No | `null` | Next-hop address in the same address family as `dst` |
 | `dev` | Yes | None | Egress interface: a linked interface or the node's bridge device |
 
-A node cannot repeat a destination or declare one of its connected networks as a static route.
+A node cannot repeat a destination within one routing table or declare one of that table's
+connected networks as a static route. VRF member interfaces select their VRF table automatically.
 
 ##### `sysctls`
 
@@ -114,15 +115,17 @@ r1:
 ##### `devices`
 
 `devices` creates interfaces inside the Linux node after all veth endpoints have been moved
-into place. Device names follow the interface-name rules, cannot be `lo`, cannot collide with a
-linked endpoint or an `interfaces` key, and may be used by `routes[].dev` and
-`routing.ospf.passive_interfaces`.
+into place. Device names follow the interface-name rules, cannot be `lo`, and cannot collide with
+a linked endpoint or an `interfaces` key. `type` is required and selects `vlan` or `vrf`.
 
-The first supported device type is an 802.1Q VLAN subinterface:
+###### `type: vlan`
+
+An 802.1Q VLAN subinterface may be used by `routes[].dev` and
+`routing.ospf.passive_interfaces`:
 
 | Field | Required | Default | Description |
 | --- | --- | --- | --- |
-| `devices.<name>.type` | Yes | None | Device discriminator; currently only `vlan` |
+| `devices.<name>.type` | Yes | None | Must be `vlan` |
 | `devices.<name>.link` | Yes | None | Lower interface; must be a linked interface on the same node |
 | `devices.<name>.id` | Yes | None | VLAN ID in `1..4094`, unique on the lower interface |
 | `devices.<name>.addresses` | No | `[]` | Unique IPv4/IPv6 CIDR addresses assigned to the VLAN device |
@@ -130,6 +133,21 @@ The first supported device type is an 802.1Q VLAN subinterface:
 Only one level is supported: a VLAN device cannot use another declared device as its lower
 interface. Its MTU follows the lower interface. Connected routes, BGP directly connected
 neighbor checks, and automatic OSPF/BGP network statements include device addresses.
+
+###### `type: vrf`
+
+A VRF is a layer-3 master that assigns its member interfaces to a dedicated Linux routing table:
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `devices.<name>.type` | Yes | None | Must be `vrf` |
+| `devices.<name>.table` | Yes | None | Table ID in `1..4294967295`, excluding reserved tables `253`, `254`, and `255` |
+| `devices.<name>.interfaces` | Yes | None | Non-empty list of linked interfaces or declared VLAN devices |
+
+Table IDs are unique within a node, and an interface may belong to only one VRF. Connected and
+declared static routes for a member automatically use the VRF table, so the same destination may
+appear once in each routing domain. Dynamic OSPF/BGP configuration cannot currently be combined
+with VRF devices; run routing daemons explicitly through `nslab exec` for advanced VRF labs.
 
 ##### `routing`
 

@@ -7,7 +7,15 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from nslab.errors import NslabError
-from nslab.planner import LinkPlan, NetemPlan, NodePlan, TopologyPlan
+from nslab.planner import (
+    DevicePlan,
+    LinkPlan,
+    NetemPlan,
+    NodePlan,
+    TopologyPlan,
+    VlanDevicePlan,
+    VrfDevicePlan,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,21 +137,23 @@ def _netem_text(netem: NetemPlan) -> str:
     return " · ".join(values)
 
 
+def _device_text(device: DevicePlan, *, include_addresses: bool = True) -> str:
+    if isinstance(device, VlanDevicePlan):
+        text = f"{device.name}: vlan {device.vlan_id} on {device.link}"
+        if include_addresses and device.addresses:
+            text += f" · {', '.join(str(address) for address in device.addresses)}"
+        return text
+    assert isinstance(device, VrfDevicePlan)
+    return f"{device.name}: vrf table {device.table} · members {', '.join(device.interfaces)}"
+
+
 def _node_details(node: NodePlan, plan: TopologyPlan, *, detail: bool) -> tuple[str, ...]:
     lines = [
         f"{interface}: {', '.join(str(address) for address in addresses)}"
         for interface, addresses in node.interfaces.items()
         if addresses
     ]
-    lines.extend(
-        f"{device.name}: vlan {device.vlan_id} on {device.link}"
-        + (
-            f" · {', '.join(str(address) for address in device.addresses)}"
-            if device.addresses
-            else ""
-        )
-        for device in node.devices.values()
-    )
+    lines.extend(_device_text(device) for device in node.devices.values())
     if detail:
         sections_by_interface: dict[str, list[str]] = {}
         for interface, port in node.bridge_ports.items():
@@ -500,8 +510,7 @@ def _render_mermaid(plan: TopologyPlan) -> str:
     node_ids = {name: f"n{index}" for index, name in enumerate(plan.nodes)}
     for name, node in plan.nodes.items():
         device_lines = "".join(
-            f"\n{device.name}: vlan {device.vlan_id} on {device.link}"
-            for device in node.devices.values()
+            f"\n{_device_text(device, include_addresses=False)}" for device in node.devices.values()
         )
         label = _escape_label(f"{node.name}\n{node.kind}{device_lines}")
         lines.append(f'    {node_ids[name]}["{label}"]')
@@ -522,8 +531,7 @@ def _render_dot(plan: TopologyPlan) -> str:
     for node in plan.nodes.values():
         identifier = _quoted_dot(node.name)
         device_lines = "".join(
-            f"\n{device.name}: vlan {device.vlan_id} on {device.link}"
-            for device in node.devices.values()
+            f"\n{_device_text(device, include_addresses=False)}" for device in node.devices.values()
         )
         label = _quoted_dot(f"{node.name}\n{node.kind}{device_lines}")
         lines.append(f"    {identifier} [label={label}];")
@@ -543,16 +551,29 @@ def _node_document(node: NodePlan) -> dict[str, object]:
         "namespace": node.namespace,
     }
     if node.devices:
-        document["devices"] = [
-            {
-                "addresses": [str(address) for address in device.addresses],
-                "id": device.vlan_id,
-                "link": device.link,
-                "name": device.name,
-                "type": "vlan",
-            }
-            for device in node.devices.values()
-        ]
+        devices: list[dict[str, object]] = []
+        for device in node.devices.values():
+            if isinstance(device, VlanDevicePlan):
+                devices.append(
+                    {
+                        "addresses": [str(address) for address in device.addresses],
+                        "id": device.vlan_id,
+                        "link": device.link,
+                        "name": device.name,
+                        "type": "vlan",
+                    }
+                )
+            else:
+                assert isinstance(device, VrfDevicePlan)
+                devices.append(
+                    {
+                        "interfaces": list(device.interfaces),
+                        "name": device.name,
+                        "table": device.table,
+                        "type": "vrf",
+                    }
+                )
+        document["devices"] = devices
     return document
 
 

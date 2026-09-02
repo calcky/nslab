@@ -15,7 +15,11 @@ from nslab.planner import (
     NodePlan,
     RoutePlan,
     TopologyPlan,
+    VlanDevicePlan,
+    VrfDevicePlan,
     node_interface_addresses,
+    node_interface_master,
+    node_interface_route_table,
 )
 
 
@@ -40,6 +44,7 @@ class InterfaceInventory:
     link_id: str | None = None
     parent: str | None = None
     vlan_id: int | None = None
+    vrf_table: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "addresses", tuple(self.addresses))
@@ -148,6 +153,7 @@ class _ExpectedInterface:
     netem: NetemPlan | None = None
     parent: str | None = None
     vlan_id: int | None = None
+    vrf_table: int | None = None
 
 
 def expected_bridge_port_vlans(node: NodePlan, interface: str) -> tuple[BridgeVlanPlan, ...]:
@@ -159,8 +165,8 @@ def expected_bridge_port_vlans(node: NodePlan, interface: str) -> tuple[BridgeVl
     return (BridgeVlanPlan(vid=1, pvid=True, untagged=True),)
 
 
-def expected_main_table_routes(node: NodePlan) -> tuple[RoutePlan, ...]:
-    """Return deterministic connected and declared IP routes for a node."""
+def expected_routes(node: NodePlan) -> tuple[RoutePlan, ...]:
+    """Return deterministic connected and declared routes across managed tables."""
 
     routes = [
         RoutePlan(
@@ -170,12 +176,23 @@ def expected_main_table_routes(node: NodePlan) -> tuple[RoutePlan, ...]:
         )
     ]
     routes.extend(
-        RoutePlan(dst=address.network, via=None, dev=interface)
+        RoutePlan(
+            dst=address.network,
+            via=None,
+            dev=interface,
+            table=node_interface_route_table(node, interface),
+        )
         for interface, addresses in node_interface_addresses(node).items()
         for address in addresses
     )
     routes.extend(node.routes)
     return tuple(dict.fromkeys(routes))
+
+
+def expected_main_table_routes(node: NodePlan) -> tuple[RoutePlan, ...]:
+    """Compatibility alias for callers that predate managed VRF tables."""
+
+    return expected_routes(node)
 
 
 def _expected_interfaces(node: NodePlan, plan: TopologyPlan) -> dict[str, _ExpectedInterface]:
@@ -209,7 +226,11 @@ def _expected_interfaces(node: NodePlan, plan: TopologyPlan) -> dict[str, _Expec
             port = node.bridge_ports.get(endpoint.interface)
             expected[endpoint.interface] = _ExpectedInterface(
                 kind="veth",
-                master=node.bridge_name if node.kind == "bridge" else None,
+                master=(
+                    node.bridge_name
+                    if node.kind == "bridge"
+                    else node_interface_master(node, endpoint.interface)
+                ),
                 mtu=link.mtu,
                 up=True,
                 addresses=node.interfaces.get(endpoint.interface, ()),
@@ -220,15 +241,26 @@ def _expected_interfaces(node: NodePlan, plan: TopologyPlan) -> dict[str, _Expec
             )
 
     for device in node.devices.values():
-        expected[device.name] = _ExpectedInterface(
-            kind="vlan",
-            master=None,
-            mtu=None,
-            up=True,
-            addresses=device.addresses,
-            parent=device.link,
-            vlan_id=device.vlan_id,
-        )
+        if isinstance(device, VlanDevicePlan):
+            expected[device.name] = _ExpectedInterface(
+                kind="vlan",
+                master=node_interface_master(node, device.name),
+                mtu=None,
+                up=True,
+                addresses=device.addresses,
+                parent=device.link,
+                vlan_id=device.vlan_id,
+            )
+        else:
+            assert isinstance(device, VrfDevicePlan)
+            expected[device.name] = _ExpectedInterface(
+                kind="vrf",
+                master=None,
+                mtu=None,
+                up=True,
+                addresses=(),
+                vrf_table=device.table,
+            )
 
     return expected
 
@@ -274,6 +306,8 @@ def _interfaces_match(
         if observed.parent != desired.parent:
             return False
         if observed.vlan_id != desired.vlan_id:
+            return False
+        if observed.vrf_table != desired.vrf_table:
             return False
 
     return True
@@ -378,8 +412,9 @@ def recorded_link_ids_match_inventory(
 def inventory_matches_plan(plan: TopologyPlan, inventory: LiveInventory) -> bool:
     """Return whether live state satisfies the plan, excluding volatile ifindexes.
 
-    Expected main-table IP routes are compared as an order-independent semantic
-    set. Sysctls not declared by the manifest remain intentionally unconstrained.
+    Expected routes from the main and declared VRF tables are compared as an
+    order-independent semantic set. Sysctls not declared by the manifest remain
+    intentionally unconstrained.
     """
 
     if inventory.root_interfaces:
@@ -403,7 +438,7 @@ def inventory_matches_plan(plan: TopologyPlan, inventory: LiveInventory) -> bool
             return False
         if not _routes_match(
             node,
-            expected_main_table_routes(node),
+            expected_routes(node),
             observed.routes,
         ):
             return False

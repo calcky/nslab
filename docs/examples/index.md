@@ -31,6 +31,12 @@ sudo nslab destroy
 | [IPv6 forwarding](ipv6-forward.md) | IPv6 default routes, DAD, and the Linux forwarding path |
 | [Router on a stick](router-on-a-stick.md) | Inter-VLAN routing over one tagged trunk |
 
+## Routing isolation
+
+| Example | Focus |
+| --- | --- |
+| [Linux VRF](vrf.md) | Multiple routing tables, interface membership, and overlapping address spaces |
+
 ## Link conditions
 
 | Example | Focus |

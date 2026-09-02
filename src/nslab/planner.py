@@ -18,6 +18,7 @@ from typing import Literal
 
 from nslab.errors import NslabError
 from nslab.manifest import (
+    MAIN_ROUTE_TABLE,
     NAME_PATTERN,
     BgpConfig,
     BridgeNode,
@@ -26,6 +27,8 @@ from nslab.manifest import (
     NodeConfig,
     OspfConfig,
     RoutingConfig,
+    VlanDeviceConfig,
+    VrfDeviceConfig,
     manifest_fingerprint,
 )
 from nslab.naming import namespace_name, temporary_veth_names
@@ -42,6 +45,7 @@ class RoutePlan:
     dst: IPNetwork
     via: IPAddress | None
     dev: str
+    table: int = MAIN_ROUTE_TABLE
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,11 +98,21 @@ class VlanDevicePlan:
     addresses: tuple[IPInterface, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class VrfDevicePlan:
+    name: str
+    table: int
+    interfaces: tuple[str, ...]
+
+
+type DevicePlan = VlanDevicePlan | VrfDevicePlan
+
+
 def _empty_bridge_ports() -> Mapping[str, BridgePortPlan]:
     return MappingProxyType({})
 
 
-def _empty_devices() -> Mapping[str, VlanDevicePlan]:
+def _empty_devices() -> Mapping[str, DevicePlan]:
     return MappingProxyType({})
 
 
@@ -110,7 +124,7 @@ class NodePlan:
     interfaces: Mapping[str, tuple[IPInterface, ...]]
     routes: tuple[RoutePlan, ...]
     sysctls: Mapping[str, int]
-    devices: Mapping[str, VlanDevicePlan] = field(default_factory=_empty_devices)
+    devices: Mapping[str, DevicePlan] = field(default_factory=_empty_devices)
     bridge_name: str | None = None
     stp: bool | None = None
     vlan_filtering: bool | None = None
@@ -158,8 +172,45 @@ def node_interface_addresses(node: NodePlan) -> Mapping[str, tuple[IPInterface, 
     return MappingProxyType(
         {
             **node.interfaces,
-            **{name: device.addresses for name, device in node.devices.items()},
+            **{
+                name: device.addresses
+                for name, device in node.devices.items()
+                if isinstance(device, VlanDevicePlan)
+            },
         }
+    )
+
+
+def node_interface_master(node: NodePlan, interface: str) -> str | None:
+    """Return the VRF device that owns an interface, if any."""
+
+    return next(
+        (
+            device.name
+            for device in node.devices.values()
+            if isinstance(device, VrfDevicePlan) and interface in device.interfaces
+        ),
+        None,
+    )
+
+
+def node_interface_route_table(node: NodePlan, interface: str) -> int:
+    """Return the routing table selected by an interface's VRF membership."""
+
+    master = node_interface_master(node, interface)
+    if master is None:
+        return MAIN_ROUTE_TABLE
+    device = node.devices[master]
+    assert isinstance(device, VrfDevicePlan)
+    return device.table
+
+
+def node_route_tables(node: NodePlan) -> tuple[int, ...]:
+    """Return the managed route tables for a node in deterministic order."""
+
+    return (
+        MAIN_ROUTE_TABLE,
+        *(device.table for device in node.devices.values() if isinstance(device, VrfDevicePlan)),
     )
 
 
@@ -182,29 +233,39 @@ def _compile_node(deployment: str, name: str, manifest_node: NodeConfig) -> Node
             for interface_name, config in manifest_node.interfaces.items()
         }
     )
-    routes = tuple(
-        RoutePlan(
-            dst=ip_network(str(route.dst)),
-            via=ip_address(str(route.via)) if route.via is not None else None,
-            dev=route.dev,
-        )
-        for route in manifest_node.routes
-    )
     sysctls = MappingProxyType(dict(manifest_node.sysctls))
-    devices = (
-        MappingProxyType(
-            {
-                device_name: VlanDevicePlan(
+    compiled_devices: dict[str, DevicePlan] = {}
+    if isinstance(manifest_node, LinuxNode):
+        for device_name, config in manifest_node.devices.items():
+            if isinstance(config, VlanDeviceConfig):
+                compiled_devices[device_name] = VlanDevicePlan(
                     name=device_name,
                     link=config.link,
                     vlan_id=config.id,
                     addresses=tuple(ip_interface(str(address)) for address in config.addresses),
                 )
-                for device_name, config in manifest_node.devices.items()
-            }
+            else:
+                assert isinstance(config, VrfDeviceConfig)
+                compiled_devices[device_name] = VrfDevicePlan(
+                    name=device_name,
+                    table=config.table,
+                    interfaces=tuple(config.interfaces),
+                )
+    devices: Mapping[str, DevicePlan] = MappingProxyType(compiled_devices)
+    tables_by_interface = {
+        interface: device.table
+        for device in devices.values()
+        if isinstance(device, VrfDevicePlan)
+        for interface in device.interfaces
+    }
+    routes = tuple(
+        RoutePlan(
+            dst=ip_network(str(route.dst)),
+            via=ip_address(str(route.via)) if route.via is not None else None,
+            dev=route.dev,
+            table=tables_by_interface.get(route.dev, MAIN_ROUTE_TABLE),
         )
-        if isinstance(manifest_node, LinuxNode)
-        else MappingProxyType({})
+        for route in manifest_node.routes
     )
 
     routing = _compile_routing(manifest_node.routing)

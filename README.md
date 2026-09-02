@@ -10,7 +10,7 @@
 `nslab` 是一个面向 Linux network namespace 实验的声明式 CLI。使用严格校验的
 `nslab.yaml` 描述拓扑，然后通过统一的命令重复部署、检查、执行和销毁实验。
 
-支持 Linux namespace、veth、bridge、STP、VLAN 子接口、IPv4/IPv6、静态路由、netem，
+支持 Linux namespace、veth、bridge、STP、VLAN 子接口、VRF、IPv4/IPv6、静态路由、netem，
 以及基于 FRRouting 的 OSPFv2/eBGP 和 XDP 实验。网络资源通过 pyroute2 管理，不依赖
 生命周期 shell hook。
 
@@ -105,6 +105,7 @@ sudo nslab destroy
 | [ipv4-forward](examples/ipv4-forward/README.md) | Linux IPv4 转发 |
 | [ipv6-forward](examples/ipv6-forward/README.md) | Linux IPv6 转发 |
 | [router-on-a-stick](examples/router-on-a-stick/README.md) | 单臂路由与 VLAN 间转发 |
+| [vrf](examples/vrf/README.md) | VRF 路由域与重叠地址空间 |
 | [netem](examples/netem/README.md) | 延迟、抖动与丢包 |
 | [xdp](examples/xdp/README.md) | `XDP_PASS`、`XDP_DROP`、`XDP_TX` 与 `XDP_REDIRECT` |
 | [ospf](examples/ospf/README.md) | OSPFv2 邻居与故障收敛 |

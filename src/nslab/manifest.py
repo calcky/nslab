@@ -41,6 +41,9 @@ type IPAddress = IPv4Address | IPv6Address
 type IPInterface = IPv4Interface | IPv6Interface
 type IPNetwork = IPv4Network | IPv6Network
 
+MAIN_ROUTE_TABLE = 254
+_RESERVED_VRF_TABLES = frozenset({253, 254, 255})
+
 
 def _require_name(value: str, pattern: re.Pattern[str], label: str) -> str:
     if pattern.fullmatch(value) is None:
@@ -93,6 +96,46 @@ class VlanDeviceConfig(InterfaceConfig):
         if parent == "lo":
             raise ValueError("VLAN parent interface cannot be 'lo'")
         return parent
+
+
+VrfTableId = Annotated[StrictInt, Field(ge=1, le=4_294_967_295)]
+
+
+class VrfDeviceConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    type: Literal["vrf"]
+    table: VrfTableId
+    interfaces: Annotated[tuple[str, ...], Field(min_length=1)]
+
+    @field_validator("table")
+    @classmethod
+    def validate_table(cls, value: int) -> int:
+        if value in _RESERVED_VRF_TABLES:
+            raise ValueError(f"VRF table cannot use reserved table: {value}")
+        return value
+
+    @field_validator("interfaces", mode="before")
+    @classmethod
+    def validate_interface_inputs(cls, value: object) -> object:
+        return _validate_sequence(value, "VRF interfaces")
+
+    @field_validator("interfaces")
+    @classmethod
+    def validate_interfaces(cls, interfaces: tuple[str, ...]) -> tuple[str, ...]:
+        for interface in interfaces:
+            _require_name(interface, IFNAME_PATTERN, "VRF member interface name")
+            if interface == "lo":
+                raise ValueError("VRF member interface cannot be 'lo'")
+        if len(set(interfaces)) != len(interfaces):
+            raise ValueError("VRF member interfaces must be unique")
+        return interfaces
+
+
+type LinuxDeviceConfig = Annotated[
+    VlanDeviceConfig | VrfDeviceConfig,
+    Field(discriminator="type"),
+]
 
 
 class RouteConfig(BaseModel):
@@ -254,18 +297,6 @@ class _NodeBase(BaseModel):
             _require_name(interface_name, IFNAME_PATTERN, "interface name")
         return interfaces
 
-    @field_validator("routes")
-    @classmethod
-    def validate_unique_route_destinations(
-        cls, routes: tuple[RouteConfig, ...]
-    ) -> tuple[RouteConfig, ...]:
-        seen_destinations: set[IPNetwork] = set()
-        for route in routes:
-            if route.dst in seen_destinations:
-                raise ValueError(f"duplicate route destination: {str(route.dst)!r}")
-            seen_destinations.add(route.dst)
-        return routes
-
     @field_validator("sysctls", mode="before")
     @classmethod
     def validate_sysctls(cls, sysctls: object) -> object:
@@ -279,32 +310,36 @@ class _NodeBase(BaseModel):
                 raise ValueError(f"sysctl {key!r} must be integer 0 or 1")
         return sysctls
 
-    @model_validator(mode="after")
-    def validate_connected_routes(self) -> Self:
-        connected_networks = {
-            address.network
-            for interface in self.interfaces.values()
-            for address in interface.addresses
-        }
-        for route in self.routes:
-            if route.dst in connected_networks:
-                raise ValueError(
-                    f"route destination conflicts with connected network: {str(route.dst)!r}"
-                )
-        return self
+
+def _validate_routes_by_table(
+    routes: tuple[RouteConfig, ...],
+    connected_networks: set[tuple[int, IPNetwork]],
+    tables_by_interface: dict[str, int],
+) -> None:
+    seen_destinations: set[tuple[int, IPNetwork]] = set()
+    for route in routes:
+        table = tables_by_interface.get(route.dev, MAIN_ROUTE_TABLE)
+        identity = (table, route.dst)
+        if identity in seen_destinations:
+            raise ValueError(f"duplicate route destination: {str(route.dst)!r}")
+        if identity in connected_networks:
+            raise ValueError(
+                f"route destination conflicts with connected network: {str(route.dst)!r}"
+            )
+        seen_destinations.add(identity)
 
 
 class LinuxNode(_NodeBase):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     kind: Literal["linux"]
-    devices: dict[str, VlanDeviceConfig] = Field(default_factory=dict)
+    devices: dict[str, LinuxDeviceConfig] = Field(default_factory=dict)
 
     @field_validator("devices")
     @classmethod
     def validate_device_names(
-        cls, devices: dict[str, VlanDeviceConfig]
-    ) -> dict[str, VlanDeviceConfig]:
+        cls, devices: dict[str, LinuxDeviceConfig]
+    ) -> dict[str, LinuxDeviceConfig]:
         for device_name in devices:
             _require_name(device_name, IFNAME_PATTERN, "device name")
             if device_name == "lo":
@@ -312,14 +347,25 @@ class LinuxNode(_NodeBase):
         return devices
 
     @model_validator(mode="after")
-    def validate_vlan_devices(self) -> Self:
+    def validate_devices_and_routes(self) -> Self:
         collisions = set(self.interfaces) & set(self.devices)
         if collisions:
             name = sorted(collisions)[0]
             raise ValueError(f"device name conflicts with an interface: {name!r}")
 
+        vlan_devices = {
+            name: device
+            for name, device in self.devices.items()
+            if isinstance(device, VlanDeviceConfig)
+        }
+        vrf_devices = {
+            name: device
+            for name, device in self.devices.items()
+            if isinstance(device, VrfDeviceConfig)
+        }
+
         seen_vlan_links: set[tuple[str, int]] = set()
-        for name, device in self.devices.items():
+        for name, device in vlan_devices.items():
             if device.link in self.devices:
                 raise ValueError(
                     f"VLAN device parent must be a linked interface: {name!r} -> {device.link!r}"
@@ -331,14 +377,37 @@ class LinuxNode(_NodeBase):
                 )
             seen_vlan_links.add(identity)
 
+        seen_tables: set[int] = set()
+        tables_by_interface: dict[str, int] = {}
+        for name, vrf in vrf_devices.items():
+            if vrf.table in seen_tables:
+                raise ValueError(f"duplicate VRF table: {vrf.table}")
+            seen_tables.add(vrf.table)
+            for interface in vrf.interfaces:
+                if interface in vrf_devices:
+                    raise ValueError(
+                        f"VRF member must be a linked interface or VLAN device: "
+                        f"{name!r} -> {interface!r}"
+                    )
+                previous = tables_by_interface.get(interface)
+                if previous is not None:
+                    raise ValueError(f"interface belongs to more than one VRF: {interface!r}")
+                tables_by_interface[interface] = vrf.table
+
+        if self.routing is not None and vrf_devices:
+            raise ValueError("dynamic routing with VRF devices is not supported")
+
         connected_networks = {
-            address.network for device in self.devices.values() for address in device.addresses
+            (tables_by_interface.get(interface, MAIN_ROUTE_TABLE), address.network)
+            for interface, config in self.interfaces.items()
+            for address in config.addresses
         }
-        for route in self.routes:
-            if route.dst in connected_networks:
-                raise ValueError(
-                    f"route destination conflicts with connected network: {str(route.dst)!r}"
-                )
+        connected_networks.update(
+            (tables_by_interface.get(name, MAIN_ROUTE_TABLE), address.network)
+            for name, device in vlan_devices.items()
+            for address in device.addresses
+        )
+        _validate_routes_by_table(self.routes, connected_networks, tables_by_interface)
         return self
 
 
@@ -427,6 +496,16 @@ class BridgeNode(_NodeBase):
     kind: Literal["bridge"]
     bridge: BridgeConfig
 
+    @model_validator(mode="after")
+    def validate_routes(self) -> Self:
+        connected_networks = {
+            (MAIN_ROUTE_TABLE, address.network)
+            for interface in self.interfaces.values()
+            for address in interface.addresses
+        }
+        _validate_routes_by_table(self.routes, connected_networks, {})
+        return self
+
 
 type NodeConfig = Annotated[LinuxNode | BridgeNode, Field(discriminator="kind")]
 
@@ -500,18 +579,36 @@ class Topology(BaseModel):
             linked = linked_interfaces[node_name]
             available = linked.copy()
             if isinstance(node, LinuxNode):
-                for device_name, device in node.devices.items():
+                vlan_devices = {
+                    name: device
+                    for name, device in node.devices.items()
+                    if isinstance(device, VlanDeviceConfig)
+                }
+                vrf_devices = {
+                    name: device
+                    for name, device in node.devices.items()
+                    if isinstance(device, VrfDeviceConfig)
+                }
+                for device_name in node.devices:
                     if device_name in linked:
                         raise ValueError(
                             f"device name conflicts with a linked endpoint on node "
                             f"{node_name!r}: {device_name!r}"
                         )
+                for device in vlan_devices.values():
                     if device.link not in linked:
                         raise ValueError(
                             f"VLAN parent interface is not linked on node "
                             f"{node_name!r}: {device.link!r}"
                         )
-                available.update(node.devices)
+                available.update(vlan_devices)
+                for vrf_name, vrf in vrf_devices.items():
+                    for interface in vrf.interfaces:
+                        if interface not in available:
+                            raise ValueError(
+                                f"VRF member interface is not linked or a VLAN device on node "
+                                f"{node_name!r}: {vrf_name!r} -> {interface!r}"
+                            )
             if isinstance(node, BridgeNode):
                 if node.bridge.name in linked:
                     raise ValueError(
@@ -574,7 +671,11 @@ class Topology(BaseModel):
                     address.network
                     for interface in (
                         *node.interfaces.values(),
-                        *node.devices.values(),
+                        *(
+                            device
+                            for device in node.devices.values()
+                            if isinstance(device, VlanDeviceConfig)
+                        ),
                     )
                     for address in interface.addresses
                     if address.version == 4

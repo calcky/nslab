@@ -47,7 +47,10 @@ from nslab.planner import (
     NodePlan,
     RoutePlan,
     TopologyPlan,
+    VlanDevicePlan,
+    VrfDevicePlan,
     node_interface_addresses,
+    node_route_tables,
 )
 from nslab.routing import FrrRuntime
 
@@ -80,6 +83,7 @@ _UNSUPPORTED_ROUTE_TYPES = {
     10: "nat",
     11: "xresolve",
 }
+_VRF_KERNEL_LOCAL_ROUTE_TYPES = frozenset({2, 3})
 _ALLOWED_ROUTE_ATTRIBUTES = frozenset(
     {
         "RTA_TABLE",
@@ -988,6 +992,24 @@ class Pyroute2Backend:
                 }
 
                 for device in node.devices.values():
+                    if not isinstance(device, VrfDevicePlan):
+                        continue
+                    namespace.link(
+                        "add",
+                        ifname=device.name,
+                        kind="vrf",
+                        vrf_table=device.table,
+                    )
+                    indexes[device.name] = _required_index(
+                        namespace,
+                        device.name,
+                        "configure_node",
+                        f"{node.namespace}:{device.name}",
+                    )
+
+                for device in node.devices.values():
+                    if not isinstance(device, VlanDevicePlan):
+                        continue
                     parent_index = indexes.get(device.link)
                     if parent_index is None:
                         parent_index = _required_index(
@@ -1010,6 +1032,23 @@ class Pyroute2Backend:
                         "configure_node",
                         f"{node.namespace}:{device.name}",
                     )
+
+                for device in node.devices.values():
+                    if not isinstance(device, VrfDevicePlan):
+                        continue
+                    vrf_index = indexes[device.name]
+                    namespace.link("set", index=vrf_index, state="up")
+                    for member in device.interfaces:
+                        member_index = indexes.get(member)
+                        if member_index is None:
+                            member_index = _required_index(
+                                namespace,
+                                member,
+                                "configure_node",
+                                f"{node.namespace}:{member}",
+                            )
+                            indexes[member] = member_index
+                        namespace.link("set", index=member_index, master=vrf_index)
 
                 if node.kind == "bridge":
                     bridge_name = node.bridge_name
@@ -1096,6 +1135,8 @@ class Pyroute2Backend:
                         route_arguments["gateway"] = str(route.via)
                     if route.dst.version == 6:
                         route_arguments["family"] = socket.AF_INET6
+                    if route.table != _RT_TABLE_MAIN:
+                        route_arguments["table"] = route.table
                     namespace.route("add", **route_arguments)
         except NetlinkError as error:
             raise _translate_netlink_error(
@@ -1258,14 +1299,16 @@ class Pyroute2Backend:
             route_messages = tuple(
                 (
                     family,
+                    table,
                     tuple(
                         handle.get_routes(
                             family=family,
-                            table=_RT_TABLE_MAIN,
+                            table=table,
                         )
                     ),
                 )
                 for family in families
+                for table in node_route_tables(node)
             )
         interfaces, names_by_index = self._inventory_interfaces(
             link_messages,
@@ -1277,13 +1320,14 @@ class Pyroute2Backend:
         )
         observed_routes = tuple(
             route
-            for family, messages in route_messages
+            for family, table, messages in route_messages
             for route in self._inventory_routes(
                 messages,
                 names_by_index,
                 interfaces,
                 node.namespace,
                 family=family,
+                expected_table=table,
                 allow_dynamic=node.routing is not None,
             )
         )
@@ -1480,6 +1524,7 @@ class Pyroute2Backend:
             port_priority: int | None = None
             parent: str | None = None
             vlan_id: int | None = None
+            vrf_table: int | None = None
             if kind == "bridge":
                 info_data = _attribute(link_info, "IFLA_INFO_DATA")
                 stp_value = _attribute(info_data, "IFLA_BR_STP_STATE")
@@ -1499,6 +1544,11 @@ class Pyroute2Backend:
                 vlan_id_value = _attribute(info_data, "IFLA_VLAN_ID")
                 if vlan_id_value is not None:
                     vlan_id = int(vlan_id_value)
+            if kind == "vrf":
+                info_data = _attribute(link_info, "IFLA_INFO_DATA")
+                vrf_table_value = _attribute(info_data, "IFLA_VRF_TABLE")
+                if vrf_table_value is not None:
+                    vrf_table = int(vrf_table_value)
             slave_kind = _attribute(link_info, "IFLA_INFO_SLAVE_KIND")
             if slave_kind == "bridge":
                 slave_data = _attribute(link_info, "IFLA_INFO_SLAVE_DATA")
@@ -1532,6 +1582,7 @@ class Pyroute2Backend:
                 link_id=(str(link_id_value) if link_id_value is not None else None),
                 parent=parent,
                 vlan_id=vlan_id,
+                vrf_table=vrf_table,
             )
         return interfaces, names_by_index
 
@@ -1539,6 +1590,14 @@ class Pyroute2Backend:
     def _inventory_connected_routes(
         interfaces: dict[str, InterfaceInventory],
     ) -> tuple[RoutePlan, ...]:
+        def route_table(interface: InterfaceInventory) -> int:
+            if interface.master is None:
+                return _RT_TABLE_MAIN
+            master = interfaces.get(interface.master)
+            if master is None or master.kind != "vrf" or master.vrf_table is None:
+                return _RT_TABLE_MAIN
+            return master.vrf_table
+
         ordered_interfaces = sorted(
             interfaces.values(),
             key=lambda interface: (
@@ -1548,7 +1607,12 @@ class Pyroute2Backend:
             ),
         )
         routes = (
-            RoutePlan(dst=address.network, via=None, dev=interface.name)
+            RoutePlan(
+                dst=address.network,
+                via=None,
+                dev=interface.name,
+                table=route_table(interface),
+            )
             for interface in ordered_interfaces
             for address in sorted(
                 interface.addresses,
@@ -1565,6 +1629,7 @@ class Pyroute2Backend:
         namespace: str,
         *,
         family: int = socket.AF_INET,
+        expected_table: int = _RT_TABLE_MAIN,
         allow_dynamic: bool = False,
     ) -> tuple[RoutePlan, ...]:
         routes: list[RoutePlan] = []
@@ -1583,7 +1648,7 @@ class Pyroute2Backend:
                 if dynamic_route:
                     continue
                 raise _unsupported_inventory_route(namespace, "invalid_table") from None
-            if table != _RT_TABLE_MAIN:
+            if table != expected_table:
                 continue
 
             try:
@@ -1592,6 +1657,12 @@ class Pyroute2Backend:
                 if dynamic_route:
                     continue
                 raise _unsupported_inventory_route(namespace, "route_type") from None
+            if (
+                expected_table != _RT_TABLE_MAIN
+                and route_protocol == _RTPROT_KERNEL
+                and route_type in _VRF_KERNEL_LOCAL_ROUTE_TYPES
+            ):
+                continue
             if route_type != _RTN_UNICAST:
                 if dynamic_route:
                     continue
@@ -1754,12 +1825,14 @@ class Pyroute2Backend:
                         dst=IPv6Network(f"{destination}/{prefixlen}", strict=False),
                         via=IPv6Address(str(gateway)) if gateway is not None else None,
                         dev=interface,
+                        table=table,
                     )
                 else:
                     route = RoutePlan(
                         dst=IPv4Network(f"{destination}/{prefixlen}", strict=False),
                         via=IPv4Address(str(gateway)) if gateway is not None else None,
                         dev=interface,
+                        table=table,
                     )
             except (TypeError, ValueError):
                 if dynamic_route:

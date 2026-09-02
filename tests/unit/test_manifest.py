@@ -492,7 +492,6 @@ def test_rejects_duplicate_route_destinations(
         "nodes",
         "h1",
         "linux",
-        "routes",
     )
     assert issue["msg"] == (f"Value error, duplicate route destination: {expected_destination!r}")
 
