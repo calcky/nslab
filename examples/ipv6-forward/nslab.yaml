@@ -1,0 +1,37 @@
+version: 1
+name: ipv6-forward
+
+topology:
+  nodes:
+    h1:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [2001:db8:1::2/64]
+      routes:
+        - dst: ::/0
+          via: 2001:db8:1::1
+          dev: eth0
+    r1:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [2001:db8:1::1/64]
+        eth1:
+          addresses: [2001:db8:2::1/64]
+      sysctls:
+        net.ipv6.conf.all.forwarding: 1
+    h2:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [2001:db8:2::2/64]
+      routes:
+        - dst: ::/0
+          via: 2001:db8:2::1
+          dev: eth0
+  links:
+    - endpoints: [h1:eth0, r1:eth0]
+      mtu: 1500
+    - endpoints: [r1:eth1, h2:eth0]
+      mtu: 1500

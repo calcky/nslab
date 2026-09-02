@@ -351,3 +351,68 @@ def test_pyroute2_backend_creates_and_inventories_two_node_veth() -> None:
             assert inventory_after_cleanup.namespaces[node.namespace].exists is False
     finally:
         cleanup_namespaces()
+
+
+@pytest.mark.skipif(not _IS_LINUX, reason="requires Linux network namespaces")
+@pytest.mark.skipif(not _IS_ROOT, reason="requires effective UID 0")
+def test_pyroute2_backend_configures_and_inventories_stp_tuning() -> None:
+    deployment = f"stp-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    manifest = Manifest.model_validate(
+        {
+            "version": 1,
+            "name": deployment,
+            "topology": {
+                "nodes": {
+                    "host": {"kind": "linux"},
+                    "switch": {
+                        "kind": "bridge",
+                        "bridge": {
+                            "name": "br0",
+                            "stp": True,
+                            "vlan_filtering": False,
+                            "priority": 4096,
+                            "ports": {
+                                "swp1": {"path_cost": 10, "priority": 16},
+                            },
+                        },
+                    },
+                },
+                "links": [{"endpoints": ["host:eth0", "switch:swp1"]}],
+            },
+        }
+    )
+    plan = compile_plan(manifest)
+    backend = Pyroute2Backend()
+    nodes = tuple(plan.nodes.values())
+
+    def cleanup_namespaces() -> None:
+        cleanup_errors: list[BaseException] = []
+        for node in reversed(nodes):
+            try:
+                backend.delete_namespace(node.namespace)
+            except NslabError as error:
+                if error.code != "RESOURCE_MISSING":
+                    cleanup_errors.append(error)
+            except BaseException as error:
+                cleanup_errors.append(error)
+        if cleanup_errors and sys.exc_info()[0] is None:
+            raise cleanup_errors[0]
+
+    try:
+        with external_timeout(30):
+            for node in nodes:
+                backend.create_namespace(node)
+            backend.create_bridge(plan.nodes["switch"])
+            backend.create_veth(plan.links[0])
+            for node in nodes:
+                backend.configure_node(node, plan)
+            inventory = backend.inventory(plan)
+
+        switch = inventory.namespaces[plan.nodes["switch"].namespace]
+        assert inventory_matches_plan(plan, inventory)
+        assert switch.interfaces["br0"].stp is True
+        assert switch.interfaces["br0"].bridge_priority == 4096
+        assert switch.interfaces["swp1"].path_cost == 10
+        assert switch.interfaces["swp1"].port_priority == 16
+    finally:
+        cleanup_namespaces()

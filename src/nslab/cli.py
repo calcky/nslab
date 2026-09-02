@@ -15,6 +15,15 @@ from types import FrameType
 from typing import NoReturn, cast
 
 from nslab.backend.base import NetworkBackend
+from nslab.completion import (
+    COMPLETION_SHELLS,
+    GRAPH_FORMATS,
+    INSPECT_FORMATS,
+    LIFECYCLE_COMMANDS,
+    PUBLIC_COMMANDS,
+    hidden_completion_candidates,
+    render_completion_script,
+)
 from nslab.errors import NslabError, OperationCancelled
 from nslab.executor import execute_in_node
 from nslab.graph import render_graph
@@ -25,8 +34,7 @@ from nslab.planner import TopologyPlan, compile_plan
 from nslab.snapshot import validate_snapshot
 from nslab.state import DeploymentLock, StateSnapshot, StateStore
 
-COMMANDS = ("deploy", "destroy", "redeploy", "inspect", "exec", "graph")
-LIVE_COMMANDS = frozenset({"deploy", "destroy", "redeploy", "inspect", "exec"})
+COMMANDS = PUBLIC_COMMANDS
 
 STATE_ROOT = Path("/var/lib/nslab")
 LOCK_ROOT = Path("/run/nslab")
@@ -50,7 +58,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--debug", action="store_true", help="show exception tracebacks")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    for command in ("deploy", "destroy", "redeploy"):
+    for command in LIFECYCLE_COMMANDS:
         command_parser = subparsers.add_parser(command)
         _add_selection_arguments(command_parser)
 
@@ -58,7 +66,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_selection_arguments(inspect_parser)
     inspect_parser.add_argument(
         "--format",
-        choices=("table", "json"),
+        choices=INSPECT_FORMATS,
         default="table",
         dest="output_format",
     )
@@ -72,11 +80,14 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_selection_arguments(graph_parser)
     graph_parser.add_argument(
         "--format",
-        choices=("tree", "box", "mermaid", "dot", "json"),
+        choices=GRAPH_FORMATS,
         default="tree",
         dest="output_format",
     )
     graph_parser.add_argument("--detail", action="store_true")
+
+    completion_parser = subparsers.add_parser("completion")
+    completion_parser.add_argument("shell", choices=COMPLETION_SHELLS)
     return parser
 
 
@@ -241,6 +252,9 @@ def _run_live_command(arguments: argparse.Namespace) -> int:
 
 
 def _dispatch(arguments: argparse.Namespace) -> int:
+    if arguments.command == "completion":
+        print(render_completion_script(cast(str, arguments.shell)), end="")
+        return 0
     if arguments.command == "graph":
         return _run_graph(arguments)
     return _run_live_command(arguments)
@@ -283,9 +297,23 @@ def _sigterm_cancellation() -> Iterator[None]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    raw_arguments = tuple(sys.argv[1:] if argv is None else argv)
+    if raw_arguments[:1] == ("__complete",):
+        try:
+            candidates = hidden_completion_candidates(
+                raw_arguments[1:],
+                cwd=Path.cwd(),
+                state_root=STATE_ROOT,
+            )
+            for candidate in candidates:
+                print(candidate)
+        except Exception:
+            pass
+        return 0
+
     parser = _build_parser()
     try:
-        arguments = parser.parse_args(argv)
+        arguments = parser.parse_args(raw_arguments)
     except SystemExit as error:
         return error.code if isinstance(error.code, int) else 1
 

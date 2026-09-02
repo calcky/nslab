@@ -1,0 +1,111 @@
+site_name: nslab
+site_description: 声明式 Linux network namespace 实验工具
+site_url: https://nslab.readthedocs.io/en/latest/
+repo_name: calcky/nslab
+repo_url: https://github.com/calcky/nslab
+edit_uri: edit/main/docs/
+
+exclude_docs: |
+  **/plans/**
+  **/specs/**
+  requirements.txt
+
+theme:
+  name: material
+  language: zh
+  features:
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.action.edit
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-sunny
+        name: 切换到深色模式
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-night
+        name: 切换到浅色模式
+
+plugins:
+  - search
+  - i18n:
+      docs_structure: suffix
+      fallback_to_default: false
+      reconfigure_material: true
+      reconfigure_search: true
+      languages:
+        - locale: zh
+          default: true
+          name: 中文
+          build: true
+        - locale: en
+          name: English
+          build: true
+          site_description: Declarative Linux network namespace labs
+          nav_translations:
+            首页: Home
+            快速开始: Getting started
+            CLI 参考: CLI reference
+            实验示例: Examples
+            示例索引: Overview
+            二层交换: Layer 2 switching
+            IP 转发: IP forwarding
+            链路条件: Link conditions
+            动态路由: Dynamic routing
+            IPv4 转发: IPv4 forwarding
+            IPv6 转发: IPv6 forwarding
+          theme:
+            palette:
+              - media: "(prefers-color-scheme: light)"
+                scheme: default
+                toggle:
+                  icon: material/weather-sunny
+                  name: Switch to dark mode
+              - media: "(prefers-color-scheme: dark)"
+                scheme: slate
+                toggle:
+                  icon: material/weather-night
+                  name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - 首页: index.md
+  - 快速开始: getting-started.md
+  - Manifest: manifest.md
+  - CLI 参考: cli.md
+  - 实验示例:
+      - 示例索引: examples/index.md
+      - 二层交换:
+          - Bridge FDB: examples/bridge-fdb.md
+          - Bridge VLAN: examples/bridge-vlan.md
+          - Bridge STP: examples/bridge-stp.md
+      - IP 转发:
+          - IPv4 转发: examples/ipv4-forward.md
+          - IPv6 转发: examples/ipv6-forward.md
+      - 链路条件:
+          - netem: examples/netem.md
+      - 动态路由:
+          - OSPF: examples/ospf.md
+          - BGP: examples/bgp.md
+
+strict: true

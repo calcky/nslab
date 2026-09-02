@@ -12,14 +12,14 @@ from nslab.backend.base import (
     LiveInventory,
     NamespaceInventory,
     NetworkBackend,
-    expected_main_table_ipv4_routes,
+    expected_main_table_routes,
     inventory_matches_plan,
     recorded_link_ids_match_inventory,
 )
 from nslab.backend.fake import FakeNetworkBackend
 from nslab.errors import NslabError
 from nslab.manifest import Manifest
-from nslab.planner import RoutePlan, TopologyPlan, compile_plan
+from nslab.planner import NetemPlan, RoutePlan, TopologyPlan, compile_plan
 
 
 @pytest.fixture
@@ -48,8 +48,13 @@ def bridge_plan() -> TopologyPlan:
                         "kind": "bridge",
                         "bridge": {
                             "name": "br0",
-                            "stp": False,
+                            "stp": True,
                             "vlan_filtering": False,
+                            "priority": 4096,
+                            "ports": {
+                                "swp1": {"path_cost": 10, "priority": 16},
+                                "swp2": {"path_cost": 100},
+                            },
                         },
                         "interfaces": {
                             "br0": {"addresses": ["192.0.2.1/24"]},
@@ -231,12 +236,17 @@ def test_fake_backend_builds_semantically_matching_inventory_and_records_calls(
     assert tuple(sw1_inventory.interfaces) == ("lo", "br0", "swp1", "swp2")
     assert sw1_inventory.interfaces["br0"].kind == "bridge"
     assert sw1_inventory.interfaces["br0"].addresses == (IPv4Interface("192.0.2.1/24"),)
-    assert sw1_inventory.interfaces["br0"].stp is False
+    assert sw1_inventory.interfaces["br0"].stp is True
     assert sw1_inventory.interfaces["br0"].vlan_filtering is False
+    assert sw1_inventory.interfaces["br0"].bridge_priority == 4096
     assert sw1_inventory.interfaces["swp1"].master == "br0"
     assert sw1_inventory.interfaces["swp1"].mtu == 1500
+    assert sw1_inventory.interfaces["swp1"].path_cost == 10
+    assert sw1_inventory.interfaces["swp1"].port_priority == 16
     assert sw1_inventory.interfaces["swp2"].master == "br0"
     assert sw1_inventory.interfaces["swp2"].mtu == 1400
+    assert sw1_inventory.interfaces["swp2"].path_cost == 100
+    assert sw1_inventory.interfaces["swp2"].port_priority is None
     assert all(interface.up for interface in sw1_inventory.interfaces.values())
 
 
@@ -340,6 +350,64 @@ def test_semantic_comparison_ignores_ifindex_but_detects_other_drift(
         addresses=(IPv4Interface("198.51.100.1/24"),),
     )
     assert not inventory_matches_plan(bridge_plan, changed_address)
+
+
+def test_fake_backend_applies_link_netem_to_both_endpoints_and_detects_drift(
+    bridge_plan: TopologyPlan,
+) -> None:
+    netem = NetemPlan(delay_ms=100, jitter_ms=10, loss_percent=5)
+    first_link = replace(bridge_plan.links[0], netem=netem)
+    plan = replace(bridge_plan, links=(first_link, bridge_plan.links[1]))
+    backend = FakeNetworkBackend()
+    _create_topology(backend, plan)
+
+    inventory = backend.inventory(plan)
+
+    left = inventory.namespaces[first_link.left.namespace].interfaces[first_link.left.interface]
+    right = inventory.namespaces[first_link.right.namespace].interfaces[first_link.right.interface]
+    assert left.netem == netem
+    assert right.netem == netem
+    assert inventory_matches_plan(plan, inventory)
+
+    changed = _replace_interface(
+        inventory,
+        first_link.right.namespace,
+        first_link.right.interface,
+        netem=NetemPlan(delay_ms=50, jitter_ms=0, loss_percent=0),
+    )
+    assert not inventory_matches_plan(plan, changed)
+
+
+def test_semantic_comparison_detects_explicit_stp_tuning_drift(
+    bridge_plan: TopologyPlan,
+) -> None:
+    backend = FakeNetworkBackend()
+    _create_topology(backend, bridge_plan)
+    inventory = backend.inventory(bridge_plan)
+    sw1 = bridge_plan.nodes["sw1"]
+
+    changed_bridge_priority = _replace_interface(
+        inventory,
+        sw1.namespace,
+        "br0",
+        bridge_priority=8192,
+    )
+    changed_path_cost = _replace_interface(
+        inventory,
+        sw1.namespace,
+        "swp1",
+        path_cost=20,
+    )
+    changed_port_priority = _replace_interface(
+        inventory,
+        sw1.namespace,
+        "swp1",
+        port_priority=32,
+    )
+
+    assert not inventory_matches_plan(bridge_plan, changed_bridge_priority)
+    assert not inventory_matches_plan(bridge_plan, changed_path_cost)
+    assert not inventory_matches_plan(bridge_plan, changed_port_priority)
 
 
 def test_semantic_comparison_requires_matching_unique_link_identities(
@@ -515,7 +583,7 @@ def test_semantic_comparison_detects_absence_master_up_and_bridge_drift(
         inventory,
         sw1_namespace,
         "br0",
-        stp=True,
+        stp=False,
     )
     assert not inventory_matches_plan(bridge_plan, changed_bridge_flags)
 
@@ -818,7 +886,7 @@ def test_expected_main_table_routes_deduplicate_semantic_duplicates_in_order(
         ),
     )
 
-    assert expected_main_table_ipv4_routes(duplicate_plan) == (
+    assert expected_main_table_routes(duplicate_plan) == (
         RoutePlan(
             dst=IPv4Network("127.0.0.0/8"),
             via=None,

@@ -43,6 +43,22 @@ def _bridge_manifest() -> Manifest:
     )
 
 
+def _stp_manifest() -> Manifest:
+    document = _bridge_manifest().model_dump(mode="json")
+    bridge = document["topology"]["nodes"]["sw1"]["bridge"]
+    bridge.update(
+        {
+            "stp": True,
+            "priority": 4096,
+            "ports": {
+                "swp1": {"path_cost": 10, "priority": 16},
+                "swp2": {"path_cost": 100},
+            },
+        }
+    )
+    return Manifest.model_validate(document)
+
+
 def _cycle_and_isolated_manifest() -> Manifest:
     return Manifest.model_validate(
         {
@@ -129,6 +145,72 @@ def test_tree_renders_bridge_with_optional_details(
             f"{last_detail}eth0: 10.10.0.2/24",
         ]
     )
+
+
+def test_terminal_graph_hides_stp_tuning_unless_detail_is_requested() -> None:
+    plan = compile_plan(_stp_manifest())
+
+    compact = render_graph(plan, "tree")
+    detailed = render_graph(plan, "tree", detail=True)
+
+    assert "sw1 [bridge · br0]" in compact
+    assert "priority 4096" not in compact
+    assert "stp cost" not in compact
+    assert "sw1 [bridge · br0 · stp on · priority 4096 · vlan filtering off]" in detailed
+    assert "swp1: stp cost 10 · priority 16" in detailed
+    assert "swp2: stp cost 100" in detailed
+
+
+def test_terminal_graph_renders_bridge_vlan_membership_only_with_detail() -> None:
+    document = _bridge_manifest().model_dump(mode="json")
+    bridge = document["topology"]["nodes"]["sw1"]["bridge"]
+    bridge.update(
+        {
+            "vlan_filtering": True,
+            "ports": {
+                "swp1": {
+                    "vlans": [
+                        {"vid": 10, "pvid": True, "untagged": True},
+                    ]
+                },
+                "swp2": {"vlans": [{"vid": 10}, {"vid": 20}]},
+            },
+        }
+    )
+    plan = compile_plan(Manifest.model_validate(document))
+
+    compact = render_graph(plan, "tree")
+    detailed = render_graph(plan, "tree", detail=True)
+
+    assert "vlans" not in compact
+    assert "swp1: vlans 10 pvid untagged" in detailed
+    assert "swp2: vlans 10, 20" in detailed
+
+
+def test_terminal_graph_renders_netem_only_with_detail_and_json_keeps_structure() -> None:
+    document = _bridge_manifest().model_dump(mode="json")
+    document["topology"]["links"][0]["netem"] = {
+        "delay_ms": 100,
+        "jitter_ms": 10,
+        "loss_percent": 5,
+    }
+    plan = compile_plan(Manifest.model_validate(document))
+
+    compact = render_graph(plan, "tree")
+    detailed = render_graph(plan, "tree", detail=True)
+    box = render_graph(plan, "box", detail=True)
+    graph_json = json.loads(render_graph(plan, "json"))
+
+    assert "netem" not in compact
+    assert "eth0: netem delay 100ms · jitter 10ms · loss 5%" in detailed
+    assert "swp1: netem delay 100ms · jitter 10ms · loss 5%" in detailed
+    assert "eth0: netem delay 100ms · jitter 10ms · loss 5%" in box
+    assert graph_json["links"][0]["netem"] == {
+        "delay_ms": 100,
+        "jitter_ms": 10,
+        "loss_percent": 5,
+    }
+    assert "netem" not in graph_json["links"][1]
 
 
 def test_tree_renders_cycle_cross_link_and_isolated_component() -> None:

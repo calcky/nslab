@@ -11,7 +11,7 @@ from nslab.backend.fake import FakeNetworkBackend
 from nslab.errors import NslabError
 from nslab.inspector import InspectionReport, inspect_topology
 from nslab.manifest import Manifest, normalized_manifest
-from nslab.planner import TopologyPlan, compile_plan
+from nslab.planner import NetemPlan, TopologyPlan, compile_plan
 from nslab.state import StateSnapshot
 
 
@@ -39,8 +39,13 @@ def manifest() -> Manifest:
                         "kind": "bridge",
                         "bridge": {
                             "name": "br0",
-                            "stp": False,
+                            "stp": True,
                             "vlan_filtering": False,
+                            "priority": 4096,
+                            "ports": {
+                                "swp1": {"path_cost": 10, "priority": 16},
+                                "swp2": {"path_cost": 100},
+                            },
                         },
                         "interfaces": {"br0": {"addresses": ["192.0.2.1/24"]}},
                     },
@@ -334,6 +339,11 @@ def test_report_contains_complete_json_safe_three_way_resources(
     assert h1.actual.root_temporaries[0].present is False
 
     assert tuple(link.index for link in report.nodes[1].desired.links) == (0, 1)
+    desired_bridge = report.nodes[1].desired.interfaces[1]
+    desired_swp1 = report.nodes[1].desired.interfaces[2]
+    assert desired_bridge.bridge_priority == 4096
+    assert desired_swp1.path_cost == 10
+    assert desired_swp1.port_priority == 16
     assert tuple(link.index for link in report.nodes[1].state.links) == (0, 1)  # type: ignore[union-attr]
     assert tuple(link.index for link in report.nodes[1].actual.links) == (0, 1)
     assert tuple(link.index for link in report.nodes[2].desired.links) == (1,)
@@ -381,6 +391,7 @@ def test_interface_differences_are_complete_and_deterministically_sorted(
         mtu=1300,
         up=False,
         addresses=(IPv4Interface("198.51.100.1/24"),),
+        netem=NetemPlan(delay_ms=50, jitter_ms=0, loss_percent=0),
     )
 
     report = inspect_topology(plan, snapshot, changed)
@@ -404,7 +415,43 @@ def test_interface_differences_are_complete_and_deterministically_sorted(
     assert h1_differences == {
         "addresses": (("10.10.0.1/24",), ("198.51.100.1/24",)),
         "mtu": (1500, 1300),
+        "netem": (None, "delay 50ms"),
         "up": (True, False),
+    }
+
+
+def test_inspection_reports_explicit_stp_tuning_drift(
+    plan: TopologyPlan,
+    manifest: Manifest,
+    deployed_inventory: LiveInventory,
+) -> None:
+    snapshot = _snapshot(plan, manifest, deployed_inventory)
+    sw1 = plan.nodes["sw1"]
+    changed = _replace_interface(
+        deployed_inventory,
+        sw1.namespace,
+        "br0",
+        bridge_priority=8192,
+    )
+    changed = _replace_interface(
+        changed,
+        sw1.namespace,
+        "swp1",
+        path_cost=20,
+        port_priority=32,
+    )
+
+    report = inspect_topology(plan, snapshot, changed)
+
+    assert report.status == "degraded"
+    assert {
+        (difference.interface, difference.property, difference.desired, difference.actual)
+        for difference in report.differences
+        if difference.node == "sw1"
+    } >= {
+        ("br0", "bridge_priority", 4096, 8192),
+        ("swp1", "path_cost", 10, 20),
+        ("swp1", "port_priority", 16, 32),
     }
 
 

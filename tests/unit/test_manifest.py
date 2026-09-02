@@ -3,7 +3,14 @@ from __future__ import annotations
 import copy
 import json
 from collections.abc import Callable
-from ipaddress import IPv4Address, IPv4Interface, IPv4Network
+from ipaddress import (
+    IPv4Address,
+    IPv4Interface,
+    IPv4Network,
+    IPv6Address,
+    IPv6Interface,
+    IPv6Network,
+)
 from pathlib import Path
 from typing import Any
 
@@ -116,8 +123,168 @@ def test_loads_bridge_fdb_manifest_and_types_values(
     assert sw1.bridge.name == "br0"
     assert sw1.bridge.stp is False
     assert sw1.bridge.vlan_filtering is False
+    assert sw1.bridge.priority is None
+    assert sw1.bridge.ports == {}
 
     assert manifest_fingerprint(manifest) == manifest_fingerprint(load_manifest(path))
+
+
+def test_loads_explicit_bridge_and_port_stp_settings(
+    tmp_path: Path, manifest_data: ManifestData
+) -> None:
+    bridge = manifest_data["topology"]["nodes"]["sw1"]["bridge"]
+    bridge.update(
+        {
+            "stp": True,
+            "priority": 4096,
+            "ports": {
+                "swp1": {"path_cost": 10, "priority": 16},
+                "swp2": {"path_cost": 100},
+            },
+        }
+    )
+
+    manifest = load_manifest(_write_manifest(tmp_path, manifest_data))
+    sw1 = manifest.topology.nodes["sw1"]
+    assert isinstance(sw1, BridgeNode)
+    assert sw1.bridge.priority == 4096
+    assert sw1.bridge.ports["swp1"].path_cost == 10
+    assert sw1.bridge.ports["swp1"].priority == 16
+    assert sw1.bridge.ports["swp2"].path_cost == 100
+    assert sw1.bridge.ports["swp2"].priority is None
+
+    normalized = normalized_manifest(manifest)
+    normalized_bridge = normalized["topology"]["nodes"]["sw1"]["bridge"]
+    assert normalized_bridge["priority"] == 4096
+    assert normalized_bridge["ports"] == {
+        "swp1": {"path_cost": 10, "priority": 16},
+        "swp2": {"path_cost": 100},
+    }
+
+
+def test_loads_bridge_port_vlan_settings(tmp_path: Path, manifest_data: ManifestData) -> None:
+    bridge = manifest_data["topology"]["nodes"]["sw1"]["bridge"]
+    bridge.update(
+        {
+            "vlan_filtering": True,
+            "ports": {
+                "swp1": {
+                    "vlans": [
+                        {"vid": 10, "pvid": True, "untagged": True},
+                        {"vid": 20},
+                    ]
+                }
+            },
+        }
+    )
+
+    manifest = load_manifest(_write_manifest(tmp_path, manifest_data))
+    sw1 = manifest.topology.nodes["sw1"]
+    assert isinstance(sw1, BridgeNode)
+    assert tuple(vlan.vid for vlan in sw1.bridge.ports["swp1"].vlans) == (10, 20)
+    assert sw1.bridge.ports["swp1"].vlans[0].pvid is True
+    assert sw1.bridge.ports["swp1"].vlans[0].untagged is True
+    assert sw1.bridge.ports["swp1"].vlans[1].pvid is False
+
+    normalized = normalized_manifest(manifest)
+    normalized_port = normalized["topology"]["nodes"]["sw1"]["bridge"]["ports"]["swp1"]
+    assert normalized_port == {
+        "vlans": [
+            {"vid": 10, "pvid": True, "untagged": True},
+            {"vid": 20, "pvid": False, "untagged": False},
+        ]
+    }
+
+
+@pytest.mark.parametrize(
+    "vlans",
+    [
+        [{"vid": 0}],
+        [{"vid": 4095}],
+        [{"vid": 10}, {"vid": 10}],
+        [{"vid": 10, "pvid": True}, {"vid": 20, "pvid": True}],
+    ],
+)
+def test_rejects_invalid_bridge_port_vlans(
+    tmp_path: Path, manifest_data: ManifestData, vlans: object
+) -> None:
+    bridge = manifest_data["topology"]["nodes"]["sw1"]["bridge"]
+    bridge["vlan_filtering"] = True
+    bridge["ports"] = {"swp1": {"vlans": vlans}}
+
+    _assert_invalid(tmp_path, manifest_data)
+
+
+def test_rejects_bridge_vlans_when_filtering_is_disabled(
+    tmp_path: Path, manifest_data: ManifestData
+) -> None:
+    bridge = manifest_data["topology"]["nodes"]["sw1"]["bridge"]
+    bridge["ports"] = {"swp1": {"vlans": [{"vid": 10}]}}
+
+    error = _assert_invalid(tmp_path, manifest_data)
+    assert "require vlan_filtering: true" in json.dumps(error.details["issues"])
+
+
+@pytest.mark.parametrize("priority", [-1, 65536, True, 1.5])
+def test_rejects_invalid_bridge_priority(
+    tmp_path: Path, manifest_data: ManifestData, priority: object
+) -> None:
+    manifest_data["topology"]["nodes"]["sw1"]["bridge"]["priority"] = priority
+
+    _assert_invalid(tmp_path, manifest_data)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("path_cost", 0),
+        ("path_cost", 65536),
+        ("path_cost", True),
+        ("priority", -1),
+        ("priority", 64),
+        ("priority", True),
+    ],
+)
+def test_rejects_invalid_bridge_port_stp_setting(
+    tmp_path: Path,
+    manifest_data: ManifestData,
+    field: str,
+    value: object,
+) -> None:
+    bridge = manifest_data["topology"]["nodes"]["sw1"]["bridge"]
+    bridge["stp"] = True
+    bridge["ports"] = {"swp1": {field: value}}
+
+    _assert_invalid(tmp_path, manifest_data)
+
+
+def test_rejects_empty_bridge_port_settings(tmp_path: Path, manifest_data: ManifestData) -> None:
+    bridge = manifest_data["topology"]["nodes"]["sw1"]["bridge"]
+    bridge["stp"] = True
+    bridge["ports"] = {"swp1": {}}
+
+    _assert_invalid(tmp_path, manifest_data)
+
+
+def test_rejects_bridge_port_settings_when_stp_is_disabled(
+    tmp_path: Path, manifest_data: ManifestData
+) -> None:
+    bridge = manifest_data["topology"]["nodes"]["sw1"]["bridge"]
+    bridge["ports"] = {"swp1": {"path_cost": 10}}
+
+    error = _assert_invalid(tmp_path, manifest_data)
+    assert "require stp: true" in json.dumps(error.details["issues"])
+
+
+def test_rejects_stp_settings_for_unlinked_bridge_port(
+    tmp_path: Path, manifest_data: ManifestData
+) -> None:
+    bridge = manifest_data["topology"]["nodes"]["sw1"]["bridge"]
+    bridge["stp"] = True
+    bridge["ports"] = {"swp9": {"path_cost": 10}}
+
+    error = _assert_invalid(tmp_path, manifest_data)
+    assert "swp9" in json.dumps(error.details["issues"])
 
 
 @pytest.mark.parametrize(
@@ -433,9 +600,8 @@ def test_rejects_route_using_other_unlinked_bridge_device(
     _assert_invalid(tmp_path, manifest_data)
 
 
-@pytest.mark.parametrize("key", ["net.ipv6.conf.all.forwarding", "kernel.hostname"])
-def test_rejects_unsupported_sysctl(tmp_path: Path, manifest_data: ManifestData, key: str) -> None:
-    manifest_data["topology"]["nodes"]["h1"]["sysctls"] = {key: 1}
+def test_rejects_unsupported_sysctl(tmp_path: Path, manifest_data: ManifestData) -> None:
+    manifest_data["topology"]["nodes"]["h1"]["sysctls"] = {"kernel.hostname": 1}
     _assert_invalid(tmp_path, manifest_data)
 
 
@@ -469,29 +635,95 @@ def test_rejects_mtu_outside_supported_range(
     _assert_invalid(tmp_path, manifest_data)
 
 
+def test_loads_link_netem_settings(manifest_data: ManifestData) -> None:
+    manifest_data["topology"]["links"][0]["netem"] = {
+        "delay_ms": 100,
+        "jitter_ms": 10,
+        "loss_percent": 5,
+    }
+
+    manifest = Manifest.model_validate(manifest_data)
+
+    netem = manifest.topology.links[0].netem
+    assert netem is not None
+    assert (netem.delay_ms, netem.jitter_ms, netem.loss_percent) == (100, 10, 5)
+    assert normalized_manifest(manifest)["topology"]["links"][0]["netem"] == {
+        "delay_ms": 100,
+        "jitter_ms": 10,
+        "loss_percent": 5,
+    }
+
+
 @pytest.mark.parametrize(
-    ("field", "value"),
+    "netem",
     [
-        ("address", "2001:db8::1/64"),
-        ("route-destination", "2001:db8::/64"),
-        ("route-gateway", "2001:db8::1"),
+        {},
+        {"delay_ms": 0},
+        {"jitter_ms": 10},
+        {"delay_ms": -1},
+        {"delay_ms": 60_001},
+        {"delay_ms": True},
+        {"delay_ms": 1.5},
+        {"delay_ms": 100, "jitter_ms": -1},
+        {"delay_ms": 100, "jitter_ms": 60_001},
+        {"loss_percent": -1},
+        {"loss_percent": 101},
+        {"loss_percent": True},
+        {"loss_percent": 1.5},
     ],
 )
-def test_rejects_non_ipv4_values(
+def test_rejects_invalid_link_netem(
     tmp_path: Path,
     manifest_data: ManifestData,
-    field: str,
-    value: str,
+    netem: dict[str, object],
 ) -> None:
-    h1 = manifest_data["topology"]["nodes"]["h1"]
-    if field == "address":
-        h1["interfaces"]["eth0"]["addresses"] = [value]
-    else:
-        route = {"dst": "192.0.2.0/24", "via": "10.10.0.2", "dev": "eth0"}
-        route["dst" if field == "route-destination" else "via"] = value
-        h1["routes"] = [route]
+    manifest_data["topology"]["links"][0]["netem"] = netem
 
     _assert_invalid(tmp_path, manifest_data)
+
+
+def test_accepts_ipv6_addresses_routes_and_forwarding(manifest_data: ManifestData) -> None:
+    h1 = manifest_data["topology"]["nodes"]["h1"]
+    h1["interfaces"]["eth0"]["addresses"] = ["10.10.0.1/24", "2001:db8:1::2/64"]
+    h1["routes"] = [
+        {"dst": "::/0", "via": "2001:db8:1::1", "dev": "eth0"},
+    ]
+    h1["sysctls"] = {"net.ipv6.conf.all.forwarding": 1}
+
+    manifest = Manifest.model_validate(manifest_data)
+
+    node = manifest.topology.nodes["h1"]
+    assert node.interfaces["eth0"].addresses == (
+        IPv4Interface("10.10.0.1/24"),
+        IPv6Interface("2001:db8:1::2/64"),
+    )
+    assert node.routes == (
+        RouteConfig(
+            dst=IPv6Network("::/0"),
+            via=IPv6Address("2001:db8:1::1"),
+            dev="eth0",
+        ),
+    )
+    assert node.sysctls == {"net.ipv6.conf.all.forwarding": 1}
+
+
+@pytest.mark.parametrize(
+    ("dst", "via"),
+    [
+        ("::/0", "10.10.0.2"),
+        ("192.0.2.0/24", "2001:db8::1"),
+    ],
+)
+def test_rejects_route_with_mixed_address_families(
+    tmp_path: Path,
+    manifest_data: ManifestData,
+    dst: str,
+    via: str,
+) -> None:
+    manifest_data["topology"]["nodes"]["h1"]["routes"] = [{"dst": dst, "via": via, "dev": "eth0"}]
+
+    error = _assert_invalid(tmp_path, manifest_data)
+    assert "same address family" in json.dumps(error.details["issues"])
 
 
 @pytest.mark.parametrize(
@@ -539,6 +771,19 @@ def test_accepts_typed_ipv4_model_inputs() -> None:
     assert route.via == IPv4Address("192.0.2.254")
 
 
+def test_accepts_typed_ipv6_model_inputs() -> None:
+    interface = InterfaceConfig(addresses=(IPv6Interface("2001:db8::1/64"),))
+    route = RouteConfig(
+        dst=IPv6Network("2001:db8:1::/64"),
+        via=IPv6Address("2001:db8::fe"),
+        dev="eth0",
+    )
+
+    assert interface.addresses == (IPv6Interface("2001:db8::1/64"),)
+    assert route.dst == IPv6Network("2001:db8:1::/64")
+    assert route.via == IPv6Address("2001:db8::fe")
+
+
 def test_normalizes_default_route_and_serializes_ip_values(
     tmp_path: Path, manifest_data: ManifestData
 ) -> None:
@@ -563,6 +808,18 @@ def test_normalizes_default_route_and_serializes_ip_values(
         "dev": "eth0",
     }
     json.dumps(normalized)
+
+
+def test_omitted_stp_tuning_preserves_legacy_normalized_manifest(
+    tmp_path: Path, manifest_data: ManifestData
+) -> None:
+    manifest = load_manifest(_write_manifest(tmp_path, manifest_data))
+
+    normalized = normalized_manifest(manifest)
+    bridge = normalized["topology"]["nodes"]["sw1"]["bridge"]
+
+    assert "priority" not in bridge
+    assert "ports" not in bridge
 
 
 def test_fingerprint_is_sorted_compact_sha256_of_normalized_manifest(

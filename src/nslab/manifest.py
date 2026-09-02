@@ -3,7 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from ipaddress import IPv4Address, IPv4Interface, IPv4Network
+from ipaddress import (
+    IPv4Address,
+    IPv4Interface,
+    IPv4Network,
+    IPv6Address,
+    IPv6Interface,
+    IPv6Network,
+)
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
@@ -23,7 +30,16 @@ from nslab.errors import NslabError
 
 NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 IFNAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
-ALLOWED_SYSCTLS = frozenset({"net.ipv4.ip_forward"})
+ALLOWED_SYSCTLS = frozenset(
+    {
+        "net.ipv4.ip_forward",
+        "net.ipv6.conf.all.forwarding",
+    }
+)
+
+type IPAddress = IPv4Address | IPv6Address
+type IPInterface = IPv4Interface | IPv6Interface
+type IPNetwork = IPv4Network | IPv6Network
 
 
 def _require_name(value: str, pattern: re.Pattern[str], label: str) -> str:
@@ -35,7 +51,7 @@ def _require_name(value: str, pattern: re.Pattern[str], label: str) -> str:
 class InterfaceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    addresses: tuple[IPv4Interface, ...] = ()
+    addresses: tuple[IPv4Interface | IPv6Interface, ...] = ()
 
     @field_validator("addresses", mode="before")
     @classmethod
@@ -43,16 +59,16 @@ class InterfaceConfig(BaseModel):
         if not isinstance(addresses, (list, tuple)):
             raise ValueError("interface addresses must be a list or tuple")
         for address in addresses:
-            if not isinstance(address, (str, IPv4Interface)):
-                raise ValueError("interface addresses must be IPv4 strings")
+            if not isinstance(address, (str, IPv4Interface, IPv6Interface)):
+                raise ValueError("interface addresses must be IPv4 or IPv6 strings")
         return addresses
 
     @field_validator("addresses")
     @classmethod
     def validate_unique_addresses(
-        cls, addresses: tuple[IPv4Interface, ...]
-    ) -> tuple[IPv4Interface, ...]:
-        seen_addresses: set[IPv4Interface] = set()
+        cls, addresses: tuple[IPInterface, ...]
+    ) -> tuple[IPInterface, ...]:
+        seen_addresses: set[IPInterface] = set()
         for address in addresses:
             if address in seen_addresses:
                 raise ValueError(f"duplicate interface address: {str(address)!r}")
@@ -63,15 +79,15 @@ class InterfaceConfig(BaseModel):
 class RouteConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    dst: IPv4Network
-    via: IPv4Address | None = None
+    dst: IPv4Network | IPv6Network
+    via: IPv4Address | IPv6Address | None = None
     dev: str
 
     @field_validator("dst", mode="before")
     @classmethod
     def normalize_default_route(cls, value: object) -> object:
-        if not isinstance(value, (str, IPv4Network)):
-            raise ValueError("route destination must be an IPv4 string")
+        if not isinstance(value, (str, IPv4Network, IPv6Network)):
+            raise ValueError("route destination must be an IPv4 or IPv6 string")
         if value == "default":
             return "0.0.0.0/0"
         return value
@@ -79,14 +95,124 @@ class RouteConfig(BaseModel):
     @field_validator("via", mode="before")
     @classmethod
     def validate_gateway_input(cls, value: object) -> object:
-        if value is not None and not isinstance(value, (str, IPv4Address)):
-            raise ValueError("route gateway must be an IPv4 string")
+        if value is not None and not isinstance(value, (str, IPv4Address, IPv6Address)):
+            raise ValueError("route gateway must be an IPv4 or IPv6 string")
         return value
 
     @field_validator("dev")
     @classmethod
     def validate_device_name(cls, value: str) -> str:
         return _require_name(value, IFNAME_PATTERN, "route interface name")
+
+    @model_validator(mode="after")
+    def validate_address_family(self) -> Self:
+        if self.via is not None and self.dst.version != self.via.version:
+            raise ValueError("route destination and gateway must use the same address family")
+        return self
+
+
+RoutingAsn = Annotated[StrictInt, Field(ge=1, le=4_294_967_295)]
+
+
+def _validate_sequence(value: object, label: str) -> object:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"{label} must be a list or tuple")
+    return value
+
+
+class OspfConfig(BaseModel):
+    """The small, deterministic OSPFv2 subset emitted to FRRouting."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    router_id: IPv4Address
+    area: IPv4Address = IPv4Address("0.0.0.0")
+    networks: tuple[IPv4Network, ...] = ()
+    passive_interfaces: tuple[str, ...] = ()
+
+    @field_validator("networks", mode="before")
+    @classmethod
+    def validate_network_inputs(cls, value: object) -> object:
+        return _validate_sequence(value, "OSPF networks")
+
+    @field_validator("networks")
+    @classmethod
+    def validate_unique_networks(cls, networks: tuple[IPv4Network, ...]) -> tuple[IPv4Network, ...]:
+        if len(set(networks)) != len(networks):
+            raise ValueError("OSPF networks must be unique")
+        return networks
+
+    @field_validator("passive_interfaces", mode="before")
+    @classmethod
+    def validate_passive_interface_inputs(cls, value: object) -> object:
+        return _validate_sequence(value, "OSPF passive_interfaces")
+
+    @field_validator("passive_interfaces")
+    @classmethod
+    def validate_passive_interfaces(cls, interfaces: tuple[str, ...]) -> tuple[str, ...]:
+        for interface in interfaces:
+            _require_name(interface, IFNAME_PATTERN, "OSPF interface name")
+        if len(set(interfaces)) != len(interfaces):
+            raise ValueError("OSPF passive_interfaces must be unique")
+        return interfaces
+
+
+class BgpNeighborConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    address: IPv4Address
+    remote_as: RoutingAsn
+
+
+class BgpConfig(BaseModel):
+    """The directly-connected IPv4 BGP subset emitted to FRRouting."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    local_as: RoutingAsn
+    router_id: IPv4Address
+    neighbors: tuple[BgpNeighborConfig, ...]
+    networks: tuple[IPv4Network, ...] = ()
+
+    @field_validator("networks", mode="before")
+    @classmethod
+    def validate_network_inputs(cls, value: object) -> object:
+        return _validate_sequence(value, "BGP networks")
+
+    @field_validator("networks")
+    @classmethod
+    def validate_unique_networks(cls, networks: tuple[IPv4Network, ...]) -> tuple[IPv4Network, ...]:
+        if len(set(networks)) != len(networks):
+            raise ValueError("BGP networks must be unique")
+        return networks
+
+    @field_validator("neighbors", mode="before")
+    @classmethod
+    def validate_neighbor_inputs(cls, value: object) -> object:
+        return _validate_sequence(value, "BGP neighbors")
+
+    @field_validator("neighbors")
+    @classmethod
+    def validate_unique_neighbors(
+        cls, neighbors: tuple[BgpNeighborConfig, ...]
+    ) -> tuple[BgpNeighborConfig, ...]:
+        addresses = [neighbor.address for neighbor in neighbors]
+        if len(set(addresses)) != len(addresses):
+            raise ValueError("BGP neighbor addresses must be unique")
+        return neighbors
+
+
+class RoutingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ospf: OspfConfig | None = None
+    bgp: BgpConfig | None = None
+
+    @model_validator(mode="after")
+    def validate_protocols(self) -> Self:
+        if self.ospf is None and self.bgp is None:
+            raise ValueError("routing must enable OSPF or BGP")
+        return self
 
 
 SysctlValue = Annotated[StrictInt, Field(ge=0, le=1)]
@@ -98,6 +224,7 @@ class _NodeBase(BaseModel):
     interfaces: dict[str, InterfaceConfig] = Field(default_factory=dict)
     routes: tuple[RouteConfig, ...] = ()
     sysctls: dict[str, SysctlValue] = Field(default_factory=dict)
+    routing: RoutingConfig | None = None
 
     @field_validator("interfaces")
     @classmethod
@@ -113,7 +240,7 @@ class _NodeBase(BaseModel):
     def validate_unique_route_destinations(
         cls, routes: tuple[RouteConfig, ...]
     ) -> tuple[RouteConfig, ...]:
-        seen_destinations: set[IPv4Network] = set()
+        seen_destinations: set[IPNetwork] = set()
         for route in routes:
             if route.dst in seen_destinations:
                 raise ValueError(f"duplicate route destination: {str(route.dst)!r}")
@@ -154,12 +281,56 @@ class LinuxNode(_NodeBase):
     kind: Literal["linux"]
 
 
+BridgePriority = Annotated[StrictInt, Field(ge=0, le=65535)]
+BridgePortPriority = Annotated[StrictInt, Field(ge=0, le=63)]
+BridgePathCost = Annotated[StrictInt, Field(ge=1, le=65535)]
+BridgeVlanId = Annotated[StrictInt, Field(ge=1, le=4094)]
+
+
+class BridgeVlanConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    vid: BridgeVlanId
+    pvid: StrictBool = False
+    untagged: StrictBool = False
+
+
+class BridgePortConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    path_cost: BridgePathCost | None = None
+    priority: BridgePortPriority | None = None
+    vlans: tuple[BridgeVlanConfig, ...] = ()
+
+    @field_validator("vlans")
+    @classmethod
+    def validate_vlans(cls, vlans: tuple[BridgeVlanConfig, ...]) -> tuple[BridgeVlanConfig, ...]:
+        seen: set[int] = set()
+        pvids = 0
+        for vlan in vlans:
+            if vlan.vid in seen:
+                raise ValueError(f"duplicate bridge VLAN: {vlan.vid}")
+            seen.add(vlan.vid)
+            pvids += int(vlan.pvid)
+        if pvids > 1:
+            raise ValueError("bridge port may declare at most one PVID")
+        return vlans
+
+    @model_validator(mode="after")
+    def validate_nonempty_settings(self) -> Self:
+        if self.path_cost is None and self.priority is None and not self.vlans:
+            raise ValueError("bridge port settings must declare STP or VLAN settings")
+        return self
+
+
 class BridgeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     name: str
     stp: StrictBool
     vlan_filtering: StrictBool
+    priority: BridgePriority | None = None
+    ports: dict[str, BridgePortConfig] = Field(default_factory=dict)
 
     @field_validator("name")
     @classmethod
@@ -168,6 +339,25 @@ class BridgeConfig(BaseModel):
         if name == "lo":
             raise ValueError("bridge interface name cannot be 'lo'")
         return name
+
+    @field_validator("ports")
+    @classmethod
+    def validate_port_names(cls, ports: dict[str, BridgePortConfig]) -> dict[str, BridgePortConfig]:
+        for port_name in ports:
+            _require_name(port_name, IFNAME_PATTERN, "bridge port interface name")
+            if port_name == "lo":
+                raise ValueError("bridge port interface name cannot be 'lo'")
+        return ports
+
+    @model_validator(mode="after")
+    def validate_port_settings(self) -> Self:
+        if not self.stp and any(
+            port.path_cost is not None or port.priority is not None for port in self.ports.values()
+        ):
+            raise ValueError("bridge port STP settings require stp: true")
+        if not self.vlan_filtering and any(port.vlans for port in self.ports.values()):
+            raise ValueError("bridge port VLAN settings require vlan_filtering: true")
+        return self
 
 
 class BridgeNode(_NodeBase):
@@ -180,12 +370,33 @@ class BridgeNode(_NodeBase):
 type NodeConfig = Annotated[LinuxNode | BridgeNode, Field(discriminator="kind")]
 
 
+NetemDelayMs = Annotated[StrictInt, Field(ge=0, le=60_000)]
+NetemLossPercent = Annotated[StrictInt, Field(ge=0, le=100)]
+
+
+class NetemConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    delay_ms: NetemDelayMs = 0
+    jitter_ms: NetemDelayMs = 0
+    loss_percent: NetemLossPercent = 0
+
+    @model_validator(mode="after")
+    def validate_effects(self) -> Self:
+        if self.jitter_ms and not self.delay_ms:
+            raise ValueError("netem jitter_ms requires delay_ms")
+        if not (self.delay_ms or self.jitter_ms or self.loss_percent):
+            raise ValueError("netem must declare a non-zero delay, jitter, or loss")
+        return self
+
+
 class LinkConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     kind: Literal["veth"] = "veth"
     endpoints: tuple[str, str]
     mtu: Annotated[StrictInt, Field(ge=576, le=9216)] = 1500
+    netem: NetemConfig | None = None
 
 
 class Topology(BaseModel):
@@ -205,6 +416,8 @@ class Topology(BaseModel):
     def validate_references(self) -> Self:
         linked_interfaces = {node_name: set[str]() for node_name in self.nodes}
         used_endpoints: set[str] = set()
+        ospf_router_ids: dict[IPv4Address, str] = {}
+        bgp_router_ids: dict[IPv4Address, str] = {}
 
         for link in self.links:
             for endpoint in link.endpoints:
@@ -232,6 +445,12 @@ class Topology(BaseModel):
                         f"{node_name!r}: {node.bridge.name!r}"
                     )
                 available.add(node.bridge.name)
+                for port_name in node.bridge.ports:
+                    if port_name not in linked:
+                        raise ValueError(
+                            f"configured bridge port is not linked on node "
+                            f"{node_name!r}: {port_name!r}"
+                        )
 
             for interface_name in node.interfaces:
                 if interface_name not in available:
@@ -243,6 +462,53 @@ class Topology(BaseModel):
                     raise ValueError(
                         f"route device is not linked on node {node_name!r}: {route.dev!r}"
                     )
+
+            routing = node.routing
+            if routing is None:
+                continue
+            if not isinstance(node, LinuxNode):
+                raise ValueError(f"dynamic routing is only supported on linux nodes: {node_name!r}")
+            if node.sysctls.get("net.ipv4.ip_forward") != 1:
+                raise ValueError(
+                    f"dynamic routing requires net.ipv4.ip_forward: 1 on node {node_name!r}"
+                )
+
+            if routing.ospf is not None:
+                previous = ospf_router_ids.get(routing.ospf.router_id)
+                if previous is not None:
+                    raise ValueError(
+                        f"duplicate OSPF router_id {routing.ospf.router_id} on nodes "
+                        f"{previous!r} and {node_name!r}"
+                    )
+                ospf_router_ids[routing.ospf.router_id] = node_name
+                for interface in routing.ospf.passive_interfaces:
+                    if interface not in available:
+                        raise ValueError(
+                            f"OSPF passive interface is not linked on node "
+                            f"{node_name!r}: {interface!r}"
+                        )
+
+            if routing.bgp is not None:
+                previous = bgp_router_ids.get(routing.bgp.router_id)
+                if previous is not None:
+                    raise ValueError(
+                        f"duplicate BGP router_id {routing.bgp.router_id} on nodes "
+                        f"{previous!r} and {node_name!r}"
+                    )
+                bgp_router_ids[routing.bgp.router_id] = node_name
+                interface_networks = tuple(
+                    address.network
+                    for interface_name, interface in node.interfaces.items()
+                    if interface_name in available
+                    for address in interface.addresses
+                    if address.version == 4
+                )
+                for neighbor in routing.bgp.neighbors:
+                    if not any(neighbor.address in network for network in interface_networks):
+                        raise ValueError(
+                            f"BGP neighbor {neighbor.address} is not directly connected on "
+                            f"node {node_name!r}"
+                        )
 
         return self
 
@@ -307,6 +573,33 @@ def load_manifest(path: Path) -> Manifest:
 
 def normalized_manifest(manifest: Manifest) -> dict[str, object]:
     normalized: dict[str, object] = manifest.model_dump(mode="json", exclude_none=True)
+    topology = normalized["topology"]
+    assert isinstance(topology, dict)
+    nodes = topology["nodes"]
+    assert isinstance(nodes, dict)
+    for node_name, node in manifest.topology.nodes.items():
+        if not isinstance(node, BridgeNode) or node.bridge.ports:
+            continue
+        node_document = nodes[node_name]
+        assert isinstance(node_document, dict)
+        bridge_document = node_document["bridge"]
+        assert isinstance(bridge_document, dict)
+        bridge_document.pop("ports", None)
+    for node_name, node in manifest.topology.nodes.items():
+        if not isinstance(node, BridgeNode) or not node.bridge.ports:
+            continue
+        node_document = nodes[node_name]
+        assert isinstance(node_document, dict)
+        bridge_document = node_document["bridge"]
+        assert isinstance(bridge_document, dict)
+        ports_document = bridge_document["ports"]
+        assert isinstance(ports_document, dict)
+        for port_name, port in node.bridge.ports.items():
+            if port.vlans:
+                continue
+            port_document = ports_document[port_name]
+            assert isinstance(port_document, dict)
+            port_document.pop("vlans", None)
     return normalized
 
 

@@ -9,12 +9,14 @@ from nslab.backend.base import (
     InterfaceInventory,
     LiveInventory,
     NamespaceInventory,
-    expected_main_table_ipv4_routes,
+    expected_bridge_port_vlans,
+    expected_main_table_routes,
 )
 from nslab.errors import NslabError
 from nslab.planner import (
     EndpointPlan,
     LinkPlan,
+    NetemPlan,
     NodeKind,
     NodePlan,
     RoutePlan,
@@ -76,6 +78,7 @@ class FakeNetworkBackend:
         self._next_link_id = 1
         self._next_ifindex: dict[str, int] = {}
         self._veth_peers: dict[_EndpointKey, _EndpointKey] = {}
+        self.routing_deployments: set[str] = set()
 
     def _record(self, operation: str, resource: str) -> None:
         self._call_count += 1
@@ -133,7 +136,7 @@ class FakeNetworkBackend:
             kind=node.kind,
             namespace=resource,
             interfaces={"lo": loopback},
-            routes=expected_main_table_ipv4_routes(node)[:1],
+            routes=expected_main_table_routes(node)[:1],
             sysctls={},
         )
 
@@ -180,6 +183,7 @@ class FakeNetworkBackend:
                 up=False,
                 stp=node.stp,
                 vlan_filtering=node.vlan_filtering,
+                bridge_priority=node.bridge_priority,
             ),
         )
 
@@ -194,8 +198,8 @@ class FakeNetworkBackend:
 
         link_id = f"fake-link-{self._next_link_id}"
         self._next_link_id += 1
-        self._insert_veth_endpoint(link.left, link.mtu, link_id)
-        self._insert_veth_endpoint(link.right, link.mtu, link_id)
+        self._insert_veth_endpoint(link.left, link.mtu, link.netem, link_id)
+        self._insert_veth_endpoint(link.right, link.mtu, link.netem, link_id)
         left_key = (link.left.namespace, link.left.interface)
         right_key = (link.right.namespace, link.right.interface)
         self._veth_peers[left_key] = right_key
@@ -205,6 +209,7 @@ class FakeNetworkBackend:
         self,
         endpoint: EndpointPlan,
         mtu: int,
+        netem: NetemPlan | None,
         link_id: str,
     ) -> None:
         self._insert_interface(
@@ -216,6 +221,7 @@ class FakeNetworkBackend:
                 master=None,
                 mtu=mtu,
                 up=False,
+                netem=netem,
                 link_id=link_id,
             ),
         )
@@ -248,6 +254,7 @@ class FakeNetworkBackend:
                 addresses=node.interfaces.get(bridge_name, ()),
                 stp=node.stp,
                 vlan_filtering=node.vlan_filtering,
+                bridge_priority=node.bridge_priority,
             )
 
         for link in plan.links:
@@ -261,17 +268,39 @@ class FakeNetworkBackend:
                         "configure_node",
                         f"{resource}:{endpoint.interface}",
                     )
+                port = node.bridge_ports.get(endpoint.interface)
                 interfaces[endpoint.interface] = replace(
                     interface,
                     master=node.bridge_name if node.kind == "bridge" else None,
                     mtu=link.mtu,
                     up=True,
                     addresses=node.interfaces.get(endpoint.interface, ()),
+                    path_cost=None if port is None else port.path_cost,
+                    port_priority=None if port is None else port.priority,
+                    bridge_vlans=expected_bridge_port_vlans(node, endpoint.interface),
+                    netem=link.netem,
                 )
 
         state.interfaces = interfaces
-        state.routes = expected_main_table_ipv4_routes(node)
+        state.routes = expected_main_table_routes(node)
         state.sysctls = dict(node.sysctls)
+
+    def start_routing(self, plan: TopologyPlan) -> None:
+        if not any(node.routing is not None for node in plan.nodes.values()):
+            return
+        self._record("start_routing", plan.name)
+        self.routing_deployments.add(plan.name)
+
+    def stop_routing(self, plan: TopologyPlan) -> None:
+        if not any(node.routing is not None for node in plan.nodes.values()):
+            return
+        self._record("stop_routing", plan.name)
+        self.routing_deployments.discard(plan.name)
+
+    def routing_ready(self, plan: TopologyPlan) -> bool:
+        if not any(node.routing is not None for node in plan.nodes.values()):
+            return True
+        return plan.name in self.routing_deployments
 
     def inventory(self, plan: TopologyPlan) -> LiveInventory:
         self._record("inventory", plan.name)

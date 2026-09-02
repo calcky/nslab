@@ -9,7 +9,14 @@ from collections.abc import Callable, Iterator
 from contextlib import suppress
 from dataclasses import replace
 from inspect import signature
-from ipaddress import IPv4Address, IPv4Interface, IPv4Network
+from ipaddress import (
+    IPv4Address,
+    IPv4Interface,
+    IPv4Network,
+    IPv6Address,
+    IPv6Interface,
+    IPv6Network,
+)
 from pathlib import Path
 from subprocess import PIPE
 from types import FrameType
@@ -22,7 +29,15 @@ import nslab.backend.pyroute2 as pyroute2_backend
 from nslab.backend.base import ExecResult, NetworkBackend
 from nslab.backend.pyroute2 import Pyroute2Backend
 from nslab.errors import NslabError, OperationCancelled
-from nslab.planner import EndpointPlan, LinkPlan, NodePlan, RoutePlan, TopologyPlan
+from nslab.planner import (
+    BridgePortPlan,
+    EndpointPlan,
+    LinkPlan,
+    NetemPlan,
+    NodePlan,
+    RoutePlan,
+    TopologyPlan,
+)
 
 _OWNERSHIP_TOKEN = "nslab-owned-token"
 _REAL_OS_CLOSE = os.close
@@ -108,6 +123,8 @@ def bridge_node() -> NodePlan:
         bridge_name="br0",
         stp=True,
         vlan_filtering=False,
+        bridge_priority=4096,
+        bridge_ports={"swp1": BridgePortPlan(path_cost=10, priority=16)},
     )
 
 
@@ -156,6 +173,9 @@ def _link_message(
     master: int | None = None,
     stp: int | None = None,
     vlan_filtering: int | None = None,
+    bridge_priority: int | None = None,
+    path_cost: int | None = None,
+    port_priority: int | None = None,
     alias: str | None = None,
 ) -> dict[str, object]:
     info_data: list[tuple[str, object]] = []
@@ -163,9 +183,23 @@ def _link_message(
         info_data.append(("IFLA_BR_STP_STATE", stp))
     if vlan_filtering is not None:
         info_data.append(("IFLA_BR_VLAN_FILTERING", vlan_filtering))
+    if bridge_priority is not None:
+        info_data.append(("IFLA_BR_PRIORITY", bridge_priority))
     link_info: list[tuple[str, object]] = [("IFLA_INFO_KIND", kind)]
     if info_data:
         link_info.append(("IFLA_INFO_DATA", {"attrs": info_data}))
+    slave_data: list[tuple[str, object]] = []
+    if path_cost is not None:
+        slave_data.append(("IFLA_BRPORT_COST", path_cost))
+    if port_priority is not None:
+        slave_data.append(("IFLA_BRPORT_PRIORITY", port_priority))
+    if slave_data:
+        link_info.extend(
+            [
+                ("IFLA_INFO_SLAVE_KIND", "bridge"),
+                ("IFLA_INFO_SLAVE_DATA", {"attrs": slave_data}),
+            ]
+        )
     attributes: list[tuple[str, object]] = [
         ("IFLA_IFNAME", name),
         ("IFLA_MTU", mtu),
@@ -265,6 +299,17 @@ def test_inventory_attribute_fallback_supports_slots_without_len(
                     "attrs": [
                         attribute("IFLA_BR_STP_STATE", 1),
                         attribute("IFLA_BR_VLAN_FILTERING", 0),
+                        attribute("IFLA_BR_PRIORITY", 4096),
+                    ]
+                },
+            ),
+            attribute("IFLA_INFO_SLAVE_KIND", "bridge"),
+            attribute(
+                "IFLA_INFO_SLAVE_DATA",
+                {
+                    "attrs": [
+                        attribute("IFLA_BRPORT_COST", 10),
+                        attribute("IFLA_BRPORT_PRIORITY", 16),
                     ]
                 },
             ),
@@ -289,6 +334,9 @@ def test_inventory_attribute_fallback_supports_slots_without_len(
     assert interfaces["br0"].up is True
     assert interfaces["br0"].stp is True
     assert interfaces["br0"].vlan_filtering is False
+    assert interfaces["br0"].bridge_priority == 4096
+    assert interfaces["br0"].path_cost == 10
+    assert interfaces["br0"].port_priority == 16
     assert interfaces["br0"].link_id == "semantic-link-id"
 
 
@@ -592,6 +640,7 @@ def test_create_bridge_sets_kernel_bridge_attributes_and_closes_handle(
             kind="bridge",
             br_stp_state=1,
             br_vlan_filtering=0,
+            br_priority=4096,
         ),
         call.close(),
     ]
@@ -737,6 +786,56 @@ def test_create_veth_moves_renames_sizes_and_brings_up_both_endpoints(
         call.link("set", index=301, state="up"),
         call.close(),
     ]
+
+
+def test_create_veth_adds_same_netem_qdisc_to_both_endpoints(veth_link: LinkPlan) -> None:
+    netem = NetemPlan(delay_ms=100, jitter_ms=10, loss_percent=5)
+    link = replace(veth_link, netem=netem)
+    root = Mock()
+    lookup_count: dict[str, int] = {}
+
+    def root_lookup(*, ifname: str) -> list[int]:
+        occurrence = lookup_count.get(ifname, 0)
+        lookup_count[ifname] = occurrence + 1
+        if occurrence == 0:
+            return []
+        return [101 if ifname == link.left.temporary_name else 102]
+
+    root.link_lookup.side_effect = root_lookup
+    left = Mock()
+    left.link_lookup.return_value = [201]
+    right = Mock()
+    right.link_lookup.return_value = [301]
+    handles = {
+        link.left.namespace: left,
+        link.right.namespace: right,
+    }
+    backend = Pyroute2Backend(
+        iproute_factory=Mock(return_value=root),
+        netns_factory=Mock(side_effect=lambda namespace: handles[namespace]),
+        ownership_token_factory=Mock(return_value=_OWNERSHIP_TOKEN),
+    )
+
+    backend.create_veth(link)
+
+    left.tc.assert_called_once_with(
+        "add",
+        "netem",
+        201,
+        "1:",
+        delay=100_000,
+        jitter=10_000,
+        loss=5,
+    )
+    right.tc.assert_called_once_with(
+        "add",
+        "netem",
+        301,
+        "1:",
+        delay=100_000,
+        jitter=10_000,
+        loss=5,
+    )
 
 
 def test_veth_cleanup_skips_same_location_name_reused_by_foreign_interface(
@@ -1141,6 +1240,7 @@ def test_configure_bridge_attaches_ports_and_configures_internal_bridge(
         call.link_lookup(ifname="br0"),
         call.link_lookup(ifname="swp1"),
         call.link("set", index=21, master=20),
+        call.link("set", index=21, kind="bridge_slave", cost=10, priority=16),
         call.link("set", index=20, state="up"),
         call.close(),
     ]
@@ -1177,6 +1277,60 @@ def test_configure_bridge_adds_address_only_when_explicitly_declared(
         in handle.mock_calls
     )
     assert call.link("set", index=20, state="up") in handle.mock_calls
+
+
+def test_configure_ipv6_node_adds_address_route_and_forwarding_sysctl(
+    tmp_path: Path,
+    linux_node: NodePlan,
+    topology_plan: TopologyPlan,
+) -> None:
+    node = replace(
+        linux_node,
+        interfaces={"eth0": (IPv6Interface("2001:db8:1::2/64"),)},
+        routes=(
+            RoutePlan(
+                dst=IPv6Network("::/0"),
+                via=IPv6Address("2001:db8:1::1"),
+                dev="eth0",
+            ),
+        ),
+        sysctls={"net.ipv6.conf.all.forwarding": 1},
+    )
+    plan = replace(topology_plan, nodes={node.name: node})
+    handle = Mock()
+    handle.link_lookup.return_value = [10]
+    forwarding = tmp_path / "net/ipv6/conf/all/forwarding"
+    forwarding.parent.mkdir(parents=True)
+    forwarding.write_text("0\n", encoding="ascii")
+    backend = Pyroute2Backend(
+        netns_factory=Mock(return_value=handle),
+        pushns=Mock(),
+        popns=Mock(),
+        sysctl_root=tmp_path,
+    )
+
+    backend.configure_node(node, plan)
+
+    assert handle.mock_calls == [
+        call.link_lookup(ifname="eth0"),
+        call.addr(
+            "add",
+            index=10,
+            address="2001:db8:1::2",
+            prefixlen=64,
+            family=socket.AF_INET6,
+        ),
+        call.link("set", index=10, state="up"),
+        call.route(
+            "add",
+            dst="::/0",
+            oif=10,
+            gateway="2001:db8:1::1",
+            family=socket.AF_INET6,
+        ),
+        call.close(),
+    ]
+    assert forwarding.read_text(encoding="ascii") == "1\n"
 
 
 def test_configure_node_closes_netns_and_translates_netlink_failure(
@@ -3264,8 +3418,17 @@ def test_inventory_records_interfaces_routes_and_declared_sysctls(
             1500,
             stp=1,
             vlan_filtering=0,
+            bridge_priority=4096,
         ),
-        _link_message(21, "swp1", "veth", 1450, master=20),
+        _link_message(
+            21,
+            "swp1",
+            "veth",
+            1450,
+            master=20,
+            path_cost=10,
+            port_priority=16,
+        ),
     ]
     sw1_handle.get_addr.return_value = [
         _address_message(1, "127.0.0.1", 8),
@@ -3323,10 +3486,206 @@ def test_inventory_records_interfaces_routes_and_declared_sysctls(
     bridge = inventory.namespaces[sw1.namespace].interfaces["br0"]
     assert bridge.kind == "bridge"
     assert bridge.stp is True
+    assert bridge.bridge_priority == 4096
+    port = inventory.namespaces[sw1.namespace].interfaces["swp1"]
+    assert port.path_cost == 10
+    assert port.port_priority == 16
     assert bridge.vlan_filtering is False
     assert inventory.namespaces[sw1.namespace].interfaces["swp1"].master == "br0"
     pushns.assert_called_once_with(h1.namespace)
     popns.assert_called_once_with()
+
+
+def test_inventory_records_ipv6_and_ignores_automatic_link_local_state(
+    tmp_path: Path,
+    linux_node: NodePlan,
+) -> None:
+    node = replace(
+        linux_node,
+        interfaces={"eth0": (IPv6Interface("2001:db8:1::2/64"),)},
+        routes=(
+            RoutePlan(
+                dst=IPv6Network("::/0"),
+                via=IPv6Address("2001:db8:1::1"),
+                dev="eth0",
+            ),
+        ),
+        sysctls={"net.ipv6.conf.all.forwarding": 1},
+    )
+    plan = TopologyPlan(
+        name="ipv6-inventory",
+        fingerprint="ipv6-inventory",
+        nodes={node.name: node},
+        links=(),
+    )
+    handle = Mock()
+    handle.get_links.return_value = [
+        _link_message(1, "lo", "loopback", 65536),
+        _link_message(10, "eth0", "veth", 1500),
+    ]
+
+    def get_addr(*, family: int) -> list[dict[str, object]]:
+        if family == socket.AF_INET:
+            return [_address_message(1, "127.0.0.1", 8)]
+        return [
+            _address_message(1, "::1", 128),
+            _address_message(10, "2001:db8:1::2", 64),
+            _address_message(10, "fe80::1", 64),
+        ]
+
+    ipv6_kernel_attrs = (("RTA_PRIORITY", 256), ("RTA_PREF", 0))
+    ipv6_static_attrs = (("RTA_PRIORITY", 1024), ("RTA_PREF", 0))
+
+    def get_routes(*, family: int, table: int) -> list[dict[str, object]]:
+        assert table == 254
+        if family == socket.AF_INET:
+            return [_route_message("127.0.0.0", 8, 1)]
+        return [
+            _route_message(
+                "2001:db8:1::",
+                64,
+                10,
+                proto=2,
+                extra_attrs=ipv6_kernel_attrs,
+            ),
+            _route_message(
+                "fe80::",
+                64,
+                10,
+                proto=2,
+                extra_attrs=ipv6_kernel_attrs,
+            ),
+            _route_message(
+                None,
+                0,
+                10,
+                gateway="2001:db8:1::1",
+                extra_attrs=ipv6_static_attrs,
+            ),
+        ]
+
+    handle.get_addr.side_effect = get_addr
+    handle.get_routes.side_effect = get_routes
+    forwarding = tmp_path / "net/ipv6/conf/all/forwarding"
+    forwarding.parent.mkdir(parents=True)
+    forwarding.write_text("1\n", encoding="ascii")
+    backend = Pyroute2Backend(
+        netns_factory=Mock(return_value=handle),
+        pushns=Mock(),
+        popns=Mock(),
+        sysctl_root=tmp_path,
+    )
+
+    inventory = backend.inventory(plan)
+
+    observed = inventory.namespaces[node.namespace]
+    assert observed.interfaces["lo"].addresses == (IPv4Interface("127.0.0.1/8"),)
+    assert observed.interfaces["eth0"].addresses == (IPv6Interface("2001:db8:1::2/64"),)
+    assert observed.routes == (
+        RoutePlan(IPv4Network("127.0.0.0/8"), None, "lo"),
+        RoutePlan(IPv6Network("2001:db8:1::/64"), None, "eth0"),
+        node.routes[0],
+    )
+    assert observed.sysctls == {"net.ipv6.conf.all.forwarding": 1}
+    assert handle.get_addr.call_args_list == [
+        call(family=socket.AF_INET),
+        call(family=socket.AF_INET6),
+    ]
+    assert handle.get_routes.call_args_list == [
+        call(family=socket.AF_INET, table=254),
+        call(family=socket.AF_INET6, table=254),
+    ]
+
+
+def test_inventory_decodes_netem_qdisc_into_semantic_values() -> None:
+    qdisc = {
+        "index": 10,
+        "attrs": [
+            ("TCA_KIND", "netem"),
+            (
+                "TCA_OPTIONS",
+                {
+                    "delay": int(pyroute2_backend.time2tick(100_000)),
+                    "limit": 1000,
+                    "loss": pyroute2_backend.percent2u32(5),
+                    "gap": 0,
+                    "duplicate": 0,
+                    "jitter": int(pyroute2_backend.time2tick(10_000)),
+                },
+            ),
+        ],
+    }
+
+    interfaces, _ = Pyroute2Backend._inventory_interfaces(
+        [_link_message(10, "eth0", "veth", 1500)],
+        [],
+        (),
+        [qdisc],
+        namespace="nslab-netem-h1",
+    )
+
+    assert interfaces["eth0"].netem == NetemPlan(
+        delay_ms=100,
+        jitter_ms=10,
+        loss_percent=5,
+    )
+
+
+def test_inventory_keeps_declared_ipv6_link_local_and_filters_automatic_peer() -> None:
+    declared = IPv6Interface("fe80::1/64")
+
+    interfaces, _ = Pyroute2Backend._inventory_interfaces(
+        [_link_message(10, "eth0", "veth", 1500)],
+        [
+            _address_message(10, "fe80::1", 64),
+            _address_message(10, "fe80::2", 64),
+        ],
+        declared_addresses={"eth0": (declared,)},
+    )
+
+    assert interfaces["eth0"].addresses == (declared,)
+
+
+def test_inventory_rejects_nondefault_ipv6_route_metric(linux_node: NodePlan) -> None:
+    node = replace(
+        linux_node,
+        interfaces={"eth0": (IPv6Interface("2001:db8:1::2/64"),)},
+        routes=(),
+        sysctls={},
+    )
+    plan = TopologyPlan(
+        name="ipv6-route-metric",
+        fingerprint="ipv6-route-metric",
+        nodes={node.name: node},
+        links=(),
+    )
+    handle = Mock()
+    handle.get_links.return_value = [_link_message(10, "eth0", "veth", 1500)]
+    handle.get_addr.side_effect = lambda *, family: (
+        [] if family == socket.AF_INET else [_address_message(10, "2001:db8:1::2", 64)]
+    )
+    handle.get_routes.side_effect = lambda *, family, table: (
+        []
+        if family == socket.AF_INET
+        else [
+            _route_message(
+                "2001:db8:2::",
+                64,
+                10,
+                extra_attrs=(("RTA_PRIORITY", 900), ("RTA_PREF", 0)),
+            )
+        ]
+    )
+    backend = Pyroute2Backend(netns_factory=Mock(return_value=handle))
+
+    with pytest.raises(NslabError) as caught:
+        backend.inventory(plan)
+
+    assert caught.value.details == {
+        "operation": "inventory",
+        "resource": node.namespace,
+        "reason": "priority",
+    }
 
 
 def test_inventory_closes_namespace_and_translates_non_missing_netlink_error(

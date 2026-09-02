@@ -2,18 +2,27 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from ipaddress import IPv4Interface
 from typing import Literal, cast
 
 from nslab.backend.base import (
     InterfaceInventory,
     LiveInventory,
-    expected_main_table_ipv4_routes,
+    expected_bridge_port_vlans,
+    expected_main_table_routes,
     inventory_matches_plan,
     recorded_link_ids_match_inventory,
 )
 from nslab.errors import NslabError
-from nslab.planner import LinkPlan, NodeKind, NodePlan, RoutePlan, TopologyPlan
+from nslab.planner import (
+    BridgeVlanPlan,
+    IPInterface,
+    LinkPlan,
+    NetemPlan,
+    NodeKind,
+    NodePlan,
+    RoutePlan,
+    TopologyPlan,
+)
 from nslab.snapshot import SnapshotValidation, validate_snapshot
 from nslab.state import StateSnapshot
 
@@ -40,11 +49,17 @@ class InterfaceView:
     addresses: tuple[str, ...] = ()
     stp: bool | None = None
     vlan_filtering: bool | None = None
+    bridge_priority: int | None = None
+    path_cost: int | None = None
+    port_priority: int | None = None
+    bridge_vlans: tuple[str, ...] = ()
+    netem: str | None = None
     ifindex: int | None = None
     link_id: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "addresses", tuple(self.addresses))
+        object.__setattr__(self, "bridge_vlans", tuple(self.bridge_vlans))
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -56,6 +71,11 @@ class InterfaceView:
             "addresses": list(self.addresses),
             "stp": self.stp,
             "vlan_filtering": self.vlan_filtering,
+            "bridge_priority": self.bridge_priority,
+            "path_cost": self.path_cost,
+            "port_priority": self.port_priority,
+            "bridge_vlans": list(self.bridge_vlans),
+            "netem": self.netem,
             "ifindex": self.ifindex,
             "link_id": self.link_id,
         }
@@ -249,17 +269,49 @@ def _validate_snapshot(snapshot: StateSnapshot, plan: TopologyPlan) -> SnapshotV
     return validated
 
 
-def _address_key(address: IPv4Interface) -> tuple[int, int]:
-    return int(address.ip), address.network.prefixlen
+def _address_key(address: IPInterface) -> tuple[int, int, int]:
+    return address.version, int(address.ip), address.network.prefixlen
 
 
-def _address_strings(addresses: Sequence[IPv4Interface]) -> tuple[str, ...]:
+def _address_strings(addresses: Sequence[IPInterface]) -> tuple[str, ...]:
     return tuple(str(address) for address in sorted(set(addresses), key=_address_key))
 
 
-def _route_key(route: RoutePlan) -> tuple[int, int, int, str]:
+def _bridge_vlan_strings(vlans: Sequence[BridgeVlanPlan]) -> tuple[str, ...]:
+    values = []
+    for vlan in sorted(set(vlans), key=lambda item: item.vid):
+        flags = []
+        if vlan.pvid:
+            flags.append("pvid")
+        if vlan.untagged:
+            flags.append("untagged")
+        suffix = f" {' '.join(flags)}" if flags else ""
+        values.append(f"{vlan.vid}{suffix}")
+    return tuple(values)
+
+
+def _netem_string(netem: NetemPlan | None) -> str | None:
+    if netem is None:
+        return None
+    values = []
+    if netem.delay_ms:
+        values.append(f"delay {netem.delay_ms}ms")
+    if netem.jitter_ms:
+        values.append(f"jitter {netem.jitter_ms}ms")
+    if netem.loss_percent:
+        values.append(f"loss {netem.loss_percent}%")
+    return " ".join(values)
+
+
+def _route_key(route: RoutePlan) -> tuple[int, int, int, int, str]:
     gateway = -1 if route.via is None else int(route.via)
-    return int(route.dst.network_address), route.dst.prefixlen, gateway, route.dev
+    return (
+        route.dst.version,
+        int(route.dst.network_address),
+        route.dst.prefixlen,
+        gateway,
+        route.dev,
+    )
 
 
 def _route_view(route: RoutePlan) -> RouteView:
@@ -312,12 +364,14 @@ def _desired_interfaces(node: NodePlan, plan: TopologyPlan) -> tuple[InterfaceVi
                 addresses=_address_strings(node.interfaces.get(node.bridge_name, ())),
                 stp=node.stp,
                 vlan_filtering=node.vlan_filtering,
+                bridge_priority=node.bridge_priority,
             )
         )
     for link in plan.links:
         for endpoint in (link.left, link.right):
             if endpoint.namespace != node.namespace:
                 continue
+            port = node.bridge_ports.get(endpoint.interface)
             interfaces.append(
                 InterfaceView(
                     name=endpoint.interface,
@@ -326,6 +380,12 @@ def _desired_interfaces(node: NodePlan, plan: TopologyPlan) -> tuple[InterfaceVi
                     mtu=link.mtu,
                     up=True,
                     addresses=_address_strings(node.interfaces.get(endpoint.interface, ())),
+                    path_cost=None if port is None else port.path_cost,
+                    port_priority=None if port is None else port.priority,
+                    bridge_vlans=_bridge_vlan_strings(
+                        expected_bridge_port_vlans(node, endpoint.interface)
+                    ),
+                    netem=_netem_string(link.netem),
                 )
             )
     return tuple(interfaces)
@@ -341,6 +401,11 @@ def _interface_view(interface: InterfaceInventory) -> InterfaceView:
         addresses=_address_strings(interface.addresses),
         stp=interface.stp,
         vlan_filtering=interface.vlan_filtering,
+        bridge_priority=interface.bridge_priority,
+        path_cost=interface.path_cost,
+        port_priority=interface.port_priority,
+        bridge_vlans=_bridge_vlan_strings(interface.bridge_vlans),
+        netem=_netem_string(interface.netem),
         ifindex=interface.ifindex,
         link_id=interface.link_id,
     )
@@ -498,7 +563,7 @@ def _desired_node_view(node: NodePlan, plan: TopologyPlan) -> NodeResourceView:
         namespace=node.namespace,
         present=True,
         interfaces=_desired_interfaces(node, plan),
-        routes=tuple(_route_view(route) for route in expected_main_table_ipv4_routes(node)),
+        routes=tuple(_route_view(route) for route in expected_main_table_routes(node)),
         sysctls=tuple(
             SysctlView(name=name, value=value) for name, value in sorted(node.sysctls.items())
         ),
@@ -533,7 +598,7 @@ def _state_node_view(
         namespace=node.namespace,
         present=True,
         interfaces=tuple(state_interfaces),
-        routes=tuple(_route_view(route) for route in expected_main_table_ipv4_routes(node)),
+        routes=tuple(_route_view(route) for route in expected_main_table_routes(node)),
         sysctls=tuple(
             SysctlView(name=name, value=value) for name, value in sorted(node.sysctls.items())
         ),
@@ -626,7 +691,7 @@ def _actual_node_view(
             for name in sorted(set(observed_namespace.interfaces) - expected_names)
         )
         actual_routes = _ordered_actual_routes(
-            expected_main_table_ipv4_routes(node),
+            expected_main_table_routes(node),
             observed_namespace.routes,
         )
         actual_sysctls = observed_namespace.sysctls
@@ -707,6 +772,14 @@ def _compare_interface(
     compare("addresses", desired.addresses, _address_strings(actual.addresses))
     compare("stp", desired.stp, actual.stp)
     compare("vlan_filtering", desired.vlan_filtering, actual.vlan_filtering)
+    if desired.bridge_priority is not None:
+        compare("bridge_priority", desired.bridge_priority, actual.bridge_priority)
+    if desired.path_cost is not None:
+        compare("path_cost", desired.path_cost, actual.path_cost)
+    if desired.port_priority is not None:
+        compare("port_priority", desired.port_priority, actual.port_priority)
+    compare("bridge_vlans", desired.bridge_vlans, _bridge_vlan_strings(actual.bridge_vlans))
+    compare("netem", desired.netem, _netem_string(actual.netem))
     return differences
 
 
@@ -829,8 +902,15 @@ def _live_differences(
                 differences.extend(interface_differences)
                 impacted_nodes.add(node.name)
 
-        desired_routes = expected_main_table_ipv4_routes(node)
-        if frozenset(desired_routes) != frozenset(observed.routes):
+        desired_routes = expected_main_table_routes(node)
+        desired_route_set = frozenset(desired_routes)
+        observed_route_set = frozenset(observed.routes)
+        routes_match = (
+            desired_route_set <= observed_route_set
+            if node.routing is not None
+            else desired_route_set == observed_route_set
+        )
+        if not routes_match:
             differences.append(
                 _difference(
                     scope="node",

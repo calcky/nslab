@@ -158,13 +158,17 @@ class LifecycleService:
 
             self._plan_from_snapshot(current)
             inventory = self.backend.inventory(plan)
-            if inventory_matches_plan(
-                plan,
-                inventory,
-            ) and recorded_link_ids_match_inventory(
-                plan,
-                inventory,
-                current.interfaces,
+            if (
+                inventory_matches_plan(
+                    plan,
+                    inventory,
+                )
+                and recorded_link_ids_match_inventory(
+                    plan,
+                    inventory,
+                    current.interfaces,
+                )
+                and self._routing_ready(plan)
             ):
                 return LifecycleResult(
                     action="deploy",
@@ -209,8 +213,10 @@ class LifecycleService:
             for node in plan.nodes.values():
                 self.backend.configure_node(node, plan)
 
+            self._start_routing(plan)
+
             inventory = self.backend.inventory(plan)
-            if not inventory_matches_plan(plan, inventory):
+            if not inventory_matches_plan(plan, inventory) or not self._routing_ready(plan):
                 raise NslabError(
                     code="DEPLOYMENT_VERIFICATION_FAILED",
                     message=f"deployed topology failed live verification: {plan.name}",
@@ -276,6 +282,10 @@ class LifecycleService:
             preflight_inventory = self.backend.inventory(plan)
             if not self._inventory_is_absent(plan, preflight_inventory):
                 raise self._ownership_unknown(name)
+            # Routing runtime files/processes are outside the network inventory.
+            # Recover them even when the durable snapshot was removed after an
+            # interrupted cleanup and the namespaces are already gone.
+            self._stop_routing(plan)
             return LifecycleResult(
                 action="destroy",
                 name=name,
@@ -292,6 +302,22 @@ class LifecycleService:
 
         cleanup: list[dict[str, object]] = []
         first_error: Exception | KeyboardInterrupt | None = None
+        if self._has_routing(state_plan):
+            try:
+                self._stop_routing(state_plan)
+                cleanup.append({"routing": "stopped"})
+            except OperationCancelled as error:
+                cleanup.append({"routing": "interrupted", "error": _error_payload(error)})
+                first_error = error
+            except NslabError as error:
+                cleanup.append({"routing": "failed", "error": _error_payload(error)})
+                first_error = error
+            except Exception as error:
+                cleanup.append({"routing": "failed", "error": _error_payload(error)})
+                first_error = error
+            except KeyboardInterrupt as error:
+                cleanup.append({"routing": "interrupted", "error": _error_payload(error)})
+                first_error = error
         for node in reversed(tuple(state_plan.nodes.values())):
             try:
                 self.backend.delete_namespace(node.namespace)
@@ -587,6 +613,26 @@ class LifecycleService:
     ) -> None:
         results: list[dict[str, object]] = []
         cleanup_failed = False
+        if self._has_routing(plan):
+            try:
+                self._stop_routing(plan)
+                results.append({"routing": "stopped"})
+            except Exception as cleanup_error:
+                cleanup_failed = True
+                results.append(
+                    {
+                        "routing": "failed",
+                        "error": _error_payload(cleanup_error),
+                    }
+                )
+            except KeyboardInterrupt as cleanup_error:
+                cleanup_failed = True
+                results.append(
+                    {
+                        "routing": "interrupted",
+                        "error": _error_payload(cleanup_error),
+                    }
+                )
         for namespace in reversed(created_namespaces):
             try:
                 self.backend.delete_namespace(namespace)
@@ -644,6 +690,46 @@ class LifecycleService:
 
         self._attach(error, "rollback", results)
         self._attach(error, "rollback_complete", absent and not cleanup_failed)
+
+    @staticmethod
+    def _has_routing(plan: TopologyPlan) -> bool:
+        return any(node.routing is not None for node in plan.nodes.values())
+
+    def _start_routing(self, plan: TopologyPlan) -> None:
+        if not self._has_routing(plan):
+            return
+        method = getattr(self.backend, "start_routing", None)
+        if not callable(method):
+            raise NslabError(
+                code="ROUTING_UNSUPPORTED",
+                message=f"network backend does not support dynamic routing: {plan.name}",
+                details={"name": plan.name},
+            )
+        method(plan)
+
+    def _stop_routing(self, plan: TopologyPlan) -> None:
+        if not self._has_routing(plan):
+            return
+        method = getattr(self.backend, "stop_routing", None)
+        if not callable(method):
+            raise NslabError(
+                code="ROUTING_UNSUPPORTED",
+                message=f"network backend does not support dynamic routing: {plan.name}",
+                details={"name": plan.name},
+            )
+        method(plan)
+
+    def _routing_ready(self, plan: TopologyPlan) -> bool:
+        if not self._has_routing(plan):
+            return True
+        method = getattr(self.backend, "routing_ready", None)
+        if not callable(method):
+            raise NslabError(
+                code="ROUTING_UNSUPPORTED",
+                message=f"network backend does not support dynamic routing: {plan.name}",
+                details={"name": plan.name},
+            )
+        return bool(method(plan))
 
     def _remove_rollback_state(
         self,

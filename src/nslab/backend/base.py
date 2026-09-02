@@ -6,7 +6,16 @@ from ipaddress import IPv4Interface, IPv4Network
 from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
-from nslab.planner import LinkPlan, NodeKind, NodePlan, RoutePlan, TopologyPlan
+from nslab.planner import (
+    BridgeVlanPlan,
+    IPInterface,
+    LinkPlan,
+    NetemPlan,
+    NodeKind,
+    NodePlan,
+    RoutePlan,
+    TopologyPlan,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,13 +28,19 @@ class InterfaceInventory:
     master: str | None
     mtu: int
     up: bool
-    addresses: tuple[IPv4Interface, ...] = ()
+    addresses: tuple[IPInterface, ...] = ()
     stp: bool | None = None
     vlan_filtering: bool | None = None
+    bridge_priority: int | None = None
+    path_cost: int | None = None
+    port_priority: int | None = None
+    bridge_vlans: tuple[BridgeVlanPlan, ...] = ()
+    netem: NetemPlan | None = None
     link_id: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "addresses", tuple(self.addresses))
+        object.__setattr__(self, "bridge_vlans", tuple(self.bridge_vlans))
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +112,12 @@ class NetworkBackend(Protocol):
 
     def configure_node(self, node: NodePlan, plan: TopologyPlan) -> None: ...
 
+    def start_routing(self, plan: TopologyPlan) -> None: ...
+
+    def stop_routing(self, plan: TopologyPlan) -> None: ...
+
+    def routing_ready(self, plan: TopologyPlan) -> bool: ...
+
     def inventory(self, plan: TopologyPlan) -> LiveInventory: ...
 
     def execute(
@@ -114,13 +135,27 @@ class _ExpectedInterface:
     master: str | None
     mtu: int | None
     up: bool
-    addresses: tuple[IPv4Interface, ...]
+    addresses: tuple[IPInterface, ...]
     stp: bool | None = None
     vlan_filtering: bool | None = None
+    bridge_priority: int | None = None
+    path_cost: int | None = None
+    port_priority: int | None = None
+    bridge_vlans: tuple[BridgeVlanPlan, ...] = ()
+    netem: NetemPlan | None = None
 
 
-def expected_main_table_ipv4_routes(node: NodePlan) -> tuple[RoutePlan, ...]:
-    """Return deterministic connected and declared IPv4 routes for a node."""
+def expected_bridge_port_vlans(node: NodePlan, interface: str) -> tuple[BridgeVlanPlan, ...]:
+    if node.kind != "bridge" or not node.vlan_filtering:
+        return ()
+    port = node.bridge_ports.get(interface)
+    if port is not None and port.vlans:
+        return port.vlans
+    return (BridgeVlanPlan(vid=1, pvid=True, untagged=True),)
+
+
+def expected_main_table_routes(node: NodePlan) -> tuple[RoutePlan, ...]:
+    """Return deterministic connected and declared IP routes for a node."""
 
     routes = [
         RoutePlan(
@@ -159,18 +194,24 @@ def _expected_interfaces(node: NodePlan, plan: TopologyPlan) -> dict[str, _Expec
             addresses=node.interfaces.get(node.bridge_name, ()),
             stp=node.stp,
             vlan_filtering=node.vlan_filtering,
+            bridge_priority=node.bridge_priority,
         )
 
     for link in plan.links:
         for endpoint in (link.left, link.right):
             if endpoint.namespace != node.namespace:
                 continue
+            port = node.bridge_ports.get(endpoint.interface)
             expected[endpoint.interface] = _ExpectedInterface(
                 kind="veth",
                 master=node.bridge_name if node.kind == "bridge" else None,
                 mtu=link.mtu,
                 up=True,
                 addresses=node.interfaces.get(endpoint.interface, ()),
+                path_cost=None if port is None else port.path_cost,
+                port_priority=None if port is None else port.priority,
+                bridge_vlans=expected_bridge_port_vlans(node, endpoint.interface),
+                netem=link.netem,
             )
 
     return expected
@@ -201,12 +242,35 @@ def _interfaces_match(
             return False
         if observed.vlan_filtering is not desired.vlan_filtering:
             return False
+        if (
+            desired.bridge_priority is not None
+            and observed.bridge_priority != desired.bridge_priority
+        ):
+            return False
+        if desired.path_cost is not None and observed.path_cost != desired.path_cost:
+            return False
+        if desired.port_priority is not None and observed.port_priority != desired.port_priority:
+            return False
+        if observed.bridge_vlans != desired.bridge_vlans:
+            return False
+        if observed.netem != desired.netem:
+            return False
 
     return True
 
 
-def _routes_match(desired: Sequence[RoutePlan], actual: Sequence[RoutePlan]) -> bool:
-    return frozenset(actual) == frozenset(desired)
+def _routes_match(
+    node: NodePlan,
+    desired: Sequence[RoutePlan],
+    actual: Sequence[RoutePlan],
+) -> bool:
+    actual_routes = frozenset(actual)
+    desired_routes = frozenset(desired)
+    if node.routing is not None:
+        # OSPF/BGP legitimately add and withdraw routes asynchronously. Static
+        # routes remain managed by nslab; learned routes are intentionally extra.
+        return desired_routes <= actual_routes
+    return actual_routes == desired_routes
 
 
 def _declared_sysctls_match(desired: Mapping[str, int], actual: Mapping[str, int]) -> bool:
@@ -294,7 +358,7 @@ def recorded_link_ids_match_inventory(
 def inventory_matches_plan(plan: TopologyPlan, inventory: LiveInventory) -> bool:
     """Return whether live state satisfies the plan, excluding volatile ifindexes.
 
-    Expected main-table IPv4 routes are compared as an order-independent semantic
+    Expected main-table IP routes are compared as an order-independent semantic
     set. Sysctls not declared by the manifest remain intentionally unconstrained.
     """
 
@@ -318,7 +382,8 @@ def inventory_matches_plan(plan: TopologyPlan, inventory: LiveInventory) -> bool
         if not _interfaces_match(_expected_interfaces(node, plan), observed.interfaces):
             return False
         if not _routes_match(
-            expected_main_table_ipv4_routes(node),
+            node,
+            expected_main_table_routes(node),
             observed.routes,
         ):
             return False

@@ -38,6 +38,8 @@ jobs:
         run: uv run ruff format --check src tests
       - name: Type check
         run: uv run mypy src
+      - name: Build documentation
+        run: uv run --with-requirements docs/requirements.txt mkdocs build --strict
       - name: Validate lock file
         run: uv lock --check
       - name: Build Python package
@@ -85,7 +87,8 @@ jobs:
       - name: Install Linux networking tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y iproute2 iputils-ping
+          sudo apt-get install -y iproute2 iputils-ping frr frr-pythontools
+          sudo systemctl disable --now frr.service || true
       - name: Sync integration environment
         run: uv sync --locked --python 3.12
       - name: Run supported root integration tests
@@ -93,6 +96,127 @@ jobs:
           sudo env TMPDIR=/tmp "$GITHUB_WORKSPACE/.venv/bin/pytest" \
             tests/integration -q -m root \
             --ignore=tests/integration/test_bridge_fdb_e2e_root.py
+      - name: Smoke-test IPv4 forwarding topology
+        run: |
+          set -euo pipefail
+          run_suffix="${GITHUB_RUN_ID: -10}"
+          smoke_name="ipv4-fwd-${run_suffix}-${GITHUB_RUN_ATTEMPT}"
+          nslab_bin="$GITHUB_WORKSPACE/.venv/bin/nslab"
+          topology="$GITHUB_WORKSPACE/examples/ipv4-forward/nslab.yaml"
+          cleanup() {
+            sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" destroy \
+              --topo "$topology" --name "$smoke_name" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" deploy \
+            --topo "$topology" --name "$smoke_name"
+          sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" exec \
+            --name "$smoke_name" --node r1 -- \
+            /usr/bin/cat /proc/sys/net/ipv4/ip_forward | grep -Fx "1"
+          sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" exec \
+            --name "$smoke_name" --node h1 -- \
+            /usr/bin/ping -c 1 -W 2 198.51.100.2
+          sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" destroy \
+            --topo "$topology" --name "$smoke_name"
+          trap - EXIT
+      - name: Smoke-test OSPF and BGP daemons
+        run: |
+          set -euo pipefail
+          run_suffix="${GITHUB_RUN_ID: -10}"
+          nslab_bin="$GITHUB_WORKSPACE/.venv/bin/nslab"
+          smoke_routing() (
+            set -euo pipefail
+            local protocol="$1"
+            local topology="$2"
+            local check_node="$3"
+            local smoke_name="${protocol}-${run_suffix}-${GITHUB_RUN_ATTEMPT}"
+
+            cleanup() {
+              sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" destroy \
+                --topo "$topology" --name "$smoke_name" >/dev/null 2>&1 || true
+            }
+            trap cleanup EXIT
+
+            run_vtysh() {
+              local node="$1"
+              local command="$2"
+              sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" exec \
+                --name "$smoke_name" --node "$node" -- \
+                /usr/bin/vtysh -N "nslab-${smoke_name}-${node}" -c "$command"
+            }
+
+            wait_for_ospf() {
+              local deadline=$((SECONDS + 45))
+              local output route_output
+              while (( SECONDS < deadline )); do
+                if output="$(run_vtysh "$check_node" "show ip ospf neighbor" 2>/dev/null)"; then
+                  if grep -Eq '(^|[[:space:]])Full([/[:space:]]|$)' <<<"$output"; then
+                    if route_output="$(run_vtysh "$check_node" "show ip route ospf" 2>/dev/null)" \
+                      && grep -Fq "192.0.3.0/24" <<<"$route_output"; then
+                      printf '%s\n%s\n' "$output" "$route_output"
+                      return 0
+                    fi
+                  fi
+                fi
+                sleep 1
+              done
+              echo "OSPF neighbors did not reach Full on ${check_node}" >&2
+              run_vtysh "$check_node" "show ip ospf neighbor" || true
+              return 1
+            }
+
+            wait_for_bgp() {
+              local deadline=$((SECONDS + 45))
+              local output
+              while (( SECONDS < deadline )); do
+                if output="$(run_vtysh "$check_node" "show ip bgp summary" 2>/dev/null)"; then
+                  # FRR prints a numeric PfxRcd value only for an established
+                  # session; require both expected peers to have received data.
+                  if awk '
+                    /10\.1\.12\.1/ { peer12 = ($NF ~ /^[0-9]+$/ && $NF > 0) }
+                    /10\.1\.23\.2/ { peer23 = ($NF ~ /^[0-9]+$/ && $NF > 0) }
+                    END { exit !(peer12 && peer23) }
+                  ' <<<"$output"; then
+                    printf '%s\n' "$output"
+                    return 0
+                  fi
+                fi
+                sleep 1
+              done
+              echo "BGP peers did not establish on ${check_node}" >&2
+              run_vtysh "$check_node" "show ip bgp summary" || true
+              return 1
+            }
+
+            case "$protocol" in
+              ospf)
+                sudo env TMPDIR=/tmp /usr/bin/timeout 60 "$nslab_bin" deploy \
+                  --topo "$topology" --name "$smoke_name"
+                wait_for_ospf
+                sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" exec \
+                  --name "$smoke_name" --node h1 -- \
+                  /usr/bin/ping -c 1 -W 2 192.0.3.2
+                ;;
+              bgp)
+                sudo env TMPDIR=/tmp /usr/bin/timeout 60 "$nslab_bin" deploy \
+                  --topo "$topology" --name "$smoke_name"
+                wait_for_bgp
+                run_vtysh "$check_node" "show ip bgp" \
+                  | grep -F "198.18.1.0/24"
+                run_vtysh "$check_node" "show ip bgp" \
+                  | grep -F "198.18.3.0/24"
+                sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" exec \
+                  --name "$smoke_name" --node h1 -- \
+                  /usr/bin/ping -c 1 -W 2 198.18.3.2
+                ;;
+              *) echo "unsupported protocol: $protocol" >&2; return 2 ;;
+            esac
+            sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" destroy \
+              --topo "$topology" --name "$smoke_name"
+            trap - EXIT
+          )
+          smoke_routing ospf "$GITHUB_WORKSPACE/examples/ospf/nslab.yaml" r1
+          smoke_routing bgp "$GITHUB_WORKSPACE/examples/bgp/nslab.yaml" r2
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -118,7 +242,7 @@ jobs:
       - name: Install Linux networking tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y iproute2 iputils-ping
+          sudo apt-get install -y iproute2 iputils-ping zsh
       - name: Sync release environment
         run: uv sync --locked --group release --python 3.12
       - name: Build standalone executable
@@ -132,6 +256,8 @@ jobs:
       - name: Smoke-test packaged CLI
         run: |
           ./dist/nslab --help >/dev/null
+          ./dist/nslab completion bash | bash -n
+          ./dist/nslab completion zsh | zsh -n
           ./dist/nslab graph --topo examples/bridge-fdb/nslab.yaml \
             | grep -F "Topology: bridge-fdb"
       - name: Smoke-test packaged network lifecycle

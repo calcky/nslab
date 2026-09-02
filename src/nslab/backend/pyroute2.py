@@ -4,10 +4,16 @@ import errno
 import os
 import signal
 import socket
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from functools import partial
-from ipaddress import IPv4Address, IPv4Interface, IPv4Network
+from ipaddress import (
+    IPv4Address,
+    IPv4Network,
+    IPv6Address,
+    IPv6Network,
+    ip_interface,
+)
 from pathlib import Path
 from subprocess import PIPE
 from typing import Any
@@ -15,6 +21,7 @@ from uuid import uuid4
 
 from pyroute2 import IPRoute, NetNS, NSPopen, netns
 from pyroute2.netlink.exceptions import NetlinkError
+from pyroute2.netlink.rtnl.tcmsg.common import percent2u32, time2tick
 
 from nslab.backend.base import (
     ExecResult,
@@ -23,7 +30,20 @@ from nslab.backend.base import (
     NamespaceInventory,
 )
 from nslab.errors import NslabError, OperationCancelled
-from nslab.planner import EndpointPlan, LinkPlan, NodePlan, RoutePlan, TopologyPlan
+from nslab.planner import (
+    BridgeVlanPlan,
+    EndpointPlan,
+    IPInterface,
+    LinkPlan,
+    NetemPlan,
+    NodePlan,
+    RoutePlan,
+    TopologyPlan,
+)
+from nslab.routing import FrrRuntime
+
+_BRIDGE_VLAN_INFO_PVID = 2
+_BRIDGE_VLAN_INFO_UNTAGGED = 4
 
 _IFF_UP = 1
 _ARPHRD_LOOPBACK = 772
@@ -31,6 +51,10 @@ _RT_TABLE_MAIN = 254
 _RTN_UNICAST = 1
 _RTPROT_KERNEL = 2
 _RT_SCOPE_LINK = 253
+# FRR uses the Linux-assigned protocol identifiers for protocol-originated
+# routes.  ``RTPROT_ZEBRA`` is included for FRR releases that use the generic
+# Zebra identifier for an imported/redistributed route.
+_FRR_ROUTE_PROTOCOLS = frozenset({11, 186, 188})
 _EXEC_SIGNALS = frozenset((signal.SIGINT, signal.SIGTERM))
 _UNSUPPORTED_ROUTE_TYPES = {
     2: "local",
@@ -208,6 +232,18 @@ def _unsupported_inventory_route(namespace: str, reason: str) -> NslabError:
     return NslabError(
         code="INVENTORY_UNSUPPORTED",
         message=f"unsupported route in network inventory: {namespace}",
+        details={
+            "operation": "inventory",
+            "resource": namespace,
+            "reason": reason,
+        },
+    )
+
+
+def _unsupported_inventory_qdisc(namespace: str, reason: str) -> NslabError:
+    return NslabError(
+        code="INVENTORY_UNSUPPORTED",
+        message=f"unsupported qdisc in network inventory: {namespace}",
         details={
             "operation": "inventory",
             "resource": namespace,
@@ -474,6 +510,10 @@ class Pyroute2Backend:
         nspopen_factory: Callable[..., Any] = NSPopen,
         ownership_token_factory: Callable[[], str] = _new_ownership_token,
         sysctl_root: Path = Path("/proc/sys"),
+        routing_runtime: FrrRuntime | None = None,
+        routing_root: Path = Path("/run/nslab"),
+        frr_state_root: Path = Path("/var/run/frr"),
+        frr_config_root: Path = Path("/etc/frr"),
     ) -> None:
         self._iproute_factory = iproute_factory
         self._netns_factory = netns_factory
@@ -484,6 +524,15 @@ class Pyroute2Backend:
         self._nspopen_factory = nspopen_factory
         self._ownership_token_factory = ownership_token_factory
         self._sysctl_root = sysctl_root
+        self._routing_runtime = (
+            routing_runtime
+            if routing_runtime is not None
+            else FrrRuntime(
+                runtime_root=routing_root,
+                frr_state_root=frr_state_root,
+                frr_config_root=frr_config_root,
+            )
+        )
 
     def create_namespace(self, node: NodePlan) -> None:
         created = False
@@ -536,15 +585,17 @@ class Pyroute2Backend:
         bridge_name = node.bridge_name
         assert bridge_name is not None
         resource = f"{node.namespace}:{bridge_name}"
+        bridge_arguments: dict[str, object] = {
+            "ifname": bridge_name,
+            "kind": "bridge",
+            "br_stp_state": int(bool(node.stp)),
+            "br_vlan_filtering": int(bool(node.vlan_filtering)),
+        }
+        if node.bridge_priority is not None:
+            bridge_arguments["br_priority"] = node.bridge_priority
         try:
             with _managed_handle(self._netns_factory(node.namespace)) as namespace:
-                namespace.link(
-                    "add",
-                    ifname=bridge_name,
-                    kind="bridge",
-                    br_stp_state=int(bool(node.stp)),
-                    br_vlan_filtering=int(bool(node.vlan_filtering)),
-                )
+                namespace.link("add", **bridge_arguments)
         except NetlinkError as error:
             raise _translate_netlink_error(
                 error,
@@ -626,12 +677,14 @@ class Pyroute2Backend:
             self._configure_veth_endpoint(
                 link.left,
                 link.mtu,
+                link.netem,
                 resource,
                 renamed_endpoints,
             )
             self._configure_veth_endpoint(
                 link.right,
                 link.mtu,
+                link.netem,
                 resource,
                 renamed_endpoints,
             )
@@ -661,6 +714,7 @@ class Pyroute2Backend:
         self,
         endpoint: EndpointPlan,
         mtu: int,
+        netem: NetemPlan | None,
         resource: str,
         renamed_endpoints: set[EndpointPlan],
     ) -> None:
@@ -675,6 +729,16 @@ class Pyroute2Backend:
             renamed_endpoints.add(endpoint)
             namespace.link("set", index=index, mtu=mtu)
             namespace.link("set", index=index, state="up")
+            if netem is not None:
+                namespace.tc(
+                    "add",
+                    "netem",
+                    index,
+                    "1:",
+                    delay=netem.delay_ms * 1000,
+                    jitter=netem.jitter_ms * 1000,
+                    loss=netem.loss_percent,
+                )
 
     def _cleanup_veth(
         self,
@@ -769,18 +833,48 @@ class Pyroute2Backend:
                             index=port_index,
                             master=bridge_index,
                         )
+                        port = node.bridge_ports.get(interface)
+                        if port is not None:
+                            port_arguments: dict[str, object] = {
+                                "index": port_index,
+                                "kind": "bridge_slave",
+                            }
+                            if port.path_cost is not None:
+                                port_arguments["cost"] = port.path_cost
+                            if port.priority is not None:
+                                port_arguments["priority"] = port.priority
+                            namespace.link("set", **port_arguments)
+                            if port.vlans:
+                                namespace.vlan_filter(
+                                    "del",
+                                    index=port_index,
+                                    vlan_info={"vid": 1},
+                                )
+                                for vlan in port.vlans:
+                                    flags = 0
+                                    if vlan.pvid:
+                                        flags |= _BRIDGE_VLAN_INFO_PVID
+                                    if vlan.untagged:
+                                        flags |= _BRIDGE_VLAN_INFO_UNTAGGED
+                                    namespace.vlan_filter(
+                                        "add",
+                                        index=port_index,
+                                        vlan_info={"vid": vlan.vid, "flags": flags},
+                                    )
                     if bridge_name not in node.interfaces:
                         namespace.link("set", index=bridge_index, state="up")
 
                 for interface, addresses in node.interfaces.items():
                     index = indexes[interface]
                     for address in addresses:
-                        namespace.addr(
-                            "add",
-                            index=index,
-                            address=str(address.ip),
-                            prefixlen=address.network.prefixlen,
-                        )
+                        address_arguments: dict[str, object] = {
+                            "index": index,
+                            "address": str(address.ip),
+                            "prefixlen": address.network.prefixlen,
+                        }
+                        if address.version == 6:
+                            address_arguments["family"] = socket.AF_INET6
+                        namespace.addr("add", **address_arguments)
                     namespace.link("set", index=index, state="up")
 
                 for route in node.routes:
@@ -798,6 +892,8 @@ class Pyroute2Backend:
                     }
                     if route.via is not None:
                         route_arguments["gateway"] = str(route.via)
+                    if route.dst.version == 6:
+                        route_arguments["family"] = socket.AF_INET6
                     namespace.route("add", **route_arguments)
         except NetlinkError as error:
             raise _translate_netlink_error(
@@ -827,8 +923,18 @@ class Pyroute2Backend:
                 path = self._sysctl_root.joinpath(*key.split("."))
                 path.write_text(f"{value}\n", encoding="ascii")
 
+    def start_routing(self, plan: TopologyPlan) -> None:
+        self._routing_runtime.start(plan)
+
+    def stop_routing(self, plan: TopologyPlan) -> None:
+        self._routing_runtime.stop(plan)
+
+    def routing_ready(self, plan: TopologyPlan) -> bool:
+        return self._routing_runtime.ready(plan)
+
     def inventory(self, plan: TopologyPlan) -> LiveInventory:
         root_interfaces = self._inventory_root_interfaces(plan)
+        inspect_netem = any(link.netem is not None for link in plan.links)
         namespaces: dict[str, NamespaceInventory] = {}
         for node in plan.nodes.values():
             try:
@@ -855,7 +961,11 @@ class Pyroute2Backend:
                     ) from error
             else:
                 try:
-                    observed = self._inventory_namespace(node, namespace)
+                    observed = self._inventory_namespace(
+                        node,
+                        namespace,
+                        inspect_netem=inspect_netem,
+                    )
                 except NetlinkError as error:
                     raise _translate_netlink_error(
                         error,
@@ -926,30 +1036,60 @@ class Pyroute2Backend:
             ) from error
         return observed
 
-    def _inventory_namespace(self, node: NodePlan, namespace: Any) -> NamespaceInventory:
+    def _inventory_namespace(
+        self,
+        node: NodePlan,
+        namespace: Any,
+        *,
+        inspect_netem: bool,
+    ) -> NamespaceInventory:
         with _managed_handle(namespace) as handle:
             link_messages = tuple(handle.get_links())
-            address_messages = tuple(handle.get_addr(family=socket.AF_INET))
+            families = self._inventory_families(node)
+            address_messages = tuple(
+                message for family in families for message in handle.get_addr(family=family)
+            )
+            vlan_messages = (
+                tuple(handle.get_vlans()) if node.kind == "bridge" and node.vlan_filtering else ()
+            )
+            qdisc_messages = tuple(handle.get_qdiscs()) if inspect_netem else ()
             route_messages = tuple(
-                handle.get_routes(
-                    family=socket.AF_INET,
-                    table=_RT_TABLE_MAIN,
+                (
+                    family,
+                    tuple(
+                        handle.get_routes(
+                            family=family,
+                            table=_RT_TABLE_MAIN,
+                        )
+                    ),
                 )
+                for family in families
             )
         interfaces, names_by_index = self._inventory_interfaces(
             link_messages,
             address_messages,
+            vlan_messages,
+            qdisc_messages,
+            namespace=node.namespace,
+            declared_addresses=node.interfaces,
+        )
+        observed_routes = tuple(
+            route
+            for family, messages in route_messages
+            for route in self._inventory_routes(
+                messages,
+                names_by_index,
+                interfaces,
+                node.namespace,
+                family=family,
+                allow_dynamic=node.routing is not None,
+            )
         )
         routes = tuple(
             dict.fromkeys(
                 (
                     *self._inventory_connected_routes(interfaces),
-                    *self._inventory_routes(
-                        route_messages,
-                        names_by_index,
-                        interfaces,
-                        node.namespace,
-                    ),
+                    *observed_routes,
                 )
             )
         )
@@ -963,6 +1103,21 @@ class Pyroute2Backend:
             routes=routes,
             sysctls=sysctls,
         )
+
+    @staticmethod
+    def _inventory_families(node: NodePlan) -> tuple[int, ...]:
+        has_ipv6 = (
+            any(
+                address.version == 6
+                for addresses in node.interfaces.values()
+                for address in addresses
+            )
+            or any(route.dst.version == 6 for route in node.routes)
+            or "net.ipv6.conf.all.forwarding" in node.sysctls
+        )
+        if has_ipv6:
+            return socket.AF_INET, socket.AF_INET6
+        return (socket.AF_INET,)
 
     @staticmethod
     def _absent_namespace(node: NodePlan) -> NamespaceInventory:
@@ -980,6 +1135,11 @@ class Pyroute2Backend:
     def _inventory_interfaces(
         link_messages: Sequence[Any],
         address_messages: Sequence[Any],
+        vlan_messages: Sequence[Any] = (),
+        qdisc_messages: Sequence[Any] = (),
+        *,
+        namespace: str = "network namespace",
+        declared_addresses: Mapping[str, Sequence[IPInterface]] | None = None,
     ) -> tuple[dict[str, InterfaceInventory], dict[int, str]]:
         names_by_index: dict[int, str] = {}
         for message in link_messages:
@@ -988,7 +1148,7 @@ class Pyroute2Backend:
                 continue
             names_by_index[int(_value(message, "index"))] = str(name)
 
-        addresses_by_index: dict[int, list[IPv4Interface]] = {}
+        addresses_by_index: dict[int, list[IPInterface]] = {}
         for message in address_messages:
             address = _attribute(message, "IFA_LOCAL")
             if address is None:
@@ -997,10 +1157,102 @@ class Pyroute2Backend:
                 continue
             index = int(_value(message, "index"))
             prefixlen = int(_value(message, "prefixlen"))
-            observed = IPv4Interface(f"{address}/{prefixlen}")
+            observed = ip_interface(f"{address}/{prefixlen}")
+            interface_name = names_by_index.get(index)
+            declared = (
+                ()
+                if declared_addresses is None or interface_name is None
+                else declared_addresses.get(interface_name, ())
+            )
+            if (
+                observed.version == 6
+                and (observed.ip.is_link_local or observed.ip.is_loopback)
+                and observed not in declared
+            ):
+                continue
             addresses = addresses_by_index.setdefault(index, [])
             if observed not in addresses:
                 addresses.append(observed)
+
+        vlans_by_index: dict[int, list[BridgeVlanPlan]] = {}
+        for message in vlan_messages:
+            index = int(_value(message, "index"))
+            af_spec = _attribute(message, "IFLA_AF_SPEC")
+            for attribute in _value(af_spec, "attrs", ()):
+                pair = _attribute_pair(attribute)
+                if pair is None or pair[0] != "IFLA_BRIDGE_VLAN_INFO":
+                    continue
+                value = pair[1]
+                vid = int(_value(value, "vid"))
+                flags = int(_value(value, "flags", 0))
+                vlan = BridgeVlanPlan(
+                    vid=vid,
+                    pvid=bool(flags & _BRIDGE_VLAN_INFO_PVID),
+                    untagged=bool(flags & _BRIDGE_VLAN_INFO_UNTAGGED),
+                )
+                entries = vlans_by_index.setdefault(index, [])
+                if vlan not in entries:
+                    entries.append(vlan)
+
+        netem_by_index: dict[int, NetemPlan] = {}
+        for message in qdisc_messages:
+            if _attribute(message, "TCA_KIND") != "netem":
+                continue
+            index = int(_value(message, "index"))
+            if index in netem_by_index:
+                raise _unsupported_inventory_qdisc(namespace, "multiple_netem_qdiscs")
+            options = _attribute(message, "TCA_OPTIONS")
+            if options is None:
+                raise _unsupported_inventory_qdisc(namespace, "missing_options")
+            try:
+                limit = int(_value(options, "limit", 0))
+                gap = int(_value(options, "gap", 0))
+                duplicate = int(_value(options, "duplicate", 0))
+                raw_delay = int(_value(options, "delay", 0))
+                raw_jitter = int(_value(options, "jitter", 0))
+                raw_loss = int(_value(options, "loss", 0))
+            except (TypeError, ValueError):
+                raise _unsupported_inventory_qdisc(namespace, "invalid_options") from None
+            if limit != 1000:
+                raise _unsupported_inventory_qdisc(namespace, "limit")
+            if gap != 0:
+                raise _unsupported_inventory_qdisc(namespace, "gap")
+            if duplicate != 0:
+                raise _unsupported_inventory_qdisc(namespace, "duplicate")
+
+            ticks_per_ms = float(time2tick(1000))
+            if ticks_per_ms <= 0:
+                raise _unsupported_inventory_qdisc(namespace, "clock")
+            delay_ms = round(raw_delay / ticks_per_ms)
+            jitter_ms = round(raw_jitter / ticks_per_ms)
+            if int(time2tick(delay_ms * 1000)) != raw_delay:
+                raise _unsupported_inventory_qdisc(namespace, "delay_precision")
+            if int(time2tick(jitter_ms * 1000)) != raw_jitter:
+                raise _unsupported_inventory_qdisc(namespace, "jitter_precision")
+            loss_percent = round(raw_loss * 100 / (2**32 - 1))
+            if percent2u32(loss_percent) != raw_loss:
+                raise _unsupported_inventory_qdisc(namespace, "loss_precision")
+
+            nested_options = (
+                ("TCA_NETEM_CORR", ("delay_corr", "loss_corr", "dup_corr")),
+                ("TCA_NETEM_REORDER", ("prob_reorder", "corr_reorder")),
+                ("TCA_NETEM_CORRUPT", ("prob_corrupt", "corr_corrupt")),
+                (
+                    "TCA_NETEM_RATE",
+                    ("rate", "packet_overhead", "cell_size", "cell_overhead"),
+                ),
+            )
+            for attribute_name, field_names in nested_options:
+                nested = _attribute(options, attribute_name)
+                if nested is not None and any(
+                    int(_value(nested, field_name, 0)) != 0 for field_name in field_names
+                ):
+                    raise _unsupported_inventory_qdisc(namespace, "extended_options")
+            netem_by_index[index] = NetemPlan(
+                delay_ms=delay_ms,
+                jitter_ms=jitter_ms,
+                loss_percent=loss_percent,
+            )
 
         interfaces: dict[str, InterfaceInventory] = {}
         for message in link_messages:
@@ -1021,14 +1273,29 @@ class Pyroute2Backend:
             master = names_by_index.get(int(master_value)) if master_value is not None else None
             stp: bool | None = None
             vlan_filtering: bool | None = None
+            bridge_priority: int | None = None
+            path_cost: int | None = None
+            port_priority: int | None = None
             if kind == "bridge":
                 info_data = _attribute(link_info, "IFLA_INFO_DATA")
                 stp_value = _attribute(info_data, "IFLA_BR_STP_STATE")
                 vlan_value = _attribute(info_data, "IFLA_BR_VLAN_FILTERING")
+                priority_value = _attribute(info_data, "IFLA_BR_PRIORITY")
                 if stp_value is not None:
                     stp = bool(int(stp_value))
                 if vlan_value is not None:
                     vlan_filtering = bool(int(vlan_value))
+                if priority_value is not None:
+                    bridge_priority = int(priority_value)
+            slave_kind = _attribute(link_info, "IFLA_INFO_SLAVE_KIND")
+            if slave_kind == "bridge":
+                slave_data = _attribute(link_info, "IFLA_INFO_SLAVE_DATA")
+                cost_value = _attribute(slave_data, "IFLA_BRPORT_COST")
+                port_priority_value = _attribute(slave_data, "IFLA_BRPORT_PRIORITY")
+                if cost_value is not None:
+                    path_cost = int(cost_value)
+                if port_priority_value is not None:
+                    port_priority = int(port_priority_value)
             mtu_value = _attribute(message, "IFLA_MTU")
             link_id_value = _attribute(message, "IFLA_IFALIAS")
             interfaces[name] = InterfaceInventory(
@@ -1041,6 +1308,15 @@ class Pyroute2Backend:
                 addresses=tuple(addresses_by_index.get(index, ())),
                 stp=stp,
                 vlan_filtering=vlan_filtering,
+                bridge_priority=bridge_priority,
+                path_cost=path_cost,
+                port_priority=port_priority,
+                bridge_vlans=(
+                    tuple(sorted(vlans_by_index.get(index, ()), key=lambda vlan: vlan.vid))
+                    if slave_kind == "bridge"
+                    else ()
+                ),
+                netem=netem_by_index.get(index),
                 link_id=(str(link_id_value) if link_id_value is not None else None),
             )
         return interfaces, names_by_index
@@ -1073,15 +1349,25 @@ class Pyroute2Backend:
         names_by_index: dict[int, str],
         interfaces: dict[str, InterfaceInventory],
         namespace: str,
+        *,
+        family: int = socket.AF_INET,
+        allow_dynamic: bool = False,
     ) -> tuple[RoutePlan, ...]:
         routes: list[RoutePlan] = []
         for message in route_messages:
+            try:
+                route_protocol = int(_value(message, "proto", 0))
+            except (TypeError, ValueError):
+                route_protocol = 0
+            dynamic_route = allow_dynamic and route_protocol in _FRR_ROUTE_PROTOCOLS
             table_value = _attribute(message, "RTA_TABLE")
             if table_value is None:
                 table_value = _value(message, "table", _RT_TABLE_MAIN)
             try:
                 table = int(table_value)
             except (TypeError, ValueError):
+                if dynamic_route:
+                    continue
                 raise _unsupported_inventory_route(namespace, "invalid_table") from None
             if table != _RT_TABLE_MAIN:
                 continue
@@ -1089,36 +1375,122 @@ class Pyroute2Backend:
             try:
                 route_type = int(_value(message, "type", _RTN_UNICAST))
             except (TypeError, ValueError):
+                if dynamic_route:
+                    continue
                 raise _unsupported_inventory_route(namespace, "route_type") from None
             if route_type != _RTN_UNICAST:
+                if dynamic_route:
+                    continue
                 reason = _UNSUPPORTED_ROUTE_TYPES.get(route_type, "route_type")
                 raise _unsupported_inventory_route(namespace, reason)
 
             attribute_names = _attribute_names(message)
-            if "RTA_MULTIPATH" in attribute_names or "RTA_MP_ALGO" in attribute_names:
+            semantic_attribute_names = attribute_names
+            if family == socket.AF_INET6:
+                if "RTA_PRIORITY" in attribute_names:
+                    if dynamic_route:
+                        semantic_attribute_names = semantic_attribute_names.difference(
+                            {"RTA_PRIORITY"}
+                        )
+                    else:
+                        try:
+                            metric_value = _attribute(message, "RTA_PRIORITY")
+                            if metric_value is None:
+                                raise ValueError
+                            metric = int(metric_value)
+                            expected_metric = 256 if route_protocol == _RTPROT_KERNEL else 1024
+                        except (TypeError, ValueError):
+                            raise _unsupported_inventory_route(namespace, "priority") from None
+                        if metric != expected_metric:
+                            raise _unsupported_inventory_route(namespace, "priority")
+                if "RTA_PREF" in attribute_names:
+                    if dynamic_route:
+                        semantic_attribute_names = semantic_attribute_names.difference({"RTA_PREF"})
+                    else:
+                        try:
+                            preference_value = _attribute(message, "RTA_PREF")
+                            if preference_value is None:
+                                raise ValueError
+                            preference = int(preference_value)
+                        except (TypeError, ValueError):
+                            raise _unsupported_inventory_route(namespace, "preference") from None
+                        if preference != 0:
+                            raise _unsupported_inventory_route(namespace, "preference")
+                semantic_attribute_names = semantic_attribute_names.difference(
+                    {"RTA_PRIORITY", "RTA_PREF"}
+                )
+            elif "RTA_PRIORITY" in attribute_names:
+                if dynamic_route:
+                    semantic_attribute_names = semantic_attribute_names.difference({"RTA_PRIORITY"})
+                else:
+                    raise _unsupported_inventory_route(namespace, "priority")
+
+            if (
+                "RTA_MULTIPATH" in semantic_attribute_names
+                or "RTA_MP_ALGO" in semantic_attribute_names
+            ):
+                if dynamic_route:
+                    continue
                 raise _unsupported_inventory_route(namespace, "multipath")
-            if "RTA_NH_ID" in attribute_names:
+            if "RTA_NH_ID" in semantic_attribute_names:
+                if dynamic_route:
+                    continue
                 raise _unsupported_inventory_route(namespace, "nexthop_id")
-            if int(_value(message, "src_len", 0)) != 0 or "RTA_SRC" in attribute_names:
+            try:
+                source_prefixlen = int(_value(message, "src_len", 0))
+            except (TypeError, ValueError):
+                if dynamic_route:
+                    continue
+                raise _unsupported_inventory_route(namespace, "source_specific") from None
+            if source_prefixlen != 0 or "RTA_SRC" in semantic_attribute_names:
+                if dynamic_route:
+                    continue
                 raise _unsupported_inventory_route(namespace, "source_specific")
-            if "RTA_PRIORITY" in attribute_names:
-                raise _unsupported_inventory_route(namespace, "priority")
-            for attribute, reason in _UNSUPPORTED_ROUTE_ATTRIBUTES:
-                if attribute in attribute_names:
-                    raise _unsupported_inventory_route(namespace, reason)
-            if int(_value(message, "tos", 0)) != 0:
+            unsupported_reason = next(
+                (
+                    reason
+                    for attribute, reason in _UNSUPPORTED_ROUTE_ATTRIBUTES
+                    if attribute in semantic_attribute_names
+                ),
+                None,
+            )
+            if unsupported_reason is not None:
+                if dynamic_route:
+                    continue
+                raise _unsupported_inventory_route(namespace, unsupported_reason)
+            try:
+                tos = int(_value(message, "tos", 0))
+            except (TypeError, ValueError):
+                if dynamic_route:
+                    continue
+                raise _unsupported_inventory_route(namespace, "tos") from None
+            if tos != 0:
+                if dynamic_route:
+                    continue
                 raise _unsupported_inventory_route(namespace, "tos")
-            if int(_value(message, "flags", 0)) != 0:
+            try:
+                route_flags = int(_value(message, "flags", 0))
+            except (TypeError, ValueError):
+                if dynamic_route:
+                    continue
+                raise _unsupported_inventory_route(namespace, "route_flags") from None
+            if route_flags != 0:
+                if dynamic_route:
+                    continue
                 raise _unsupported_inventory_route(namespace, "route_flags")
-            if not attribute_names <= _ALLOWED_ROUTE_ATTRIBUTES:
+            if not semantic_attribute_names <= _ALLOWED_ROUTE_ATTRIBUTES:
+                if dynamic_route:
+                    continue
                 raise _unsupported_inventory_route(namespace, "unsupported_attribute")
 
-            has_preferred_source = "RTA_PREFSRC" in attribute_names
+            has_preferred_source = "RTA_PREFSRC" in semantic_attribute_names
             if has_preferred_source:
                 try:
                     protocol = int(_value(message, "proto", 0))
                     scope = int(_value(message, "scope", 0))
                 except (TypeError, ValueError):
+                    if dynamic_route:
+                        continue
                     raise _unsupported_inventory_route(
                         namespace,
                         "preferred_source",
@@ -1126,44 +1498,71 @@ class Pyroute2Backend:
                 if (
                     protocol != _RTPROT_KERNEL
                     or scope != _RT_SCOPE_LINK
-                    or "RTA_GATEWAY" in attribute_names
+                    or "RTA_GATEWAY" in semantic_attribute_names
                 ):
+                    if dynamic_route:
+                        continue
                     raise _unsupported_inventory_route(namespace, "preferred_source")
 
             output_value = _attribute(message, "RTA_OIF")
             if output_value is None:
+                if dynamic_route:
+                    continue
                 raise _unsupported_inventory_route(namespace, "missing_oif")
             try:
                 output_index = int(output_value)
             except (TypeError, ValueError):
+                if dynamic_route:
+                    continue
                 raise _unsupported_inventory_route(namespace, "invalid_oif") from None
             interface = names_by_index.get(output_index)
             if interface is None:
+                if dynamic_route:
+                    continue
                 raise _unsupported_inventory_route(namespace, "unknown_ifindex")
             try:
                 prefixlen = int(_value(message, "dst_len", 0))
             except (TypeError, ValueError):
+                if dynamic_route:
+                    continue
                 raise _unsupported_inventory_route(namespace, "invalid_destination") from None
             destination = _attribute(message, "RTA_DST")
             if destination is None:
                 if prefixlen != 0:
+                    if dynamic_route:
+                        continue
                     raise _unsupported_inventory_route(namespace, "missing_destination")
-                destination = "0.0.0.0"
+                destination = "::" if family == socket.AF_INET6 else "0.0.0.0"
             gateway = _attribute(message, "RTA_GATEWAY")
             try:
-                route = RoutePlan(
-                    dst=IPv4Network(f"{destination}/{prefixlen}", strict=False),
-                    via=IPv4Address(str(gateway)) if gateway is not None else None,
-                    dev=interface,
-                )
+                if family == socket.AF_INET6:
+                    route = RoutePlan(
+                        dst=IPv6Network(f"{destination}/{prefixlen}", strict=False),
+                        via=IPv6Address(str(gateway)) if gateway is not None else None,
+                        dev=interface,
+                    )
+                else:
+                    route = RoutePlan(
+                        dst=IPv4Network(f"{destination}/{prefixlen}", strict=False),
+                        via=IPv4Address(str(gateway)) if gateway is not None else None,
+                        dev=interface,
+                    )
             except (TypeError, ValueError):
+                if dynamic_route:
+                    continue
                 reason = "invalid_gateway" if gateway is not None else "invalid_destination"
                 raise _unsupported_inventory_route(namespace, reason) from None
             if has_preferred_source:
                 preferred_source = _attribute(message, "RTA_PREFSRC")
                 try:
-                    preferred_address = IPv4Address(str(preferred_source))
+                    preferred_address = (
+                        IPv6Address(str(preferred_source))
+                        if family == socket.AF_INET6
+                        else IPv4Address(str(preferred_source))
+                    )
                 except (TypeError, ValueError):
+                    if dynamic_route:
+                        continue
                     raise _unsupported_inventory_route(
                         namespace,
                         "preferred_source",
@@ -1173,7 +1572,16 @@ class Pyroute2Backend:
                     address.ip == preferred_address and address.network == route.dst
                     for address in observed_interface.addresses
                 ):
+                    if dynamic_route:
+                        continue
                     raise _unsupported_inventory_route(namespace, "preferred_source")
+            if (
+                family == socket.AF_INET6
+                and int(_value(message, "proto", 0)) == _RTPROT_KERNEL
+                and route.via is None
+                and (route.dst.is_link_local or route.dst.is_multicast)
+            ):
+                continue
             if route not in routes:
                 routes.append(route)
         return tuple(routes)

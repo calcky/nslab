@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from nslab.errors import NslabError
-from nslab.planner import LinkPlan, NodePlan, TopologyPlan
+from nslab.planner import LinkPlan, NetemPlan, NodePlan, TopologyPlan
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,21 +97,81 @@ def _node_kind_text(node: NodePlan, *, detail: bool) -> str:
     if node.kind == "bridge":
         summary = f"bridge · {node.bridge_name}"
         if detail:
-            summary += f" · stp {_on_off(node.stp)} · vlan filtering {_on_off(node.vlan_filtering)}"
+            summary += f" · stp {_on_off(node.stp)}"
+            if node.bridge_priority is not None:
+                summary += f" · priority {node.bridge_priority}"
+            summary += f" · vlan filtering {_on_off(node.vlan_filtering)}"
         return summary
-    return "linux"
+    summary = "linux"
+    if detail and node.routing is not None:
+        protocols = []
+        if node.routing.ospf is not None:
+            protocols.append("ospf")
+        if node.routing.bgp is not None:
+            protocols.append(f"bgp as {node.routing.bgp.local_as}")
+        if protocols:
+            summary += " · " + " · ".join(protocols)
+    return summary
 
 
 def _node_summary(node: NodePlan, *, detail: bool) -> str:
     return f"{node.name} [{_node_kind_text(node, detail=detail)}]"
 
 
-def _node_details(node: NodePlan) -> tuple[str, ...]:
-    return tuple(
+def _netem_text(netem: NetemPlan) -> str:
+    values = []
+    if netem.delay_ms:
+        values.append(f"delay {netem.delay_ms}ms")
+    if netem.jitter_ms:
+        values.append(f"jitter {netem.jitter_ms}ms")
+    if netem.loss_percent:
+        values.append(f"loss {netem.loss_percent}%")
+    return " · ".join(values)
+
+
+def _node_details(node: NodePlan, plan: TopologyPlan, *, detail: bool) -> tuple[str, ...]:
+    lines = [
         f"{interface}: {', '.join(str(address) for address in addresses)}"
         for interface, addresses in node.interfaces.items()
         if addresses
-    )
+    ]
+    if detail:
+        sections_by_interface: dict[str, list[str]] = {}
+        for interface, port in node.bridge_ports.items():
+            sections: list[str] = []
+            stp_settings: list[str] = []
+            if port.path_cost is not None:
+                stp_settings.append(f"cost {port.path_cost}")
+            if port.priority is not None:
+                stp_settings.append(f"priority {port.priority}")
+            if stp_settings:
+                sections.append(f"stp {' · '.join(stp_settings)}")
+            if port.vlans:
+                vlan_settings = []
+                for vlan in port.vlans:
+                    flags = []
+                    if vlan.pvid:
+                        flags.append("pvid")
+                    if vlan.untagged:
+                        flags.append("untagged")
+                    suffix = f" {' '.join(flags)}" if flags else ""
+                    vlan_settings.append(f"{vlan.vid}{suffix}")
+                sections.append(f"vlans {', '.join(vlan_settings)}")
+            if sections:
+                sections_by_interface[interface] = sections
+        for link in plan.links:
+            if link.netem is None:
+                continue
+            for endpoint in (link.left, link.right):
+                if endpoint.node == node.name:
+                    sections_by_interface.setdefault(endpoint.interface, []).append(
+                        f"netem {_netem_text(link.netem)}"
+                    )
+        lines.extend(
+            f"{interface}: {' · '.join(sections)}"
+            for interface, sections in sections_by_interface.items()
+        )
+    return tuple(lines)
 
 
 def _append_tree_children(
@@ -136,7 +196,10 @@ def _append_tree_children(
         child = plan.nodes[edge.child]
         lines.append(f"{edge_prefix}{branch}{edge_text}{_node_summary(child, detail=detail)}")
         child_prefix = f"{edge_prefix}{continuation}{' ' * len(edge_text)}"
-        lines.extend(f"{child_prefix}{node_detail}" for node_detail in _node_details(child))
+        lines.extend(
+            f"{child_prefix}{node_detail}"
+            for node_detail in _node_details(child, plan, detail=detail)
+        )
 
         grandchildren = component.children[edge.child]
         for index in range(len(grandchildren) - 1, -1, -1):
@@ -162,7 +225,7 @@ def _render_tree(plan: TopologyPlan, *, detail: bool) -> str:
     for component_index, component in enumerate(components):
         root = plan.nodes[component.root]
         lines.append(_node_summary(root, detail=detail))
-        lines.extend(f"  {node_detail}" for node_detail in _node_details(root))
+        lines.extend(f"  {node_detail}" for node_detail in _node_details(root, plan, detail=detail))
         _append_tree_children(lines, plan, component, component.root, "", detail=detail)
         if component.cross_links:
             lines.append("Cross-links:")
@@ -259,11 +322,11 @@ _SIBLING_GAP = 5
 _LAYER_GAP = 5
 
 
-def _make_box(node: NodePlan, *, detail: bool) -> _Box:
+def _make_box(node: NodePlan, plan: TopologyPlan, *, detail: bool) -> _Box:
     content = (
         node.name,
         _node_kind_text(node, detail=detail),
-        *_node_details(node),
+        *_node_details(node, plan, detail=detail),
     )
     width = max(len(line) for line in content) + 4
     return _Box(lines=content, width=width, height=len(content) + 2)
@@ -387,7 +450,7 @@ def _render_box_component(
     detail: bool,
 ) -> str:
     boxes: Mapping[str, _Box] = MappingProxyType(
-        {name: _make_box(plan.nodes[name], detail=detail) for name in component.children}
+        {name: _make_box(plan.nodes[name], plan, detail=detail) for name in component.children}
     )
     placements = _place_component(component, boxes)
     by_name = {placement.node: placement for placement in placements}
@@ -469,7 +532,7 @@ def _endpoint_document(node: str, interface: str) -> dict[str, object]:
 
 
 def _link_document(link: LinkPlan) -> dict[str, object]:
-    return {
+    document: dict[str, object] = {
         "endpoints": [
             _endpoint_document(link.left.node, link.left.interface),
             _endpoint_document(link.right.node, link.right.interface),
@@ -478,6 +541,13 @@ def _link_document(link: LinkPlan) -> dict[str, object]:
         "kind": link.kind,
         "mtu": link.mtu,
     }
+    if link.netem is not None:
+        document["netem"] = {
+            "delay_ms": link.netem.delay_ms,
+            "jitter_ms": link.netem.jitter_ms,
+            "loss_percent": link.netem.loss_percent,
+        }
+    return document
 
 
 def _render_json(plan: TopologyPlan) -> str:

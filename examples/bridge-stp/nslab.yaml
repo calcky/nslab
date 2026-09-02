@@ -1,0 +1,99 @@
+version: 1
+name: bridge-stp
+
+topology:
+  nodes:
+    h1:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses:
+            - 10.20.0.1/24
+
+    sw1:
+      kind: bridge
+      bridge:
+        name: br0
+        stp: true
+        vlan_filtering: false
+        priority: 4096
+        ports:
+          swp1:
+            path_cost: 10
+            priority: 32
+          swp2:
+            path_cost: 10
+            priority: 16
+          swp3:
+            path_cost: 10
+
+    sw2:
+      kind: bridge
+      bridge:
+        name: br0
+        stp: true
+        vlan_filtering: false
+        priority: 8192
+        ports:
+          swp1:
+            path_cost: 10
+          swp2:
+            path_cost: 10
+          swp3:
+            path_cost: 10
+
+    sw3:
+      kind: bridge
+      bridge:
+        name: br0
+        stp: true
+        vlan_filtering: false
+        priority: 12288
+        ports:
+          swp1:
+            path_cost: 10
+          swp2:
+            path_cost: 10
+
+    sw4:
+      kind: bridge
+      bridge:
+        name: br0
+        stp: true
+        vlan_filtering: false
+        priority: 16384
+        ports:
+          swp1:
+            path_cost: 10
+          swp2:
+            path_cost: 100
+
+    h2:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses:
+            - 10.20.0.2/24
+
+  links:
+    - endpoints:
+        - h1:eth0
+        - sw1:host1
+    - endpoints:
+        - sw1:swp1
+        - sw2:swp1
+    - endpoints:
+        - sw1:swp2
+        - sw2:swp2
+    - endpoints:
+        - sw1:swp3
+        - sw3:swp1
+    - endpoints:
+        - sw2:swp3
+        - sw4:swp1
+    - endpoints:
+        - sw3:swp2
+        - sw4:swp2
+    - endpoints:
+        - sw4:host1
+        - h2:eth0

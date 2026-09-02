@@ -72,7 +72,8 @@ instance/
 docs/_build/
 
 # Local design and implementation notes
-/docs/
+/docs/**/plans/
+/docs/**/specs/
 
 # PyBuilder
 .pybuilder/

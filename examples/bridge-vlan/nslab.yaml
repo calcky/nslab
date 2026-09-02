@@ -1,0 +1,79 @@
+version: 1
+name: bridge-vlan
+
+topology:
+  nodes:
+    h10a:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.0.0.1/24]
+
+    sw1:
+      kind: bridge
+      bridge:
+        name: br0
+        stp: false
+        vlan_filtering: true
+        ports:
+          access10:
+            vlans:
+              - vid: 10
+                pvid: true
+                untagged: true
+          access20:
+            vlans:
+              - vid: 20
+                pvid: true
+                untagged: true
+          trunk:
+            vlans:
+              - vid: 10
+              - vid: 20
+
+    h20a:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.0.0.3/24]
+
+    sw2:
+      kind: bridge
+      bridge:
+        name: br0
+        stp: false
+        vlan_filtering: true
+        ports:
+          trunk:
+            vlans:
+              - vid: 10
+              - vid: 20
+          access10:
+            vlans:
+              - vid: 10
+                pvid: true
+                untagged: true
+          access20:
+            vlans:
+              - vid: 20
+                pvid: true
+                untagged: true
+
+    h10b:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.0.0.2/24]
+
+    h20b:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.0.0.4/24]
+
+  links:
+    - endpoints: [h10a:eth0, sw1:access10]
+    - endpoints: [h20a:eth0, sw1:access20]
+    - endpoints: [sw1:trunk, sw2:trunk]
+    - endpoints: [sw2:access10, h10b:eth0]
+    - endpoints: [sw2:access20, h20b:eth0]
