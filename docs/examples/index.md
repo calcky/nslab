@@ -20,6 +20,7 @@ sudo nslab destroy
 | --- | --- |
 | [Bridge FDB](bridge-fdb.md) | Linux bridge forwarding, MAC learning, and counters |
 | [Bridge VLAN](bridge-vlan.md) | Access VLANs, PVID, untagged access, and tagged trunks |
+| [VLAN subinterfaces](vlan-subinterface.md) | 802.1Q VLAN devices over a veth link |
 | [Bridge STP](bridge-stp.md) | Root election, port selection, and failure reconvergence |
 
 ## IP forwarding
@@ -28,6 +29,7 @@ sudo nslab destroy
 | --- | --- |
 | [IPv4 forwarding](ipv4-forward.md) | IPv4 static routes and the Linux forwarding path |
 | [IPv6 forwarding](ipv6-forward.md) | IPv6 default routes, DAD, and the Linux forwarding path |
+| [Router on a stick](router-on-a-stick.md) | Inter-VLAN routing over one tagged trunk |
 
 ## Link conditions
 

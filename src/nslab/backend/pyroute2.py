@@ -47,6 +47,7 @@ from nslab.planner import (
     NodePlan,
     RoutePlan,
     TopologyPlan,
+    node_interface_addresses,
 )
 from nslab.routing import FrrRuntime
 
@@ -986,6 +987,30 @@ class Pyroute2Backend:
                     for interface in node.interfaces
                 }
 
+                for device in node.devices.values():
+                    parent_index = indexes.get(device.link)
+                    if parent_index is None:
+                        parent_index = _required_index(
+                            namespace,
+                            device.link,
+                            "configure_node",
+                            f"{node.namespace}:{device.link}",
+                        )
+                        indexes[device.link] = parent_index
+                    namespace.link(
+                        "add",
+                        ifname=device.name,
+                        kind="vlan",
+                        link=parent_index,
+                        vlan_id=device.vlan_id,
+                    )
+                    indexes[device.name] = _required_index(
+                        namespace,
+                        device.name,
+                        "configure_node",
+                        f"{node.namespace}:{device.name}",
+                    )
+
                 if node.kind == "bridge":
                     bridge_name = node.bridge_name
                     assert bridge_name is not None
@@ -1041,7 +1066,7 @@ class Pyroute2Backend:
                     if bridge_name not in node.interfaces:
                         namespace.link("set", index=bridge_index, state="up")
 
-                for interface, addresses in node.interfaces.items():
+                for interface, addresses in node_interface_addresses(node).items():
                     index = indexes[interface]
                     for address in addresses:
                         address_arguments: dict[str, object] = {
@@ -1248,7 +1273,7 @@ class Pyroute2Backend:
             vlan_messages,
             qdisc_messages,
             namespace=node.namespace,
-            declared_addresses=node.interfaces,
+            declared_addresses=node_interface_addresses(node),
         )
         observed_routes = tuple(
             route
@@ -1286,7 +1311,7 @@ class Pyroute2Backend:
         has_ipv6 = (
             any(
                 address.version == 6
-                for addresses in node.interfaces.values()
+                for addresses in node_interface_addresses(node).values()
                 for address in addresses
             )
             or any(route.dst.version == 6 for route in node.routes)
@@ -1453,6 +1478,8 @@ class Pyroute2Backend:
             bridge_priority: int | None = None
             path_cost: int | None = None
             port_priority: int | None = None
+            parent: str | None = None
+            vlan_id: int | None = None
             if kind == "bridge":
                 info_data = _attribute(link_info, "IFLA_INFO_DATA")
                 stp_value = _attribute(info_data, "IFLA_BR_STP_STATE")
@@ -1464,6 +1491,14 @@ class Pyroute2Backend:
                     vlan_filtering = bool(int(vlan_value))
                 if priority_value is not None:
                     bridge_priority = int(priority_value)
+            if kind == "vlan":
+                parent_value = _attribute(message, "IFLA_LINK")
+                if parent_value is not None:
+                    parent = names_by_index.get(int(parent_value))
+                info_data = _attribute(link_info, "IFLA_INFO_DATA")
+                vlan_id_value = _attribute(info_data, "IFLA_VLAN_ID")
+                if vlan_id_value is not None:
+                    vlan_id = int(vlan_id_value)
             slave_kind = _attribute(link_info, "IFLA_INFO_SLAVE_KIND")
             if slave_kind == "bridge":
                 slave_data = _attribute(link_info, "IFLA_INFO_SLAVE_DATA")
@@ -1495,6 +1530,8 @@ class Pyroute2Backend:
                 ),
                 netem=netem_by_index.get(index),
                 link_id=(str(link_id_value) if link_id_value is not None else None),
+                parent=parent,
+                vlan_id=vlan_id,
             )
         return interfaces, names_by_index
 

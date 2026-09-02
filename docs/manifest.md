@@ -10,7 +10,8 @@ topology
 ├─ nodes
 │  └─ <node-name>
 │     ├─ kind: linux
-│     │  ├─ interfaces / routes / sysctls
+│     │  ├─ interfaces / devices / routes / sysctls
+│     │  ├─ devices → <device-name> → type: vlan
 │     │  └─ routing
 │     └─ kind: bridge
 │        ├─ interfaces / routes / sysctls
@@ -60,6 +61,7 @@ and `bridge`.
 
 Interface names contain 1 to 15 letters, digits, `_`, `.`, or `-`. Except for a bridge device
 name, every interface declared in `interfaces` must appear in a `links[].endpoints` entry.
+Namespace-local VLAN interfaces belong under `devices`, not `interfaces`.
 
 ##### `interfaces.<ifname>`
 
@@ -90,8 +92,8 @@ Only these keys are accepted, and values must be integer `0` or `1`:
 
 #### `kind: linux`
 
-A Linux node represents a regular network namespace and accepts the common fields plus dynamic
-routing:
+A Linux node represents a regular network namespace and accepts the common fields plus
+namespace-local devices and dynamic routing:
 
 ```yaml
 r1:
@@ -99,9 +101,35 @@ r1:
   interfaces:
     eth0:
       addresses: [10.0.12.1/30]
+  devices:
+    vlan10:
+      type: vlan
+      link: eth0
+      id: 10
+      addresses: [192.168.10.1/24]
   sysctls:
     net.ipv4.ip_forward: 1
 ```
+
+##### `devices`
+
+`devices` creates interfaces inside the Linux node after all veth endpoints have been moved
+into place. Device names follow the interface-name rules, cannot be `lo`, cannot collide with a
+linked endpoint or an `interfaces` key, and may be used by `routes[].dev` and
+`routing.ospf.passive_interfaces`.
+
+The first supported device type is an 802.1Q VLAN subinterface:
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `devices.<name>.type` | Yes | None | Device discriminator; currently only `vlan` |
+| `devices.<name>.link` | Yes | None | Lower interface; must be a linked interface on the same node |
+| `devices.<name>.id` | Yes | None | VLAN ID in `1..4094`, unique on the lower interface |
+| `devices.<name>.addresses` | No | `[]` | Unique IPv4/IPv6 CIDR addresses assigned to the VLAN device |
+
+Only one level is supported: a VLAN device cannot use another declared device as its lower
+interface. Its MTU follows the lower interface. Connected routes, BGP directly connected
+neighbor checks, and automatic OSPF/BGP network statements include device addresses.
 
 ##### `routing`
 

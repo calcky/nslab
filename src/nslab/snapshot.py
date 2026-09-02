@@ -54,14 +54,21 @@ def _snapshot_plan(snapshot: StateSnapshot) -> TopologyPlan:
 def _expected_ownership(plan: TopologyPlan) -> dict[str, dict[str, object]]:
     expected: dict[str, dict[str, object]] = {}
     for node in plan.nodes.values():
-        if node.kind != "bridge":
-            continue
-        assert node.bridge_name is not None
-        expected[f"{node.name}:{node.bridge_name}"] = {
-            "name": node.bridge_name,
-            "kind": "bridge",
-            "namespace": node.namespace,
-        }
+        if node.kind == "bridge":
+            assert node.bridge_name is not None
+            expected[f"{node.name}:{node.bridge_name}"] = {
+                "name": node.bridge_name,
+                "kind": "bridge",
+                "namespace": node.namespace,
+            }
+        for device in node.devices.values():
+            expected[f"{node.name}:{device.name}"] = {
+                "name": device.name,
+                "kind": "vlan",
+                "namespace": node.namespace,
+                "parent": device.link,
+                "vlan_id": device.vlan_id,
+            }
     for link in plan.links:
         for endpoint in (link.left, link.right):
             expected[f"{endpoint.node}:{endpoint.interface}"] = {

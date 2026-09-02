@@ -257,6 +257,32 @@ class FakeNetworkBackend:
                 bridge_priority=node.bridge_priority,
             )
 
+        for device in node.devices.values():
+            parent = interfaces.get(device.link)
+            if parent is None:
+                raise _resource_error(
+                    "RESOURCE_MISSING",
+                    "configure_node",
+                    f"{resource}:{device.link}",
+                )
+            if device.name in interfaces:
+                raise _resource_error(
+                    "RESOURCE_EXISTS",
+                    "configure_node",
+                    f"{resource}:{device.name}",
+                )
+            interfaces[device.name] = InterfaceInventory(
+                name=device.name,
+                kind="vlan",
+                ifindex=self._allocate_ifindex(resource),
+                master=None,
+                mtu=parent.mtu,
+                up=True,
+                addresses=device.addresses,
+                parent=device.link,
+                vlan_id=device.vlan_id,
+            )
+
         for link in plan.links:
             for endpoint in (link.left, link.right):
                 if endpoint.namespace != resource:

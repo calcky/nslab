@@ -15,6 +15,7 @@ from nslab.planner import (
     NodePlan,
     RoutePlan,
     TopologyPlan,
+    node_interface_addresses,
 )
 
 
@@ -37,6 +38,8 @@ class InterfaceInventory:
     bridge_vlans: tuple[BridgeVlanPlan, ...] = ()
     netem: NetemPlan | None = None
     link_id: str | None = None
+    parent: str | None = None
+    vlan_id: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "addresses", tuple(self.addresses))
@@ -143,6 +146,8 @@ class _ExpectedInterface:
     port_priority: int | None = None
     bridge_vlans: tuple[BridgeVlanPlan, ...] = ()
     netem: NetemPlan | None = None
+    parent: str | None = None
+    vlan_id: int | None = None
 
 
 def expected_bridge_port_vlans(node: NodePlan, interface: str) -> tuple[BridgeVlanPlan, ...]:
@@ -166,7 +171,7 @@ def expected_main_table_routes(node: NodePlan) -> tuple[RoutePlan, ...]:
     ]
     routes.extend(
         RoutePlan(dst=address.network, via=None, dev=interface)
-        for interface, addresses in node.interfaces.items()
+        for interface, addresses in node_interface_addresses(node).items()
         for address in addresses
     )
     routes.extend(node.routes)
@@ -214,6 +219,17 @@ def _expected_interfaces(node: NodePlan, plan: TopologyPlan) -> dict[str, _Expec
                 netem=link.netem,
             )
 
+    for device in node.devices.values():
+        expected[device.name] = _ExpectedInterface(
+            kind="vlan",
+            master=None,
+            mtu=None,
+            up=True,
+            addresses=device.addresses,
+            parent=device.link,
+            vlan_id=device.vlan_id,
+        )
+
     return expected
 
 
@@ -254,6 +270,10 @@ def _interfaces_match(
         if observed.bridge_vlans != desired.bridge_vlans:
             return False
         if observed.netem != desired.netem:
+            return False
+        if observed.parent != desired.parent:
+            return False
+        if observed.vlan_id != desired.vlan_id:
             return False
 
     return True

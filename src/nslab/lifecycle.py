@@ -529,6 +529,19 @@ class LifecycleService:
                         else inventory.namespaces[node.namespace].interfaces[bridge_name].ifindex
                     ),
                 }
+            for device in node.devices.values():
+                result[f"{node_name}:{device.name}"] = {
+                    "name": device.name,
+                    "kind": "vlan",
+                    "namespace": node.namespace,
+                    "parent": device.link,
+                    "vlan_id": device.vlan_id,
+                    "ifindex": (
+                        None
+                        if inventory is None
+                        else inventory.namespaces[node.namespace].interfaces[device.name].ifindex
+                    ),
+                }
             for endpoint in endpoints_by_node[node_name]:
                 result[f"{node_name}:{endpoint.interface}"] = {
                     "name": endpoint.interface,

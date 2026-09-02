@@ -20,6 +20,7 @@ sudo nslab destroy
 | --- | --- |
 | [Bridge FDB](bridge-fdb.md) | Linux bridge 转发、MAC 学习和接口计数器 |
 | [Bridge VLAN](bridge-vlan.md) | Access VLAN、PVID、untagged 和 tagged trunk |
+| [VLAN 子接口](vlan-subinterface.md) | 在 veth 链路上使用 802.1Q VLAN 设备 |
 | [Bridge STP](bridge-stp.md) | 根桥选举、端口选择和故障重收敛 |
 
 ## IP 转发
@@ -28,6 +29,7 @@ sudo nslab destroy
 | --- | --- |
 | [IPv4 转发](ipv4-forward.md) | IPv4 静态路由和 Linux 转发路径 |
 | [IPv6 转发](ipv6-forward.md) | IPv6 默认路由、DAD 和 Linux 转发路径 |
+| [Router-on-a-stick](router-on-a-stick.md) | 通过一条 tagged trunk 完成 VLAN 间路由 |
 
 ## 链路条件
 

@@ -21,6 +21,7 @@ from nslab.manifest import (
     NAME_PATTERN,
     BgpConfig,
     BridgeNode,
+    LinuxNode,
     Manifest,
     NodeConfig,
     OspfConfig,
@@ -85,7 +86,19 @@ class BridgePortPlan:
     vlans: tuple[BridgeVlanPlan, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class VlanDevicePlan:
+    name: str
+    link: str
+    vlan_id: int
+    addresses: tuple[IPInterface, ...] = ()
+
+
 def _empty_bridge_ports() -> Mapping[str, BridgePortPlan]:
+    return MappingProxyType({})
+
+
+def _empty_devices() -> Mapping[str, VlanDevicePlan]:
     return MappingProxyType({})
 
 
@@ -97,6 +110,7 @@ class NodePlan:
     interfaces: Mapping[str, tuple[IPInterface, ...]]
     routes: tuple[RoutePlan, ...]
     sysctls: Mapping[str, int]
+    devices: Mapping[str, VlanDevicePlan] = field(default_factory=_empty_devices)
     bridge_name: str | None = None
     stp: bool | None = None
     vlan_filtering: bool | None = None
@@ -138,6 +152,17 @@ class TopologyPlan:
     links: tuple[LinkPlan, ...]
 
 
+def node_interface_addresses(node: NodePlan) -> Mapping[str, tuple[IPInterface, ...]]:
+    """Return address declarations for linked and namespace-local devices."""
+
+    return MappingProxyType(
+        {
+            **node.interfaces,
+            **{name: device.addresses for name, device in node.devices.items()},
+        }
+    )
+
+
 def _effective_deployment_name(manifest: Manifest, name_override: str | None) -> str:
     if name_override is None:
         return manifest.name
@@ -166,6 +191,21 @@ def _compile_node(deployment: str, name: str, manifest_node: NodeConfig) -> Node
         for route in manifest_node.routes
     )
     sysctls = MappingProxyType(dict(manifest_node.sysctls))
+    devices = (
+        MappingProxyType(
+            {
+                device_name: VlanDevicePlan(
+                    name=device_name,
+                    link=config.link,
+                    vlan_id=config.id,
+                    addresses=tuple(ip_interface(str(address)) for address in config.addresses),
+                )
+                for device_name, config in manifest_node.devices.items()
+            }
+        )
+        if isinstance(manifest_node, LinuxNode)
+        else MappingProxyType({})
+    )
 
     routing = _compile_routing(manifest_node.routing)
 
@@ -205,6 +245,7 @@ def _compile_node(deployment: str, name: str, manifest_node: NodeConfig) -> Node
         interfaces=interfaces,
         routes=routes,
         sysctls=sysctls,
+        devices=devices,
         routing=routing,
         bridge_name=bridge_name,
         stp=stp,

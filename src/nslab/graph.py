@@ -135,6 +135,15 @@ def _node_details(node: NodePlan, plan: TopologyPlan, *, detail: bool) -> tuple[
         for interface, addresses in node.interfaces.items()
         if addresses
     ]
+    lines.extend(
+        f"{device.name}: vlan {device.vlan_id} on {device.link}"
+        + (
+            f" · {', '.join(str(address) for address in device.addresses)}"
+            if device.addresses
+            else ""
+        )
+        for device in node.devices.values()
+    )
     if detail:
         sections_by_interface: dict[str, list[str]] = {}
         for interface, port in node.bridge_ports.items():
@@ -490,7 +499,11 @@ def _render_mermaid(plan: TopologyPlan) -> str:
     lines = ["flowchart LR"]
     node_ids = {name: f"n{index}" for index, name in enumerate(plan.nodes)}
     for name, node in plan.nodes.items():
-        label = _escape_label(f"{node.name}\n{node.kind}")
+        device_lines = "".join(
+            f"\n{device.name}: vlan {device.vlan_id} on {device.link}"
+            for device in node.devices.values()
+        )
+        label = _escape_label(f"{node.name}\n{node.kind}{device_lines}")
         lines.append(f'    {node_ids[name]}["{label}"]')
     for link in plan.links:
         label = _escape_label(f"{link.left.interface} <-> {link.right.interface}")
@@ -508,7 +521,11 @@ def _render_dot(plan: TopologyPlan) -> str:
     lines = ["graph nslab {"]
     for node in plan.nodes.values():
         identifier = _quoted_dot(node.name)
-        label = _quoted_dot(f"{node.name}\n{node.kind}")
+        device_lines = "".join(
+            f"\n{device.name}: vlan {device.vlan_id} on {device.link}"
+            for device in node.devices.values()
+        )
+        label = _quoted_dot(f"{node.name}\n{node.kind}{device_lines}")
         lines.append(f"    {identifier} [label={label}];")
     for link in plan.links:
         left = _quoted_dot(link.left.node)
@@ -520,11 +537,23 @@ def _render_dot(plan: TopologyPlan) -> str:
 
 
 def _node_document(node: NodePlan) -> dict[str, object]:
-    return {
+    document: dict[str, object] = {
         "kind": node.kind,
         "name": node.name,
         "namespace": node.namespace,
     }
+    if node.devices:
+        document["devices"] = [
+            {
+                "addresses": [str(address) for address in device.addresses],
+                "id": device.vlan_id,
+                "link": device.link,
+                "name": device.name,
+                "type": "vlan",
+            }
+            for device in node.devices.values()
+        ]
+    return document
 
 
 def _endpoint_document(node: str, interface: str) -> dict[str, object]:

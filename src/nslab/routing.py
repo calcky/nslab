@@ -19,7 +19,13 @@ from pathlib import Path
 from typing import Any
 
 from nslab.errors import NslabError
-from nslab.planner import EndpointPlan, NodePlan, RoutingPlan, TopologyPlan
+from nslab.planner import (
+    EndpointPlan,
+    NodePlan,
+    RoutingPlan,
+    TopologyPlan,
+    node_interface_addresses,
+)
 
 _FRR_DAEMONS = ("zebra", "ospfd", "bgpd")
 _ROUTING_RUNTIME_VERSION = 1
@@ -35,7 +41,7 @@ _MARKER_FILE = ".nslab-marker"
 def _connected_ipv4_networks(node: NodePlan) -> tuple[IPv4Network, ...]:
     networks = {
         address.network
-        for addresses in node.interfaces.values()
+        for addresses in node_interface_addresses(node).values()
         for address in addresses
         if address.version == 4
     }

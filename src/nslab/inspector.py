@@ -56,6 +56,8 @@ class InterfaceView:
     netem: str | None = None
     ifindex: int | None = None
     link_id: str | None = None
+    parent: str | None = None
+    vlan_id: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "addresses", tuple(self.addresses))
@@ -78,6 +80,8 @@ class InterfaceView:
             "netem": self.netem,
             "ifindex": self.ifindex,
             "link_id": self.link_id,
+            "parent": self.parent,
+            "vlan_id": self.vlan_id,
         }
 
 
@@ -388,6 +392,19 @@ def _desired_interfaces(node: NodePlan, plan: TopologyPlan) -> tuple[InterfaceVi
                     netem=_netem_string(link.netem),
                 )
             )
+    interfaces.extend(
+        InterfaceView(
+            name=device.name,
+            kind="vlan",
+            master=None,
+            mtu=None,
+            up=True,
+            addresses=_address_strings(device.addresses),
+            parent=device.link,
+            vlan_id=device.vlan_id,
+        )
+        for device in node.devices.values()
+    )
     return tuple(interfaces)
 
 
@@ -408,6 +425,8 @@ def _interface_view(interface: InterfaceInventory) -> InterfaceView:
         netem=_netem_string(interface.netem),
         ifindex=interface.ifindex,
         link_id=interface.link_id,
+        parent=interface.parent,
+        vlan_id=interface.vlan_id,
     )
 
 
@@ -780,6 +799,8 @@ def _compare_interface(
         compare("port_priority", desired.port_priority, actual.port_priority)
     compare("bridge_vlans", desired.bridge_vlans, _bridge_vlan_strings(actual.bridge_vlans))
     compare("netem", desired.netem, _netem_string(actual.netem))
+    compare("parent", desired.parent, actual.parent)
+    compare("vlan_id", desired.vlan_id, actual.vlan_id)
     return differences
 
 

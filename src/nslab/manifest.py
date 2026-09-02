@@ -76,6 +76,25 @@ class InterfaceConfig(BaseModel):
         return addresses
 
 
+VlanDeviceId = Annotated[StrictInt, Field(ge=1, le=4094)]
+
+
+class VlanDeviceConfig(InterfaceConfig):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    type: Literal["vlan"]
+    link: str
+    id: VlanDeviceId
+
+    @field_validator("link")
+    @classmethod
+    def validate_parent_name(cls, value: str) -> str:
+        parent = _require_name(value, IFNAME_PATTERN, "VLAN parent interface name")
+        if parent == "lo":
+            raise ValueError("VLAN parent interface cannot be 'lo'")
+        return parent
+
+
 class RouteConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -279,6 +298,48 @@ class LinuxNode(_NodeBase):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     kind: Literal["linux"]
+    devices: dict[str, VlanDeviceConfig] = Field(default_factory=dict)
+
+    @field_validator("devices")
+    @classmethod
+    def validate_device_names(
+        cls, devices: dict[str, VlanDeviceConfig]
+    ) -> dict[str, VlanDeviceConfig]:
+        for device_name in devices:
+            _require_name(device_name, IFNAME_PATTERN, "device name")
+            if device_name == "lo":
+                raise ValueError("device name cannot be 'lo'")
+        return devices
+
+    @model_validator(mode="after")
+    def validate_vlan_devices(self) -> Self:
+        collisions = set(self.interfaces) & set(self.devices)
+        if collisions:
+            name = sorted(collisions)[0]
+            raise ValueError(f"device name conflicts with an interface: {name!r}")
+
+        seen_vlan_links: set[tuple[str, int]] = set()
+        for name, device in self.devices.items():
+            if device.link in self.devices:
+                raise ValueError(
+                    f"VLAN device parent must be a linked interface: {name!r} -> {device.link!r}"
+                )
+            identity = (device.link, device.id)
+            if identity in seen_vlan_links:
+                raise ValueError(
+                    f"duplicate VLAN ID {device.id} on parent interface {device.link!r}"
+                )
+            seen_vlan_links.add(identity)
+
+        connected_networks = {
+            address.network for device in self.devices.values() for address in device.addresses
+        }
+        for route in self.routes:
+            if route.dst in connected_networks:
+                raise ValueError(
+                    f"route destination conflicts with connected network: {str(route.dst)!r}"
+                )
+        return self
 
 
 BridgePriority = Annotated[StrictInt, Field(ge=0, le=65535)]
@@ -438,6 +499,19 @@ class Topology(BaseModel):
         for node_name, node in self.nodes.items():
             linked = linked_interfaces[node_name]
             available = linked.copy()
+            if isinstance(node, LinuxNode):
+                for device_name, device in node.devices.items():
+                    if device_name in linked:
+                        raise ValueError(
+                            f"device name conflicts with a linked endpoint on node "
+                            f"{node_name!r}: {device_name!r}"
+                        )
+                    if device.link not in linked:
+                        raise ValueError(
+                            f"VLAN parent interface is not linked on node "
+                            f"{node_name!r}: {device.link!r}"
+                        )
+                available.update(node.devices)
             if isinstance(node, BridgeNode):
                 if node.bridge.name in linked:
                     raise ValueError(
@@ -498,8 +572,10 @@ class Topology(BaseModel):
                 bgp_router_ids[routing.bgp.router_id] = node_name
                 interface_networks = tuple(
                     address.network
-                    for interface_name, interface in node.interfaces.items()
-                    if interface_name in available
+                    for interface in (
+                        *node.interfaces.values(),
+                        *node.devices.values(),
+                    )
                     for address in interface.addresses
                     if address.version == 4
                 )
@@ -578,6 +654,10 @@ def normalized_manifest(manifest: Manifest) -> dict[str, object]:
     nodes = topology["nodes"]
     assert isinstance(nodes, dict)
     for node_name, node in manifest.topology.nodes.items():
+        if isinstance(node, LinuxNode) and not node.devices:
+            node_document = nodes[node_name]
+            assert isinstance(node_document, dict)
+            node_document.pop("devices", None)
         if not isinstance(node, BridgeNode) or node.bridge.ports:
             continue
         node_document = nodes[node_name]

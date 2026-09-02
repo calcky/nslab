@@ -148,6 +148,7 @@ def test_frr_runtime_start_is_idempotent_and_stop_removes_runtime_files(
         namespace_setter=namespace_calls.append,
         require_zebra_socket=False,
         pid_exists=lambda pid: pid in live,
+        frr_config_root=tmp_path / "frr-config",
     )
 
     runtime.start(plan)
