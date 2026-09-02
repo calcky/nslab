@@ -73,7 +73,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     exec_parser = subparsers.add_parser("exec")
     _add_selection_arguments(exec_parser)
-    exec_parser.add_argument("--node", required=True)
+    exec_parser.add_argument("-N", "--node", required=True)
     exec_parser.add_argument("command_argv", nargs=argparse.REMAINDER)
 
     graph_parser = subparsers.add_parser("graph")

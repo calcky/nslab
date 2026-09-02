@@ -422,10 +422,12 @@ def test_inspect_output_contains_status_and_ordered_nodes_without_ansi(
         assert output.index("h1") < output.index("sw1") < output.index("h2")
 
 
-def test_exec_selects_passthrough_does_not_replay_and_returns_child_status(
+@pytest.mark.parametrize("node_option", ["-N", "--node"])
+def test_exec_node_options_select_passthrough_and_return_child_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    node_option: str,
 ) -> None:
     topology = tmp_path / "lab.yaml"
     _write_manifest(topology)
@@ -458,7 +460,7 @@ def test_exec_selects_passthrough_does_not_replay_and_returns_child_status(
             "exec",
             "-t",
             str(topology),
-            "--node",
+            node_option,
             "h1",
             "--",
             "ping",
@@ -478,6 +480,18 @@ def test_exec_selects_passthrough_does_not_replay_and_returns_child_status(
     captured = capsys.readouterr()
     assert captured.out == "packet out\n"
     assert captured.err == "packet err\n"
+
+
+def test_exec_help_lists_short_and_long_node_options(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as caught:
+        cli._build_parser().parse_args(["exec", "--help"])
+
+    assert caught.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "-N NODE" in help_text
+    assert "--node NODE" in help_text
 
 
 def test_exec_keyboard_interrupt_returns_130_with_one_cancellation_line(

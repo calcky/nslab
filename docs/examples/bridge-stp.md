@@ -7,66 +7,116 @@ path cost 以及链路故障后的 STP 重收敛。
 
 ## 拓扑图
 
-```console
-$ nslab graph
-Topology: bridge-stp
-
-sw1 [bridge · br0]
-├─ host1 ↔ eth0  h1 [linux]
-│                eth0: 10.20.0.1/24
-├─ swp1 ↔ swp1  sw2 [bridge · br0]
-│               └─ swp3 ↔ swp1  sw4 [bridge · br0]
-│                               └─ host1 ↔ eth0  h2 [linux]
-│                                                eth0: 10.20.0.2/24
-└─ swp3 ↔ swp1  sw3 [bridge · br0]
-Cross-links:
-  ↩ [L2] sw1:swp2 ↔ sw2:swp2
-  ↩ [L5] sw3:swp2 ↔ sw4:swp2
+```bash
+nslab graph --format mermaid
 ```
 
-`nslab graph --detail` 会同时显示 bridge priority、端口 priority 和 path cost。
+```mermaid
+flowchart LR
+    n0["h1\nlinux"]
+    n1["sw1\nbridge"]
+    n2["sw2\nbridge"]
+    n3["sw3\nbridge"]
+    n4["sw4\nbridge"]
+    n5["h2\nlinux"]
+    n0 -- "eth0 <-> host1" --- n1
+    n1 -- "swp1 <-> swp1" --- n2
+    n1 -- "swp2 <-> swp2" --- n2
+    n1 -- "swp3 <-> swp1" --- n3
+    n2 -- "swp3 <-> swp1" --- n4
+    n3 -- "swp2 <-> swp2" --- n4
+    n4 -- "host1 <-> eth0" --- n5
+```
+
+`nslab graph --detail` 还可在终端中显示 bridge priority、端口 priority 和 path cost。
+以下输出中的接口索引、MAC 地址、计数器和 timer 会随运行变化。
 
 ## 运行并等待收敛
 
 ```bash
 cd examples/bridge-stp
-sudo nslab deploy
-sudo nslab inspect
+```
+
+```console
+$ sudo nslab deploy
+deployed topology: bridge-stp
+
+$ sudo nslab inspect
+status: deployed
+
+NAME  KIND    STATUS    NAMESPACE
+----  ------  --------  ----------------------------
+h1    linux   matching  nslab-bridge-stp-h1-...
+sw1   bridge  matching  nslab-bridge-stp-sw1-...
+sw2   bridge  matching  nslab-bridge-stp-sw2-...
+sw3   bridge  matching  nslab-bridge-stp-sw3-...
+sw4   bridge  matching  nslab-bridge-stp-sw4-...
+h2    linux   matching  nslab-bridge-stp-h2-...
+```
+
+```bash
 sleep 35
 ```
 
-经典 Linux bridge STP 首次进入 forwarding 状态可能需要约 30 秒。
-
 ## 观察端口角色
 
-```bash
-sudo nslab exec --node sw1 -- ip -d link show br0
-sudo nslab exec --node sw2 -- bridge -d link show
-sudo nslab exec --node sw4 -- bridge -d link show
-sudo nslab exec --node h1 -- ping -c 3 10.20.0.2
-```
+```console
+$ sudo nslab exec --node sw1 -- ip -d link show br0
+... br0 ... state UP ...
+    bridge forward_delay 1500 hello_time 200 max_age 2000 ... stp_state 1 priority 4096 ...
 
-`sw1` 应成为根桥。正常情况下，`sw4:swp1` forwarding，cost 更高的 `sw4:swp2`
-blocking。
+$ sudo nslab exec --node sw2 -- bridge -d link show
+swp1 ... state blocking   priority 32 cost 10
+swp2 ... state forwarding priority 32 cost 10
+swp3 ... state forwarding priority 32 cost 10
+
+$ sudo nslab exec --node sw4 -- bridge -d link show
+swp1 ... state forwarding priority 32 cost 10
+swp2 ... state blocking   priority 32 cost 100
+host1 ... state forwarding priority 32 cost <auto>
+
+$ sudo nslab exec --node h1 -- ping -c 3 10.20.0.2
+64 bytes from 10.20.0.2: icmp_seq=1 ttl=64 time=<time> ms
+...
+3 packets transmitted, 3 received, 0% packet loss
+```
 
 ## 验证故障切换
 
 ```bash
 sudo nslab exec --node sw4 -- ip link set swp1 down
 sleep 35
-sudo nslab exec --node sw4 -- bridge -d link show
-sudo nslab exec --node h2 -- ping -c 1 10.20.0.1
-sudo nslab exec --node h1 -- ping -c 3 10.20.0.2
+```
+
+```console
+$ sudo nslab exec --node sw4 -- bridge -d link show
+swp1 ... state disabled   priority 32 cost 10
+swp2 ... state forwarding priority 32 cost 100
+host1 ... state forwarding priority 32 cost <auto>
+
+$ sudo nslab inspect
+status: degraded
+...
+
+$ sudo nslab exec --node h2 -- ping -c 1 10.20.0.1
+64 bytes from 10.20.0.1: icmp_seq=1 ttl=64 time=<time> ms
+1 packets transmitted, 1 received, 0% packet loss
+
+$ sudo nslab exec --node h1 -- ping -c 3 10.20.0.2
+64 bytes from 10.20.0.2: icmp_seq=1 ttl=64 time=<time> ms
+...
+3 packets transmitted, 3 received, 0% packet loss
+```
+
+## 恢复与清理
+
+```bash
 sudo nslab exec --node sw4 -- ip link set swp1 up
 ```
 
-端口关闭期间 `inspect` 报告 `degraded` 是预期行为。先从 `h2` 发包可以帮助新路径
-重新学习 MAC 地址。
-
-## 清理
-
-```bash
-sudo nslab destroy
+```console
+$ sudo nslab destroy
+destroyed topology: bridge-stp
 ```
 
 [查看 nslab.yaml](https://github.com/calcky/nslab/blob/main/examples/bridge-stp/nslab.yaml) ·

@@ -7,58 +7,105 @@ IPv6 default routes to reach the remote network.
 
 ## Graph
 
-```console
-$ nslab graph
-Topology: ipv6-forward
-
-r1 [linux]
-  eth0: 2001:db8:1::1/64
-  eth1: 2001:db8:2::1/64
-├─ eth0 ↔ eth0  h1 [linux]
-│               eth0: 2001:db8:1::2/64
-└─ eth1 ↔ eth0  h2 [linux]
-                eth0: 2001:db8:2::2/64
+```bash
+nslab graph --format mermaid
 ```
+
+```mermaid
+flowchart LR
+    n0["h1\nlinux"]
+    n1["r1\nlinux"]
+    n2["h2\nlinux"]
+    n0 -- "eth0 <-> eth0" --- n1
+    n1 -- "eth1 <-> eth0" --- n2
+```
+
+The outputs below are representative. Link-local addresses, interface indexes, counters, and
+ICMP timings vary per run.
 
 ## Run
 
 ```bash
 cd examples/ipv6-forward
-sudo nslab deploy
-sleep 2
-sudo nslab inspect
 ```
 
-The short wait lets the kernel finish IPv6 duplicate address detection (DAD).
+```console
+$ sudo nslab deploy
+deployed topology: ipv6-forward
+```
+
+Wait for duplicate address detection (DAD), then inspect the topology:
+
+```bash
+sleep 2
+```
+
+```console
+$ sudo nslab inspect
+status: deployed
+
+NAME  KIND   STATUS    NAMESPACE
+----  -----  --------  -------------------------------
+h1    linux  matching  nslab-ipv6-forward-h1-...
+r1    linux  matching  nslab-ipv6-forward-r1-...
+h2    linux  matching  nslab-ipv6-forward-h2-...
+```
 
 ## Observe routes and forwarding
 
-```bash
-sudo nslab exec --node r1 -- cat /proc/sys/net/ipv6/conf/all/forwarding
-sudo nslab exec --node r1 -- ip -6 address show
-sudo nslab exec --node h1 -- ip -6 route show
-sudo nslab exec --node h1 -- ip -6 route get 2001:db8:2::2
-sudo nslab exec --node h2 -- ip -6 route show
-```
+```console
+$ sudo nslab exec --node r1 -- cat /proc/sys/net/ipv6/conf/all/forwarding
+1
 
-The forwarding switch should be `1`. Kernel-generated link-local addresses are not part of the
-declared manifest state.
+$ sudo nslab exec --node r1 -- ip -6 address show
+... eth0 ...
+    inet6 2001:db8:1::1/64 scope global
+    inet6 fe80::.../64 scope link
+... eth1 ...
+    inet6 2001:db8:2::1/64 scope global
+    inet6 fe80::.../64 scope link
+
+$ sudo nslab exec --node h1 -- ip -6 route show
+2001:db8:1::/64 dev eth0 proto kernel metric 256 pref medium
+default via 2001:db8:1::1 dev eth0 metric 1024 pref medium
+
+$ sudo nslab exec --node h1 -- ip -6 route get 2001:db8:2::2
+2001:db8:2::2 via 2001:db8:1::1 dev eth0 src 2001:db8:1::2 metric 1024 pref medium
+
+$ sudo nslab exec --node h2 -- ip -6 route show
+2001:db8:2::/64 dev eth0 proto kernel metric 256 pref medium
+default via 2001:db8:2::1 dev eth0 metric 1024 pref medium
+```
 
 ## Verify connectivity
 
-```bash
-sudo nslab exec --node h1 -- ping -6 -c 3 2001:db8:2::2
-sudo nslab exec --node h2 -- ping -6 -c 3 2001:db8:1::2
-sudo nslab exec --node r1 -- ip -s link show eth0
-sudo nslab exec --node r1 -- ip -s link show eth1
-```
+```console
+$ sudo nslab exec --node h1 -- ping -6 -c 3 2001:db8:2::2
+64 bytes from 2001:db8:2::2: icmp_seq=1 ttl=63 time=<time> ms
+...
+3 packets transmitted, 3 received, 0% packet loss
 
-The hop limit decreases after an ICMPv6 packet crosses `r1`.
+$ sudo nslab exec --node h2 -- ping -6 -c 3 2001:db8:1::2
+64 bytes from 2001:db8:1::2: icmp_seq=1 ttl=63 time=<time> ms
+...
+3 packets transmitted, 3 received, 0% packet loss
+
+$ sudo nslab exec --node r1 -- ip -s link show eth0
+... eth0 ... state UP ...
+    RX: ... packets ...
+    TX: ... packets ...
+
+$ sudo nslab exec --node r1 -- ip -s link show eth1
+... eth1 ... state UP ...
+    RX: ... packets ...
+    TX: ... packets ...
+```
 
 ## Clean up
 
-```bash
-sudo nslab destroy
+```console
+$ sudo nslab destroy
+destroyed topology: ipv6-forward
 ```
 
 [View nslab.yaml](https://github.com/calcky/nslab/blob/main/examples/ipv6-forward/nslab.yaml) ·

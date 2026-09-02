@@ -145,6 +145,28 @@ jobs:
                 /usr/bin/vtysh -N "nslab-${smoke_name}-${node}" -c "$command"
             }
 
+            # RIB convergence can precede ARP/FIB readiness on fresh links.
+            wait_for_ping() {
+              local node="$1"
+              local destination="$2"
+              local deadline=$((SECONDS + 15))
+              local output=""
+              while (( SECONDS < deadline )); do
+                if output="$(
+                  sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" exec \
+                    --name "$smoke_name" --node "$node" -- \
+                    /usr/bin/ping -c 1 -W 2 "$destination" 2>&1
+                )"; then
+                  printf '%s\n' "$output"
+                  return 0
+                fi
+                sleep 1
+              done
+              echo "ICMP connectivity did not become ready: ${node} -> ${destination}" >&2
+              printf '%s\n' "$output" >&2
+              return 1
+            }
+
             wait_for_ospf() {
               local deadline=$((SECONDS + 45))
               local output route_output
@@ -193,9 +215,7 @@ jobs:
                 sudo env TMPDIR=/tmp /usr/bin/timeout 60 "$nslab_bin" deploy \
                   --topo "$topology" --name "$smoke_name"
                 wait_for_ospf
-                sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" exec \
-                  --name "$smoke_name" --node h1 -- \
-                  /usr/bin/ping -c 1 -W 2 192.0.3.2
+                wait_for_ping h1 192.0.3.2
                 ;;
               bgp)
                 sudo env TMPDIR=/tmp /usr/bin/timeout 60 "$nslab_bin" deploy \
@@ -205,9 +225,7 @@ jobs:
                   | grep -F "198.18.1.0/24"
                 run_vtysh "$check_node" "show ip bgp" \
                   | grep -F "198.18.3.0/24"
-                sudo env TMPDIR=/tmp /usr/bin/timeout 30 "$nslab_bin" exec \
-                  --name "$smoke_name" --node h1 -- \
-                  /usr/bin/ping -c 1 -W 2 198.18.3.2
+                wait_for_ping h1 198.18.3.2
                 ;;
               *) echo "unsupported protocol: $protocol" >&2; return 2 ;;
             esac

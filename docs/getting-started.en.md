@@ -103,19 +103,3 @@ sudo nslab inspect --name my-lab --format json
 After confirming that the resources belong to that deployment, use the same YAML with `destroy`
 or `redeploy`. Do not delete state files manually. They contain the exact namespace and interface
 names used to keep cleanup scoped.
-
-## Run from Obsidian
-
-nslab does not install an Obsidian plugin or change sudoers. An Execute Code or terminal plugin
-can invoke the same CLI. On Linux, run the commands directly. A Windows-hosted Obsidian can call
-WSL, for example:
-
-```powershell
-$Distro = "Ubuntu-24.04"
-$Repo = "/home/captain/nslab"
-wsl.exe --distribution $Distro --user root --cd $Repo nslab deploy --topo examples/bridge-fdb/nslab.yaml
-wsl.exe --distribution $Distro --user root --cd $Repo nslab destroy --topo examples/bridge-fdb/nslab.yaml
-```
-
-Do not concatenate untrusted text into `exec` arguments. A network namespace isolates the
-network stack, not root access to the host filesystem.

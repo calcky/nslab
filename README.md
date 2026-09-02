@@ -64,7 +64,7 @@ topology:
     - endpoints: [h1:eth0, h2:eth0]
 ```
 
-生成 Mermaid 拓扑图（下面就是命令的实际输出，GitHub 会直接渲染）：
+生成 Mermaid 拓扑图：
 
 ```bash
 nslab graph --format mermaid

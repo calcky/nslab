@@ -16,7 +16,7 @@ _SELECTION_OPTIONS = ("-h", "--help", "-t", "--topo", "-n", "--name", "--debug")
 _COMMAND_OPTIONS: Mapping[str, tuple[str, ...]] = {
     **{command: _SELECTION_OPTIONS for command in LIFECYCLE_COMMANDS},
     "inspect": (*_SELECTION_OPTIONS, "--format"),
-    "exec": (*_SELECTION_OPTIONS, "--node", "--"),
+    "exec": (*_SELECTION_OPTIONS, "-N", "--node", "--"),
     "graph": (*_SELECTION_OPTIONS, "--format", "--detail"),
     "completion": ("-h", "--help"),
 }
@@ -93,7 +93,7 @@ _nslab_completion()
             )
             return
             ;;
-        --node)
+        -N|--node)
             if [[ $command == exec ]]; then
                 mapfile -t COMPREPLY < <(
                     command "${COMP_WORDS[0]}" __complete nodes \
@@ -184,7 +184,7 @@ _nslab_completion()
             (( ${#candidates} )) && compadd -- "${candidates[@]}"
             return
             ;;
-        --node)
+        -N|--node)
             if [[ $command == exec ]]; then
                 candidates=("${(@f)$(
                     command "${words[1]}" __complete nodes \

@@ -12,10 +12,13 @@ from pathlib import Path
 
 import pytest
 
+from nslab.graph import render_graph
 from nslab.manifest import load_manifest
 from nslab.planner import BridgeVlanPlan, NetemPlan, RoutePlan, compile_plan
 
 _EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
+_DOCS = Path(__file__).resolve().parents[2] / "docs"
+_DOCS_EXAMPLES = _DOCS / "examples"
 
 
 @pytest.mark.parametrize(
@@ -42,6 +45,65 @@ def test_every_example_has_a_usage_readme(manifest_path: Path) -> None:
     content = readme.read_text(encoding="utf-8")
     for command in ("graph", "deploy", "inspect", "exec", "destroy"):
         assert f"nslab {command}" in content
+
+
+@pytest.mark.parametrize(
+    "manifest_path",
+    sorted(_EXAMPLES.glob("*/nslab.yaml")),
+    ids=lambda path: path.parent.name,
+)
+def test_every_example_document_has_current_mermaid_and_command_output(
+    manifest_path: Path,
+) -> None:
+    name = manifest_path.parent.name
+    plan = compile_plan(load_manifest(manifest_path))
+    expected_graph = f"```mermaid\n{render_graph(plan, 'mermaid')}\n```"
+    documents = (
+        manifest_path.with_name("README.md"),
+        _DOCS_EXAMPLES / f"{name}.md",
+        _DOCS_EXAMPLES / f"{name}.en.md",
+    )
+    documented_commands: list[tuple[str, ...]] = []
+
+    for document in documents:
+        content = document.read_text(encoding="utf-8")
+        lines = content.splitlines()
+        assert "nslab graph --format mermaid" in content
+        assert expected_graph in content
+        assert f"deployed topology: {name}" in content
+        assert "status: deployed" in content
+        assert f"destroyed topology: {name}" in content
+        assert "```console" in content
+        for index, line in enumerate(lines):
+            if line.startswith("$ sudo nslab"):
+                assert lines[index + 1]
+                assert not lines[index + 1].startswith("$")
+        documented_commands.append(
+            tuple(
+                line.removeprefix("$ ")
+                for line in lines
+                if line.startswith(("$ sudo nslab", "sudo nslab"))
+            )
+        )
+
+    assert documented_commands[0] == documented_commands[1] == documented_commands[2]
+
+
+def test_cli_docs_show_every_current_graph_format() -> None:
+    plan = compile_plan(load_manifest(_EXAMPLES / "bridge-fdb" / "nslab.yaml"))
+    output_fences = {
+        "tree": "text",
+        "box": "text",
+        "mermaid": "mermaid",
+        "dot": "dot",
+        "json": "json",
+    }
+
+    for document in (_DOCS / "cli.md", _DOCS / "cli.en.md"):
+        content = document.read_text(encoding="utf-8")
+        for output_format, fence in output_fences.items():
+            expected = f"```{fence}\n{render_graph(plan, output_format)}\n```"
+            assert expected in content
 
 
 def test_bridge_stp_example_combines_election_tiebreak_and_failover() -> None:

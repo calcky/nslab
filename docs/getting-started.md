@@ -101,18 +101,3 @@ sudo nslab inspect --name my-lab --format json
 
 确认资源属于该 deployment 后，再用相同 YAML 执行 `destroy` 或 `redeploy`。不要手动
 删除 state 文件；state 中记录了精确的 namespace 和接口名称，用于限制清理范围。
-
-## 在 Obsidian 中执行
-
-nslab 不安装 Obsidian 插件，也不修改 sudoers。Obsidian 的 Execute Code 或终端插件
-可以调用同一个 CLI。Linux 直接运行命令；Windows 主机可通过 WSL 调用，例如：
-
-```powershell
-$Distro = "Ubuntu-24.04"
-$Repo = "/home/captain/nslab"
-wsl.exe --distribution $Distro --user root --cd $Repo nslab deploy --topo examples/bridge-fdb/nslab.yaml
-wsl.exe --distribution $Distro --user root --cd $Repo nslab destroy --topo examples/bridge-fdb/nslab.yaml
-```
-
-不要把不可信文本拼接进 `exec` 参数。namespace 只隔离网络栈，root 命令仍可访问主机
-文件系统。

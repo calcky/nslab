@@ -7,57 +7,104 @@ IPv6 默认路由访问对端网段。
 
 ## 拓扑图
 
-```console
-$ nslab graph
-Topology: ipv6-forward
-
-r1 [linux]
-  eth0: 2001:db8:1::1/64
-  eth1: 2001:db8:2::1/64
-├─ eth0 ↔ eth0  h1 [linux]
-│               eth0: 2001:db8:1::2/64
-└─ eth1 ↔ eth0  h2 [linux]
-                eth0: 2001:db8:2::2/64
+```bash
+nslab graph --format mermaid
 ```
+
+```mermaid
+flowchart LR
+    n0["h1\nlinux"]
+    n1["r1\nlinux"]
+    n2["h2\nlinux"]
+    n0 -- "eth0 <-> eth0" --- n1
+    n1 -- "eth1 <-> eth0" --- n2
+```
+
+以下为典型输出；link-local 地址、接口索引、计数器和 ICMP 时延会随运行变化。
 
 ## 运行
 
 ```bash
 cd examples/ipv6-forward
-sudo nslab deploy
-sleep 2
-sudo nslab inspect
 ```
 
-短暂等待用于让内核完成 IPv6 duplicate address detection（DAD）。
+```console
+$ sudo nslab deploy
+deployed topology: ipv6-forward
+```
+
+等待 DAD 完成后检查状态：
+
+```bash
+sleep 2
+```
+
+```console
+$ sudo nslab inspect
+status: deployed
+
+NAME  KIND   STATUS    NAMESPACE
+----  -----  --------  -------------------------------
+h1    linux  matching  nslab-ipv6-forward-h1-...
+r1    linux  matching  nslab-ipv6-forward-r1-...
+h2    linux  matching  nslab-ipv6-forward-h2-...
+```
 
 ## 观察路由和转发
 
-```bash
-sudo nslab exec --node r1 -- cat /proc/sys/net/ipv6/conf/all/forwarding
-sudo nslab exec --node r1 -- ip -6 address show
-sudo nslab exec --node h1 -- ip -6 route show
-sudo nslab exec --node h1 -- ip -6 route get 2001:db8:2::2
-sudo nslab exec --node h2 -- ip -6 route show
-```
+```console
+$ sudo nslab exec --node r1 -- cat /proc/sys/net/ipv6/conf/all/forwarding
+1
 
-转发开关应为 `1`。内核自动生成的 link-local 地址不属于 manifest 声明状态。
+$ sudo nslab exec --node r1 -- ip -6 address show
+... eth0 ...
+    inet6 2001:db8:1::1/64 scope global
+    inet6 fe80::.../64 scope link
+... eth1 ...
+    inet6 2001:db8:2::1/64 scope global
+    inet6 fe80::.../64 scope link
+
+$ sudo nslab exec --node h1 -- ip -6 route show
+2001:db8:1::/64 dev eth0 proto kernel metric 256 pref medium
+default via 2001:db8:1::1 dev eth0 metric 1024 pref medium
+
+$ sudo nslab exec --node h1 -- ip -6 route get 2001:db8:2::2
+2001:db8:2::2 via 2001:db8:1::1 dev eth0 src 2001:db8:1::2 metric 1024 pref medium
+
+$ sudo nslab exec --node h2 -- ip -6 route show
+2001:db8:2::/64 dev eth0 proto kernel metric 256 pref medium
+default via 2001:db8:2::1 dev eth0 metric 1024 pref medium
+```
 
 ## 验证通信
 
-```bash
-sudo nslab exec --node h1 -- ping -6 -c 3 2001:db8:2::2
-sudo nslab exec --node h2 -- ping -6 -c 3 2001:db8:1::2
-sudo nslab exec --node r1 -- ip -s link show eth0
-sudo nslab exec --node r1 -- ip -s link show eth1
-```
+```console
+$ sudo nslab exec --node h1 -- ping -6 -c 3 2001:db8:2::2
+64 bytes from 2001:db8:2::2: icmp_seq=1 ttl=63 time=<time> ms
+...
+3 packets transmitted, 3 received, 0% packet loss
 
-ICMPv6 包经过 `r1` 后 hop limit 会减一。
+$ sudo nslab exec --node h2 -- ping -6 -c 3 2001:db8:1::2
+64 bytes from 2001:db8:1::2: icmp_seq=1 ttl=63 time=<time> ms
+...
+3 packets transmitted, 3 received, 0% packet loss
+
+$ sudo nslab exec --node r1 -- ip -s link show eth0
+... eth0 ... state UP ...
+    RX: ... packets ...
+    TX: ... packets ...
+
+$ sudo nslab exec --node r1 -- ip -s link show eth1
+... eth1 ... state UP ...
+    RX: ... packets ...
+    TX: ... packets ...
+```
 
 ## 清理
 
-```bash
-sudo nslab destroy
+```console
+$ sudo nslab destroy
+destroyed topology: ipv6-forward
 ```
 
 [查看 nslab.yaml](https://github.com/calcky/nslab/blob/main/examples/ipv6-forward/nslab.yaml) ·

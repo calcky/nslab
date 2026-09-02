@@ -5,7 +5,8 @@ nslab deploy    [-t PATH] [-n NAME]
 nslab destroy   [-t PATH] [-n NAME]
 nslab redeploy  [-t PATH] [-n NAME]
 nslab inspect   [-t PATH] [-n NAME] [--format table|json]
-nslab exec      [-t PATH] [-n NAME] --node NODE -- COMMAND [ARG ...]
+nslab exec      [-t PATH] [-n NAME] (-N NODE | --node NODE)
+                -- COMMAND [ARG ...]
 nslab graph     [-t PATH] [-n NAME] [--detail]
                 [--format tree|box|mermaid|dot|json]
 nslab completion bash|zsh
@@ -71,11 +72,12 @@ sudo nslab inspect --name bridge-fdb --format json
 
 ## exec
 
-`exec` 在目标节点 namespace 中直接运行 `--` 后的 argv，不隐式启动 shell。标准输入、
-输出和错误流继承当前终端，长时间运行的程序会实时显示输出：
+`-N` 是 `--node` 的简写；小写 `-n` 表示 deployment 的 `--name`。`exec` 在目标节点
+namespace 中直接运行 `--` 后的 argv，不隐式启动 shell。标准输入、输出和错误流继承
+当前终端，长时间运行的程序会实时显示输出：
 
 ```bash
-sudo nslab exec --node h1 -- ping -c 3 10.10.0.2
+sudo nslab exec -N h1 -- ping -c 3 10.10.0.2
 sudo nslab exec --node sw1 -- bridge fdb show br br0
 sudo nslab exec --node r1 -- vtysh -N nslab-ospf-r1 -c "show ip ospf neighbor"
 ```
@@ -86,18 +88,144 @@ sudo nslab exec --node r1 -- vtysh -N nslab-ospf-r1 -c "show ip ospf neighbor"
 ## graph
 
 `graph` 不读取 live state，可在 deploy 前运行。默认是紧凑的 Unicode 树；`--detail`
-才会追加 STP、bridge priority、端口 cost/priority 和 VLAN filtering：
+才会追加 STP、bridge priority、端口 cost/priority 和 VLAN filtering。下面所有样式都使用
+`examples/bridge-fdb/nslab.yaml`。
+
+### tree（默认）
 
 ```bash
-nslab graph
-nslab graph --detail
-nslab graph --format box --detail
-nslab graph --format mermaid
-nslab graph --format dot
-nslab graph --format json
+nslab graph --topo examples/bridge-fdb/nslab.yaml
+```
+
+```text
+Topology: bridge-fdb
+
+sw1 [bridge · br0]
+├─ swp1 ↔ eth0  h1 [linux]
+│               eth0: 10.10.0.1/24
+└─ swp2 ↔ eth0  h2 [linux]
+                eth0: 10.10.0.2/24
+```
+
+### box
+
+```bash
+nslab graph --topo examples/bridge-fdb/nslab.yaml --format box
+```
+
+```text
+Topology: bridge-fdb
+
+                ┌──────────────┐
+                │ sw1          │
+                │ bridge · br0 │
+                └───────┬──────┘
+                        │
+           ┌────────────┴─────────────┐
+           │                          │
+      swp1 ↔ eth0                swp2 ↔ eth0
+           │                          │
+┌──────────┴─────────┐     ┌──────────┴─────────┐
+│ h1                 │     │ h2                 │
+│ linux              │     │ linux              │
+│ eth0: 10.10.0.1/24 │     │ eth0: 10.10.0.2/24 │
+└────────────────────┘     └────────────────────┘
+```
+
+### mermaid
+
+```bash
+nslab graph --topo examples/bridge-fdb/nslab.yaml --format mermaid
+```
+
+```mermaid
+flowchart LR
+    n0["h1\nlinux"]
+    n1["sw1\nbridge"]
+    n2["h2\nlinux"]
+    n0 -- "eth0 <-> swp1" --- n1
+    n2 -- "eth0 <-> swp2" --- n1
+```
+
+### dot
+
+```bash
+nslab graph --topo examples/bridge-fdb/nslab.yaml --format dot
+```
+
+```dot
+graph nslab {
+    "h1" [label="h1\nlinux"];
+    "sw1" [label="sw1\nbridge"];
+    "h2" [label="h2\nlinux"];
+    "h1" -- "sw1" [label="eth0 <-> swp1"];
+    "h2" -- "sw1" [label="eth0 <-> swp2"];
+}
+```
+
+### json
+
+```bash
+nslab graph --topo examples/bridge-fdb/nslab.yaml --format json
+```
+
+```json
+{
+  "links": [
+    {
+      "endpoints": [
+        {
+          "interface": "eth0",
+          "node": "h1"
+        },
+        {
+          "interface": "swp1",
+          "node": "sw1"
+        }
+      ],
+      "index": 0,
+      "kind": "veth",
+      "mtu": 1500
+    },
+    {
+      "endpoints": [
+        {
+          "interface": "eth0",
+          "node": "h2"
+        },
+        {
+          "interface": "swp2",
+          "node": "sw1"
+        }
+      ],
+      "index": 1,
+      "kind": "veth",
+      "mtu": 1500
+    }
+  ],
+  "name": "bridge-fdb",
+  "nodes": [
+    {
+      "kind": "linux",
+      "name": "h1",
+      "namespace": "nslab-bridge-fdb-h1-31a8127feeb4ce2e"
+    },
+    {
+      "kind": "bridge",
+      "name": "sw1",
+      "namespace": "nslab-bridge-fdb-sw1-33858844c78991ec"
+    },
+    {
+      "kind": "linux",
+      "name": "h2",
+      "namespace": "nslab-bridge-fdb-h2-9265b596d1fcc5ba"
+    }
+  ]
+}
 ```
 
 `tree` 和 `box` 适合终端，`mermaid` 和 `dot` 可粘贴到渲染器，`json` 适合自动化。
+`--detail` 只适用于 `tree` 和 `box`，例如 `nslab graph --format box --detail`。
 
 ## completion
 
