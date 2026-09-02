@@ -1,48 +1,48 @@
-# 实验示例
+# Examples
 
-每个示例都有独立页面、真实的 `nslab graph` 输出以及部署、观察和清理命令。示例目录
-同时保留可重复执行的 `nslab.yaml` 和 README。
+Every example has its own page with actual `nslab graph` output and commands for deployment,
+observation, and cleanup. Its directory also contains a repeatable `nslab.yaml` and README.
 
-通用流程：
+Common workflow:
 
 ```bash
 cd examples/<lab>
 nslab graph
 sudo nslab deploy
 sudo nslab inspect
-# 执行实验页中的观察命令
+# Run the observation commands from the example page
 sudo nslab destroy
 ```
 
-## 二层交换
+## Layer 2 switching
 
-| 示例 | 学习内容 |
+| Example | Focus |
 | --- | --- |
-| [Bridge FDB](bridge-fdb.md) | Linux bridge 转发、MAC 学习和接口计数器 |
-| [Bridge VLAN](bridge-vlan.md) | Access VLAN、PVID、untagged 和 tagged trunk |
-| [Bridge STP](bridge-stp.md) | 根桥选举、端口选择和故障重收敛 |
+| [Bridge FDB](bridge-fdb.md) | Linux bridge forwarding, MAC learning, and counters |
+| [Bridge VLAN](bridge-vlan.md) | Access VLANs, PVID, untagged access, and tagged trunks |
+| [Bridge STP](bridge-stp.md) | Root election, port selection, and failure reconvergence |
 
-## IP 转发
+## IP forwarding
 
-| 示例 | 学习内容 |
+| Example | Focus |
 | --- | --- |
-| [IPv4 转发](ipv4-forward.md) | IPv4 静态路由和 Linux 转发路径 |
-| [IPv6 转发](ipv6-forward.md) | IPv6 默认路由、DAD 和 Linux 转发路径 |
+| [IPv4 forwarding](ipv4-forward.md) | IPv4 static routes and the Linux forwarding path |
+| [IPv6 forwarding](ipv6-forward.md) | IPv6 default routes, DAD, and the Linux forwarding path |
 
-## 链路条件
+## Link conditions
 
-| 示例 | 学习内容 |
+| Example | Focus |
 | --- | --- |
-| [netem](netem.md) | 双向延迟、抖动、随机丢包和 qdisc 统计 |
+| [netem](netem.md) | Bidirectional delay, jitter, random loss, and qdisc statistics |
 
-## 动态路由
+## Dynamic routing
 
-| 示例 | 学习内容 |
+| Example | Focus |
 | --- | --- |
-| [OSPFv2](ospf.md) | 邻居建立、链路状态路由和故障收敛 |
-| [eBGP](bgp.md) | 邻居建立、AS_PATH 传播和边界路由 |
+| [OSPFv2](ospf.md) | Adjacencies, link-state routes, and failure convergence |
+| [eBGP](bgp.md) | Peer establishment, AS_PATH propagation, and edge routing |
 
-!!! note "权限和依赖"
+!!! note "Privileges and dependencies"
 
-    `graph` 不需要 root。创建 namespace、bridge、veth 或 qdisc 需要 root。OSPF/BGP
-    页面还需要系统安装 `frr` 和 `frr-pythontools`。
+    `graph` does not require root. Creating namespaces, bridges, veth pairs, or qdiscs does.
+    The OSPF and BGP pages also require the system `frr` and `frr-pythontools` packages.

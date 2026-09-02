@@ -1,11 +1,11 @@
-# Linux netem link conditions
+# Linux netem 链路条件
 
-## Goal
+## 实验目标
 
-Install an egress netem qdisc at both ends of a veth to observe link delay, jitter, random loss,
-and qdisc statistics independently. This lab does not use IP forwarding.
+在 veth 两端安装 netem egress qdisc，独立观察链路延迟、抖动、随机丢包和 qdisc
+统计。这个示例属于链路条件实验，不依赖 IP 转发。
 
-## Graph
+## 拓扑图
 
 ```bash
 nslab graph --format mermaid
@@ -18,10 +18,10 @@ flowchart LR
     n0 -- "eth0 <-> eth0" --- n1
 ```
 
-Both directions use `100ms` delay, `10ms` jitter, and `5%` loss. Statistics below vary with
-random loss and generated traffic.
+该链路双向配置 `100ms` delay、`10ms` jitter 和 `5%` loss。以下统计输出会随随机
+丢包和流量变化。
 
-## Run
+## 运行
 
 ```bash
 cd examples/netem
@@ -40,7 +40,7 @@ h1    linux  matching  nslab-netem-h1-...
 h2    linux  matching  nslab-netem-h2-...
 ```
 
-## Observe qdiscs
+## 观察 qdisc
 
 ```console
 $ sudo nslab exec --node h1 -- tc -s qdisc show dev eth0
@@ -52,7 +52,7 @@ qdisc netem ... root ... limit 1000 delay 100ms 10ms loss 5%
  Sent ... bytes ... pkt (dropped ..., overlimits ... requeues 0)
 ```
 
-## Generate traffic
+## 产生流量
 
 ```console
 $ sudo nslab exec --node h1 -- ping -c 20 -i 0.2 10.30.0.2
@@ -66,12 +66,12 @@ $ sudo nslab exec --node h2 -- ping -c 20 -i 0.2 10.30.0.1
 20 packets transmitted, <received> received, <loss>% packet loss
 ```
 
-The echo request experiences egress delay at `h1` and the reply experiences it again at `h2`,
-so RTT is centered around `200ms`.
+echo request 在 `h1` 经历一次 egress delay，reply 在 `h2` 再经历一次，因此 RTT
+中心值约为 `200ms`。
 
-## Change parameters
+## 修改参数
 
-Change `delay_ms`, `jitter_ms`, or `loss_percent`, then rebuild the topology:
+修改 `delay_ms`、`jitter_ms` 或 `loss_percent` 后重建拓扑：
 
 ```console
 $ sudo nslab redeploy
@@ -87,12 +87,12 @@ $ sudo nslab exec --node h1 -- ping -c 20 10.30.0.2
 20 packets transmitted, <received> received, <loss>% packet loss
 ```
 
-## Clean up
+## 清理
 
 ```console
 $ sudo nslab destroy
 destroyed topology: netem
 ```
 
-[View nslab.yaml](https://github.com/calcky/nslab/blob/main/examples/netem/nslab.yaml) ·
-[View example README](https://github.com/calcky/nslab/blob/main/examples/netem/README.md)
+[查看 nslab.yaml](https://github.com/calcky/nslab/blob/main/examples/netem/nslab.yaml) ·
+[查看示例 README](https://github.com/calcky/nslab/blob/main/examples/netem/README.md)

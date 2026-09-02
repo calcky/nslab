@@ -1,11 +1,11 @@
-# OSPFv2 dynamic routing
+# OSPFv2 动态路由
 
-## Goal
+## 实验目标
 
-Three Linux routers run independent FRRouting `zebra` and `ospfd` processes in an OSPFv2
-triangle for observing neighbors, learned routes, and failure convergence.
+三台 Linux 路由器运行独立的 FRRouting `zebra` 和 `ospfd`，形成 OSPFv2 三角形，
+用于观察邻居、学习路由和故障收敛。
 
-## Graph
+## 拓扑图
 
 ```bash
 nslab graph --format mermaid
@@ -25,10 +25,9 @@ flowchart LR
     n3 -- "eth2 <-> eth0" --- n4
 ```
 
-The outputs below are representative. FRR timers, message counters, interface indexes, and
-ICMP timings vary per run.
+以下为典型输出；FRR timer、消息计数、接口索引和 ICMP 时延会随运行变化。
 
-## Prepare and run
+## 准备和运行
 
 ```bash
 sudo apt install -y frr frr-pythontools
@@ -51,9 +50,9 @@ r3    linux  matching  nslab-ospf-r3-...
 h2    linux  matching  nslab-ospf-h2-...
 ```
 
-`deploy` waits for daemon startup, not OSPF neighbor convergence.
+`deploy` 等待 daemon 启动，但不等待 OSPF 邻居收敛。
 
-## Inspect neighbors and routes
+## 查看邻居和路由
 
 ```console
 $ sudo nslab exec --node r1 -- vtysh -N nslab-ospf-r1 -c "show ip ospf neighbor"
@@ -77,9 +76,7 @@ $ sudo nslab exec --node h1 -- ping -c 3 192.0.3.2
 3 packets transmitted, 3 received, 0% packet loss
 ```
 
-## Observe failure convergence
-
-Bring down the direct `r1`-to-`r3` path and wait for traffic to move through `r2`:
+## 观察故障收敛
 
 ```bash
 sudo nslab exec --node r1 -- ip link set eth1 down
@@ -105,12 +102,12 @@ $ sudo nslab exec --node h1 -- ping -c 3 192.0.3.2
 sudo nslab exec --node r1 -- ip link set eth1 up
 ```
 
-## Clean up
+## 清理
 
 ```console
 $ sudo nslab destroy
 destroyed topology: ospf
 ```
 
-[View nslab.yaml](https://github.com/calcky/nslab/blob/main/examples/ospf/nslab.yaml) ·
-[View example README](https://github.com/calcky/nslab/blob/main/examples/ospf/README.md)
+[查看 nslab.yaml](https://github.com/calcky/nslab/blob/main/examples/ospf/nslab.yaml) ·
+[查看示例 README](https://github.com/calcky/nslab/blob/main/examples/ospf/README.md)

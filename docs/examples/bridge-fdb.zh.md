@@ -1,11 +1,10 @@
 # Linux bridge FDB
 
-## Goal
+## 实验目标
 
-Use two hosts and one Linux bridge to observe layer 2 forwarding, dynamic MAC learning, and
-bridge port counters.
+用两台主机和一台 Linux bridge 观察二层转发、动态 MAC 学习以及端口计数器变化。
 
-## Graph
+## 拓扑图
 
 ```bash
 nslab graph --format mermaid
@@ -20,10 +19,9 @@ flowchart LR
     n2 -- "eth0 <-> swp2" --- n1
 ```
 
-The outputs below are representative. Interface indexes, MAC addresses, and counters vary per
-run.
+以下为典型输出；接口索引、MAC 地址和计数器会随运行变化。
 
-## Run
+## 运行
 
 ```bash
 cd examples/bridge-fdb
@@ -46,9 +44,9 @@ $ sudo nslab deploy
 topology already deployed: bridge-fdb
 ```
 
-## Observe the FDB
+## 观察 FDB
 
-Read the initial FDB, then generate ICMP traffic:
+先读取初始 FDB，再发送 ICMP 流量：
 
 ```console
 $ sudo nslab exec --node sw1 -- bridge fdb show br br0
@@ -67,7 +65,7 @@ $ sudo nslab exec --node sw1 -- bridge fdb show br br0
 ...
 ```
 
-The port counters increase with the generated traffic:
+端口计数器会随流量增加：
 
 ```console
 $ sudo nslab exec --node sw1 -- ip -s link show swp1
@@ -85,7 +83,7 @@ $ sudo nslab exec --node sw1 -- ip -s link show swp2
          ...    ...      0       0        0        0
 ```
 
-## Clean up
+## 清理
 
 ```console
 $ sudo nslab destroy
@@ -95,5 +93,5 @@ $ sudo nslab destroy
 topology already absent: bridge-fdb
 ```
 
-[View nslab.yaml](https://github.com/calcky/nslab/blob/main/examples/bridge-fdb/nslab.yaml) ·
-[View example README](https://github.com/calcky/nslab/blob/main/examples/bridge-fdb/README.md)
+[查看 nslab.yaml](https://github.com/calcky/nslab/blob/main/examples/bridge-fdb/nslab.yaml) ·
+[查看示例 README](https://github.com/calcky/nslab/blob/main/examples/bridge-fdb/README.md)

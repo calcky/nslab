@@ -1,11 +1,11 @@
 # Linux bridge STP
 
-## Goal
+## 实验目标
 
-Four Linux bridges form a redundant layer 2 topology for observing root election, port priority
-on equal-cost links, path cost, and STP reconvergence after a link failure.
+四台 Linux bridge 构成冗余二层拓扑，用于观察根桥选举、等 cost 链路的端口优先级、
+path cost 以及链路故障后的 STP 重收敛。
 
-## Graph
+## 拓扑图
 
 ```bash
 nslab graph --format mermaid
@@ -28,10 +28,10 @@ flowchart LR
     n4 -- "host1 <-> eth0" --- n5
 ```
 
-`nslab graph --detail` also prints bridge priority, port priority, and path cost in the terminal.
-Interface indexes, MAC addresses, counters, and timers below vary per run.
+`nslab graph --detail` 还可在终端中显示 bridge priority、端口 priority 和 path cost。
+以下输出中的接口索引、MAC 地址、计数器和 timer 会随运行变化。
 
-## Run and wait for convergence
+## 运行并等待收敛
 
 ```bash
 cd examples/bridge-stp
@@ -58,7 +58,7 @@ h2    linux   matching  nslab-bridge-stp-h2-...
 sleep 35
 ```
 
-## Observe port roles
+## 观察端口角色
 
 ```console
 $ sudo nslab exec --node sw1 -- ip -d link show br0
@@ -81,7 +81,7 @@ $ sudo nslab exec --node h1 -- ping -c 3 10.20.0.2
 3 packets transmitted, 3 received, 0% packet loss
 ```
 
-## Verify failover
+## 验证故障切换
 
 ```bash
 sudo nslab exec --node sw4 -- ip link set swp1 down
@@ -108,7 +108,7 @@ $ sudo nslab exec --node h1 -- ping -c 3 10.20.0.2
 3 packets transmitted, 3 received, 0% packet loss
 ```
 
-## Restore and clean up
+## 恢复与清理
 
 ```bash
 sudo nslab exec --node sw4 -- ip link set swp1 up
@@ -119,5 +119,5 @@ $ sudo nslab destroy
 destroyed topology: bridge-stp
 ```
 
-[View nslab.yaml](https://github.com/calcky/nslab/blob/main/examples/bridge-stp/nslab.yaml) ·
-[View example README](https://github.com/calcky/nslab/blob/main/examples/bridge-stp/README.md)
+[查看 nslab.yaml](https://github.com/calcky/nslab/blob/main/examples/bridge-stp/nslab.yaml) ·
+[查看示例 README](https://github.com/calcky/nslab/blob/main/examples/bridge-stp/README.md)

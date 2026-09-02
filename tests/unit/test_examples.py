@@ -61,7 +61,7 @@ def test_every_example_document_has_current_mermaid_and_command_output(
     documents = (
         manifest_path.with_name("README.md"),
         _DOCS_EXAMPLES / f"{name}.md",
-        _DOCS_EXAMPLES / f"{name}.en.md",
+        _DOCS_EXAMPLES / f"{name}.zh.md",
     )
     documented_commands: list[tuple[str, ...]] = []
 
@@ -99,7 +99,7 @@ def test_cli_docs_show_every_current_graph_format() -> None:
         "json": "json",
     }
 
-    for document in (_DOCS / "cli.md", _DOCS / "cli.en.md"):
+    for document in (_DOCS / "cli.md", _DOCS / "cli.zh.md"):
         content = document.read_text(encoding="utf-8")
         for output_format, fence in output_fences.items():
             expected = f"```{fence}\n{render_graph(plan, output_format)}\n```"

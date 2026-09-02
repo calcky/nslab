@@ -1,11 +1,11 @@
-# Linux IPv4 转发
+# Linux IPv4 forwarding
 
-## 实验目标
+## Goal
 
-`r1` 连接两个 IPv4 子网并开启 `net.ipv4.ip_forward=1`。两台主机通过精确静态路由
-访问对端网段，用于观察 Linux 路由选择和转发路径。
+`r1` connects two IPv4 subnets with `net.ipv4.ip_forward=1`. Each host uses an exact static
+route to the remote subnet, exposing Linux route selection and the forwarding path.
 
-## 拓扑图
+## Graph
 
 ```bash
 nslab graph --format mermaid
@@ -20,9 +20,10 @@ flowchart LR
     n1 -- "eth1 <-> eth0" --- n2
 ```
 
-以下为典型输出；接口索引、计数器和 ICMP 时延会随运行变化。
+The outputs below are representative. Interface indexes, counters, and ICMP timings vary per
+run.
 
-## 运行
+## Run
 
 ```bash
 cd examples/ipv4-forward
@@ -42,7 +43,7 @@ r1    linux  matching  nslab-ipv4-forward-r1-...
 h2    linux  matching  nslab-ipv4-forward-h2-...
 ```
 
-## 观察路由和转发
+## Observe routes and forwarding
 
 ```console
 $ sudo nslab exec --node r1 -- cat /proc/sys/net/ipv4/ip_forward
@@ -67,7 +68,7 @@ $ sudo nslab exec --node h2 -- ip -4 route show
 198.51.100.0/24 dev eth0 proto kernel scope link src 198.51.100.2
 ```
 
-## 验证通信
+## Verify connectivity
 
 ```console
 $ sudo nslab exec --node h1 -- ping -c 3 198.51.100.2
@@ -91,12 +92,12 @@ $ sudo nslab exec --node r1 -- ip -s link show eth1
     TX: ... packets ...
 ```
 
-## 清理
+## Clean up
 
 ```console
 $ sudo nslab destroy
 destroyed topology: ipv4-forward
 ```
 
-[查看 nslab.yaml](https://github.com/calcky/nslab/blob/main/examples/ipv4-forward/nslab.yaml) ·
-[查看示例 README](https://github.com/calcky/nslab/blob/main/examples/ipv4-forward/README.md)
+[View nslab.yaml](https://github.com/calcky/nslab/blob/main/examples/ipv4-forward/nslab.yaml) ·
+[View example README](https://github.com/calcky/nslab/blob/main/examples/ipv4-forward/README.md)

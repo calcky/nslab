@@ -1,5 +1,5 @@
 site_name: nslab
-site_description: 声明式 Linux network namespace 实验工具
+site_description: Declarative Linux network namespace labs
 site_url: https://nslab.readthedocs.io/en/latest/
 repo_name: calcky/nslab
 repo_url: https://github.com/calcky/nslab
@@ -12,7 +12,7 @@ exclude_docs: |
 
 theme:
   name: material
-  language: zh
+  language: en
   features:
     - navigation.sections
     - navigation.top
@@ -25,12 +25,12 @@ theme:
       scheme: default
       toggle:
         icon: material/weather-sunny
-        name: 切换到深色模式
+        name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
       toggle:
         icon: material/weather-night
-        name: 切换到浅色模式
+        name: Switch to light mode
 
 plugins:
   - search
@@ -40,38 +40,38 @@ plugins:
       reconfigure_material: true
       reconfigure_search: true
       languages:
-        - locale: zh
-          default: true
-          name: 中文
-          build: true
         - locale: en
+          default: true
           name: English
           build: true
-          site_description: Declarative Linux network namespace labs
+        - locale: zh
+          name: 中文
+          build: true
+          site_description: 声明式 Linux network namespace 实验工具
           nav_translations:
-            首页: Home
-            快速开始: Getting started
-            CLI 参考: CLI reference
-            实验示例: Examples
-            示例索引: Overview
-            二层交换: Layer 2 switching
-            IP 转发: IP forwarding
-            链路条件: Link conditions
-            动态路由: Dynamic routing
-            IPv4 转发: IPv4 forwarding
-            IPv6 转发: IPv6 forwarding
+            Home: 首页
+            Getting started: 快速开始
+            CLI reference: CLI 参考
+            Examples: 实验示例
+            Overview: 示例索引
+            Layer 2 switching: 二层交换
+            IP forwarding: IP 转发
+            Link conditions: 链路条件
+            Dynamic routing: 动态路由
+            IPv4 forwarding: IPv4 转发
+            IPv6 forwarding: IPv6 转发
           theme:
             palette:
               - media: "(prefers-color-scheme: light)"
                 scheme: default
                 toggle:
                   icon: material/weather-sunny
-                  name: Switch to dark mode
+                  name: 切换到深色模式
               - media: "(prefers-color-scheme: dark)"
                 scheme: slate
                 toggle:
                   icon: material/weather-night
-                  name: Switch to light mode
+                  name: 切换到浅色模式
 
 markdown_extensions:
   - admonition
@@ -93,22 +93,22 @@ markdown_extensions:
       alternate_style: true
 
 nav:
-  - 首页: index.md
-  - 快速开始: getting-started.md
+  - Home: index.md
+  - Getting started: getting-started.md
   - Manifest: manifest.md
-  - CLI 参考: cli.md
-  - 实验示例:
-      - 示例索引: examples/index.md
-      - 二层交换:
+  - CLI reference: cli.md
+  - Examples:
+      - Overview: examples/index.md
+      - Layer 2 switching:
           - Bridge FDB: examples/bridge-fdb.md
           - Bridge VLAN: examples/bridge-vlan.md
           - Bridge STP: examples/bridge-stp.md
-      - IP 转发:
-          - IPv4 转发: examples/ipv4-forward.md
-          - IPv6 转发: examples/ipv6-forward.md
-      - 链路条件:
+      - IP forwarding:
+          - IPv4 forwarding: examples/ipv4-forward.md
+          - IPv6 forwarding: examples/ipv6-forward.md
+      - Link conditions:
           - netem: examples/netem.md
-      - 动态路由:
+      - Dynamic routing:
           - OSPF: examples/ospf.md
           - BGP: examples/bgp.md
 

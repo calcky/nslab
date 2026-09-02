@@ -1,11 +1,11 @@
-# eBGP 动态路由
+# eBGP dynamic routing
 
-## 实验目标
+## Goal
 
-`r1`、`r2`、`r3` 分属 AS 65001、65002、65003，形成 eBGP 链。两端 LAN 前缀通过
-BGP 传播，用于观察邻居状态、前缀接收和 AS_PATH。
+`r1`, `r2`, and `r3` belong to AS 65001, 65002, and 65003 and form an eBGP chain. The two edge
+LAN prefixes propagate through BGP, exposing peer state, received prefixes, and AS_PATH.
 
-## 拓扑图
+## Graph
 
 ```bash
 nslab graph --format mermaid
@@ -24,9 +24,10 @@ flowchart LR
     n3 -- "eth1 <-> eth0" --- n4
 ```
 
-以下为典型输出；FRR timer、消息计数、接口索引和 ICMP 时延会随运行变化。
+The outputs below are representative. FRR timers, message counters, interface indexes, and
+ICMP timings vary per run.
 
-## 准备和运行
+## Prepare and run
 
 ```bash
 sudo apt install -y frr frr-pythontools
@@ -49,7 +50,7 @@ r3    linux  matching  nslab-bgp-r3-...
 h2    linux  matching  nslab-bgp-h2-...
 ```
 
-## 查看邻居和路由
+## Inspect peers and routes
 
 ```console
 $ sudo nslab exec --node r2 -- vtysh -N nslab-bgp-r2 -c "show ip bgp summary"
@@ -79,7 +80,7 @@ $ sudo nslab exec --node r1 -- vtysh -N nslab-bgp-r1 -c "show ip bgp"
 *> 198.18.3.0/24  10.1.12.2  0 65002 65003 i
 ```
 
-## 观察会话撤销
+## Observe route withdrawal
 
 ```bash
 sudo nslab exec --node r2 -- ip link set eth0 down
@@ -101,12 +102,12 @@ $ sudo nslab exec --node r2 -- ip -4 route
 sudo nslab exec --node r2 -- ip link set eth0 up
 ```
 
-## 清理
+## Clean up
 
 ```console
 $ sudo nslab destroy
 destroyed topology: bgp
 ```
 
-[查看 nslab.yaml](https://github.com/calcky/nslab/blob/main/examples/bgp/nslab.yaml) ·
-[查看示例 README](https://github.com/calcky/nslab/blob/main/examples/bgp/README.md)
+[View nslab.yaml](https://github.com/calcky/nslab/blob/main/examples/bgp/nslab.yaml) ·
+[View example README](https://github.com/calcky/nslab/blob/main/examples/bgp/README.md)

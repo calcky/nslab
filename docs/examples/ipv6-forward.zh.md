@@ -1,11 +1,11 @@
-# Linux IPv6 forwarding
+# Linux IPv6 转发
 
-## Goal
+## 实验目标
 
-`r1` connects two `/64` networks with `net.ipv6.conf.all.forwarding=1`. Both hosts use explicit
-IPv6 default routes to reach the remote network.
+`r1` 连接两个 `/64` 子网并开启 `net.ipv6.conf.all.forwarding=1`。两台主机使用显式
+IPv6 默认路由访问对端网段。
 
-## Graph
+## 拓扑图
 
 ```bash
 nslab graph --format mermaid
@@ -20,10 +20,9 @@ flowchart LR
     n1 -- "eth1 <-> eth0" --- n2
 ```
 
-The outputs below are representative. Link-local addresses, interface indexes, counters, and
-ICMP timings vary per run.
+以下为典型输出；link-local 地址、接口索引、计数器和 ICMP 时延会随运行变化。
 
-## Run
+## 运行
 
 ```bash
 cd examples/ipv6-forward
@@ -34,7 +33,7 @@ $ sudo nslab deploy
 deployed topology: ipv6-forward
 ```
 
-Wait for duplicate address detection (DAD), then inspect the topology:
+等待 DAD 完成后检查状态：
 
 ```bash
 sleep 2
@@ -51,7 +50,7 @@ r1    linux  matching  nslab-ipv6-forward-r1-...
 h2    linux  matching  nslab-ipv6-forward-h2-...
 ```
 
-## Observe routes and forwarding
+## 观察路由和转发
 
 ```console
 $ sudo nslab exec --node r1 -- cat /proc/sys/net/ipv6/conf/all/forwarding
@@ -77,7 +76,7 @@ $ sudo nslab exec --node h2 -- ip -6 route show
 default via 2001:db8:2::1 dev eth0 metric 1024 pref medium
 ```
 
-## Verify connectivity
+## 验证通信
 
 ```console
 $ sudo nslab exec --node h1 -- ping -6 -c 3 2001:db8:2::2
@@ -101,12 +100,12 @@ $ sudo nslab exec --node r1 -- ip -s link show eth1
     TX: ... packets ...
 ```
 
-## Clean up
+## 清理
 
 ```console
 $ sudo nslab destroy
 destroyed topology: ipv6-forward
 ```
 
-[View nslab.yaml](https://github.com/calcky/nslab/blob/main/examples/ipv6-forward/nslab.yaml) ·
-[View example README](https://github.com/calcky/nslab/blob/main/examples/ipv6-forward/README.md)
+[查看 nslab.yaml](https://github.com/calcky/nslab/blob/main/examples/ipv6-forward/nslab.yaml) ·
+[查看示例 README](https://github.com/calcky/nslab/blob/main/examples/ipv6-forward/README.md)

@@ -1,29 +1,29 @@
-# 快速开始
+# Getting started
 
-## 环境要求
+## Requirements
 
-在 Ubuntu 22.04 或更新版本上安装基础工具：
+Install the basic tools on Ubuntu 22.04 or newer:
 
 ```bash
 sudo apt update
 sudo apt install -y iproute2 iputils-ping
 ```
 
-运行 `ospf` 或 `bgp` 示例时，再安装 FRRouting：
+Install FRRouting as well when running the `ospf` or `bgp` examples:
 
 ```bash
 sudo apt install -y frr frr-pythontools
 ```
 
-所有创建、修改或删除网络资源的生命周期命令都需要 root。图形渲染和 manifest 校验
-不读取 live state，可以不使用 root 执行。
+All lifecycle commands that create, change, or remove network resources require root. Graph
+rendering and manifest validation do not read live state and can run without root.
 
-## 安装 nslab
+## Install nslab
 
-### Linux x86_64 发布包
+### Linux x86_64 release
 
-从 [GitHub Releases](https://github.com/calcky/nslab/releases) 下载目标版本，并校验
-SHA-256：
+Download the required version from [GitHub Releases](https://github.com/calcky/nslab/releases)
+and verify its SHA-256 checksum:
 
 ```bash
 VERSION=v0.1.0
@@ -35,12 +35,12 @@ sudo install -m 0755 nslab /usr/local/bin/nslab
 nslab --help
 ```
 
-发布包是 Ubuntu 22.04 x86_64 上构建的独立程序，不要求系统预装 Python。FRR 仍需
-单独安装。
+The standalone binary is built on Ubuntu 22.04 x86_64 and does not require a system Python.
+FRRouting must still be installed separately.
 
-### 从源码运行
+### Run from source
 
-源码开发需要 Python 3.12 或 3.13 以及 [uv](https://docs.astral.sh/uv/)：
+Source development requires Python 3.12 or 3.13 and [uv](https://docs.astral.sh/uv/):
 
 ```bash
 git clone https://github.com/calcky/nslab.git
@@ -49,11 +49,11 @@ uv python install 3.12
 uv sync --python 3.12
 ```
 
-之后可用 `.venv/bin/nslab` 替代已安装到 `PATH` 的 `nslab`。
+Use `.venv/bin/nslab` in place of a globally installed `nslab` command.
 
-## 创建和清理拓扑
+## Create and remove a topology
 
-在包含 `nslab.yaml` 的目录中，最短的生命周期流程是：
+The shortest lifecycle from a directory containing `nslab.yaml` is:
 
 ```bash
 nslab graph
@@ -62,8 +62,9 @@ sudo nslab inspect
 sudo nslab destroy
 ```
 
-不传 `-t/--topo` 时只读取当前目录的 `./nslab.yaml`，不会向父目录搜索。不传
-`-n/--name` 时使用 manifest 中的 `name`。也可以显式选择文件和 deployment 名称：
+Without `-t/--topo`, nslab reads only `./nslab.yaml` in the current directory and does not
+search parent directories. Without `-n/--name`, it uses the manifest's `name`. You can select
+both explicitly:
 
 ```bash
 sudo nslab deploy --topo /path/to/lab.yaml --name my-lab
@@ -71,33 +72,34 @@ sudo nslab inspect --name my-lab
 sudo nslab destroy --topo /path/to/lab.yaml --name my-lab
 ```
 
-`inspect`、`exec` 和 `graph` 只传 `--name` 时，会从 `/var/lib/nslab/<name>.json`
-加载保存的拓扑；`destroy` 同时传入 YAML 可以在 state 已删除后再次证明资源应当
-不存在。
+When `inspect`, `exec`, or `destroy` receives only `--name`, it restores the saved topology from
+`/var/lib/nslab/<name>.json`. Passing the YAML to `destroy` also allows nslab to prove that the
+planned resources are absent after state has already been removed.
 
-## 重建和恢复
+## Redeploy and recover
 
-编辑 manifest 后，用 `redeploy` 在同一个 deployment lock 下验证新计划、销毁旧资源
-并创建新资源：
+After editing the manifest, use `redeploy` to validate the replacement plan, destroy the old
+resources, and create the new topology under the same deployment lock:
 
 ```bash
 sudo nslab redeploy
 ```
 
-`inspect` 的概要状态含义如下：
+`inspect` reports one of four summary states:
 
-| 状态 | 含义 |
+| Status | Meaning |
 | --- | --- |
-| `absent` | 没有 state，且计划资源不存在 |
-| `deployed` | state、manifest 和 live 资源一致 |
-| `degraded` | 资源缺失、被改动或出现额外资源 |
-| `stale` | state 还在，但计划资源已全部消失 |
+| `absent` | No state exists and the planned resources are absent |
+| `deployed` | State, manifest, and live resources match |
+| `degraded` | A resource is missing, changed, or unexpectedly present |
+| `stale` | State exists but all planned resources have disappeared |
 
-遇到 `degraded` 时先保存诊断：
+Capture JSON diagnostics before recovering a degraded deployment:
 
 ```bash
 sudo nslab inspect --name my-lab --format json
 ```
 
-确认资源属于该 deployment 后，再用相同 YAML 执行 `destroy` 或 `redeploy`。不要手动
-删除 state 文件；state 中记录了精确的 namespace 和接口名称，用于限制清理范围。
+After confirming that the resources belong to that deployment, use the same YAML with `destroy`
+or `redeploy`. Do not delete state files manually. They contain the exact namespace and interface
+names used to keep cleanup scoped.

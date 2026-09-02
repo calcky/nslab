@@ -1,11 +1,11 @@
 # Linux bridge VLAN
 
-## Goal
+## 实验目标
 
-Two VLAN-aware bridges carry VLANs 10 and 20 over a tagged trunk. All four hosts deliberately
-share one IPv4 subnet so that layer 2 VLAN isolation is directly visible.
+两台 VLAN-aware bridge 通过 tagged trunk 承载 VLAN 10 和 VLAN 20。四台主机配置在
+同一个 IPv4 子网，用于直接观察二层 VLAN 隔离。
 
-## Graph
+## 拓扑图
 
 ```bash
 nslab graph --format mermaid
@@ -26,10 +26,9 @@ flowchart LR
     n3 -- "access20 <-> eth0" --- n5
 ```
 
-The outputs below are representative. Interface indexes, MAC addresses, and counters vary per
-run.
+以下为典型输出；接口索引、MAC 地址和计数器会随运行变化。
 
-## Run
+## 运行
 
 ```bash
 cd examples/bridge-vlan
@@ -52,7 +51,7 @@ h10b  linux   matching  nslab-bridge-vlan-h10b-...
 h20b  linux   matching  nslab-bridge-vlan-h20b-...
 ```
 
-## Observe and verify
+## 观察和验证
 
 ```console
 $ sudo nslab exec --node sw1 -- bridge vlan show
@@ -80,7 +79,7 @@ $ sudo nslab exec --node h20a -- ping -c 3 10.0.0.4
 3 packets transmitted, 3 received, 0% packet loss
 ```
 
-The cross-VLAN ping fails as expected:
+跨 VLAN ping 会按预期失败：
 
 ```console
 $ sudo nslab exec --node h10a -- ping -c 2 -W 1 10.0.0.3
@@ -103,12 +102,12 @@ $ sudo nslab exec --node sw2 -- bridge fdb show br br0
 ...
 ```
 
-## Clean up
+## 清理
 
 ```console
 $ sudo nslab destroy
 destroyed topology: bridge-vlan
 ```
 
-[View nslab.yaml](https://github.com/calcky/nslab/blob/main/examples/bridge-vlan/nslab.yaml) ·
-[View example README](https://github.com/calcky/nslab/blob/main/examples/bridge-vlan/README.md)
+[查看 nslab.yaml](https://github.com/calcky/nslab/blob/main/examples/bridge-vlan/nslab.yaml) ·
+[查看示例 README](https://github.com/calcky/nslab/blob/main/examples/bridge-vlan/README.md)

@@ -3,8 +3,8 @@
 [![Documentation](https://img.shields.io/badge/docs-Read%20the%20Docs-2f6f9f)](https://nslab.readthedocs.io/en/latest/)
 [![CI](https://github.com/calcky/nslab/actions/workflows/ci-release.yml/badge.svg)](https://github.com/calcky/nslab/actions/workflows/ci-release.yml)
 
-[中文文档](https://nslab.readthedocs.io/en/latest/) |
-[English documentation](https://nslab.readthedocs.io/en/latest/en/) |
+[中文文档](https://nslab.readthedocs.io/en/latest/zh/) |
+[English documentation](https://nslab.readthedocs.io/en/latest/) |
 [Releases](https://github.com/calcky/nslab/releases)
 
 `nslab` 是一个面向 Linux network namespace 实验的声明式 CLI。使用严格校验的
@@ -38,7 +38,7 @@ cd nslab
 uv sync --python 3.12
 ```
 
-完整依赖和安装说明见[快速开始](https://nslab.readthedocs.io/en/latest/getting-started/)。
+完整依赖和安装说明见[快速开始](https://nslab.readthedocs.io/en/latest/zh/getting-started/)。
 
 ## 最小 Demo
 
@@ -101,7 +101,7 @@ sudo nslab destroy
 | `nslab graph` | 输出终端、Mermaid、DOT 或 JSON 拓扑图 |
 | `nslab completion bash\|zsh` | 生成 shell 补全脚本 |
 
-参数和行为详见 [CLI 参考](https://nslab.readthedocs.io/en/latest/cli/)。
+参数和行为详见 [CLI 参考](https://nslab.readthedocs.io/en/latest/zh/cli/)。
 
 ## Examples
 
