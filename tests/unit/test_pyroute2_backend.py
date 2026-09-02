@@ -788,6 +788,59 @@ def test_create_veth_moves_renames_sizes_and_brings_up_both_endpoints(
     ]
 
 
+def test_create_veth_retries_until_owned_endpoints_are_visible(
+    veth_link: LinkPlan,
+) -> None:
+    root = Mock()
+    root_lookup_count: dict[str, int] = {}
+
+    def root_lookup(*, ifname: str) -> list[int]:
+        occurrence = root_lookup_count.get(ifname, 0)
+        root_lookup_count[ifname] = occurrence + 1
+        if occurrence < 2:
+            return []
+        return [101 if ifname == veth_link.left.temporary_name else 102]
+
+    root.link_lookup.side_effect = root_lookup
+
+    def delayed_namespace(index: int) -> Mock:
+        handle = Mock()
+        lookup_count = 0
+
+        def lookup(*, ifname: str) -> list[int]:
+            nonlocal lookup_count
+            assert ifname in {
+                veth_link.left.temporary_name,
+                veth_link.right.temporary_name,
+            }
+            lookup_count += 1
+            return [] if lookup_count == 1 else [index]
+
+        handle.link_lookup.side_effect = lookup
+        return handle
+
+    left = delayed_namespace(201)
+    right = delayed_namespace(301)
+    handles = {
+        veth_link.left.namespace: left,
+        veth_link.right.namespace: right,
+    }
+    backend = Pyroute2Backend(
+        iproute_factory=Mock(return_value=root),
+        netns_factory=Mock(side_effect=lambda namespace: handles[namespace]),
+        ownership_token_factory=Mock(return_value=_OWNERSHIP_TOKEN),
+    )
+
+    backend.create_veth(veth_link)
+
+    assert root_lookup_count == {
+        veth_link.left.temporary_name: 3,
+        veth_link.right.temporary_name: 3,
+    }
+    assert left.link_lookup.call_count == 2
+    assert right.link_lookup.call_count == 2
+
+
 def test_create_veth_adds_same_netem_qdisc_to_both_endpoints(veth_link: LinkPlan) -> None:
     netem = NetemPlan(delay_ms=100, jitter_ms=10, loss_percent=5)
     link = replace(veth_link, netem=netem)

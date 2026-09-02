@@ -194,11 +194,8 @@ jobs:
                 if output="$(run_vtysh "$check_node" "show ip bgp summary" 2>/dev/null)"; then
                   # FRR prints a numeric PfxRcd value only for an established
                   # session; require both expected peers to have received data.
-                  if awk '
-                    /10\.1\.12\.1/ { peer12 = ($NF ~ /^[0-9]+$/ && $NF > 0) }
-                    /10\.1\.23\.2/ { peer23 = ($NF ~ /^[0-9]+$/ && $NF > 0) }
-                    END { exit !(peer12 && peer23) }
-                  ' <<<"$output"; then
+                  if awk -f "$GITHUB_WORKSPACE/scripts/ci/bgp-summary-ready.awk" \
+                    <<<"$output"; then
                     printf '%s\n' "$output"
                     return 0
                   fi

@@ -4,6 +4,7 @@ import errno
 import os
 import signal
 import socket
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from functools import partial
@@ -44,6 +45,8 @@ from nslab.routing import FrrRuntime
 
 _BRIDGE_VLAN_INFO_PVID = 2
 _BRIDGE_VLAN_INFO_UNTAGGED = 4
+_VETH_VISIBILITY_TIMEOUT = 1.0
+_VETH_VISIBILITY_INTERVAL = 0.01
 
 _IFF_UP = 1
 _ARPHRD_LOOPBACK = 772
@@ -176,6 +179,22 @@ def _required_index(handle: Any, name: str, operation: str, resource: str) -> in
         message=f"network resource is missing: {resource}",
         details={"operation": operation, "resource": resource},
     )
+
+
+def _wait_for_required_index(handle: Any, name: str, operation: str, resource: str) -> int:
+    deadline = time.monotonic() + _VETH_VISIBILITY_TIMEOUT
+    while True:
+        indexes = handle.link_lookup(ifname=name)
+        if indexes:
+            return int(indexes[0])
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise NslabError(
+                code="RESOURCE_MISSING",
+                message=f"network resource is missing: {resource}",
+                details={"operation": operation, "resource": resource},
+            )
+        time.sleep(min(_VETH_VISIBILITY_INTERVAL, remaining))
 
 
 def _veth_resource(link: LinkPlan) -> str:
@@ -639,13 +658,13 @@ class Pyroute2Backend:
                     },
                 )
                 created = True
-                left_index = _required_index(
+                left_index = _wait_for_required_index(
                     root,
                     link.left.temporary_name,
                     "create_veth",
                     resource,
                 )
-                right_index = _required_index(
+                right_index = _wait_for_required_index(
                     root,
                     link.right.temporary_name,
                     "create_veth",
@@ -719,7 +738,7 @@ class Pyroute2Backend:
         renamed_endpoints: set[EndpointPlan],
     ) -> None:
         with _managed_handle(self._netns_factory(endpoint.namespace)) as namespace:
-            index = _required_index(
+            index = _wait_for_required_index(
                 namespace,
                 endpoint.temporary_name,
                 "create_veth",
