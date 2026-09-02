@@ -23,6 +23,13 @@ sudo nslab destroy
 | [VLAN 子接口](vlan-subinterface.md) | 在 veth 链路上使用 802.1Q VLAN 设备 |
 | [Bridge STP](bridge-stp.md) | 根桥选举、端口选择和故障重收敛 |
 
+## 链路聚合
+
+| 示例 | 学习内容 |
+| --- | --- |
+| [Bond active-backup](bond-active-backup.md) | 首选链路的故障切换与恢复 |
+| [Bond 802.3ad](bond-8023ad.md) | LACP 协商与逐流哈希 |
+
 ## IP 转发
 
 | 示例 | 学习内容 |

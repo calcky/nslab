@@ -8,7 +8,13 @@ from pydantic import ValidationError
 
 from nslab.errors import NslabError
 from nslab.manifest import Manifest
-from nslab.planner import TopologyPlan, VlanDevicePlan, VrfDevicePlan, compile_plan
+from nslab.planner import (
+    BondDevicePlan,
+    TopologyPlan,
+    VlanDevicePlan,
+    VrfDevicePlan,
+    compile_plan,
+)
 from nslab.state import StateSnapshot
 
 
@@ -72,9 +78,15 @@ def _expected_ownership(plan: TopologyPlan) -> dict[str, dict[str, object]]:
                     parent=device.link,
                     vlan_id=device.vlan_id,
                 )
-            else:
-                assert isinstance(device, VrfDevicePlan)
+            elif isinstance(device, VrfDevicePlan):
                 identity.update(kind="vrf", vrf_table=device.table)
+            else:
+                assert isinstance(device, BondDevicePlan)
+                identity.update(
+                    kind="bond",
+                    bond_mode=device.mode,
+                    interfaces=device.interfaces,
+                )
             expected[f"{node.name}:{device.name}"] = identity
     for link in plan.links:
         for endpoint in (link.left, link.right):

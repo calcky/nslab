@@ -23,6 +23,13 @@ sudo nslab destroy
 | [VLAN subinterfaces](vlan-subinterface.md) | 802.1Q VLAN devices over a veth link |
 | [Bridge STP](bridge-stp.md) | Root election, port selection, and failure reconvergence |
 
+## Link aggregation
+
+| Example | Focus |
+| --- | --- |
+| [Bond active-backup](bond-active-backup.md) | Preferred-link failover and recovery |
+| [Bond 802.3ad](bond-8023ad.md) | LACP negotiation and per-flow hashing |
+
 ## IP forwarding
 
 | Example | Focus |

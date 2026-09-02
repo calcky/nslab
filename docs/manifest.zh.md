@@ -11,7 +11,7 @@ topology
 │  └─ <node-name>
 │     ├─ kind: linux
 │     │  ├─ interfaces / devices / routes / rules / sysctls
-│     │  ├─ devices → <device-name> → type: vlan | vrf
+│     │  ├─ devices → <device-name> → type: vlan | vrf | bond
 │     │  └─ routing
 │     └─ kind: bridge
 │        ├─ interfaces / routes / sysctls
@@ -60,7 +60,7 @@ topology:
 
 接口名必须为 1 到 15 个字符，可包含字母、数字、`_`、`.` 和 `-`。除 bridge 设备名外，
 `interfaces` 中声明的接口必须在 `links[].endpoints` 中出现。
-Namespace 内部的 VLAN 和 VRF 设备应声明在 `devices`，而不是 `interfaces`。
+Namespace 内部的 VLAN、VRF 和 bond 设备应声明在 `devices`，而不是 `interfaces`。
 
 ##### `interfaces.<ifname>`
 
@@ -76,7 +76,7 @@ Namespace 内部的 VLAN 和 VRF 设备应声明在 `devices`，而不是 `inter
 | --- | --- | --- | --- |
 | `dst` | 是 | 无 | IPv4/IPv6 目标前缀；`default` 等价于 `0.0.0.0/0` |
 | `via` | 否 | `null` | 下一跳地址，地址族必须与 `dst` 一致 |
-| `dev` | 是 | 无 | 出接口名，必须是该节点可用的链接接口或 bridge 设备 |
+| `dev` | 是 | 无 | 可用出接口名，可以是 linked、namespace 内部设备或该节点的 bridge 设备 |
 | `table` | 否 | 自动 | 路由表 ID，范围 `1..4294967295`，不能使用 local table `255` |
 
 同一路由表中不能重复声明目标前缀，也不能把该表的直连网段再次声明为静态路由。
@@ -173,7 +173,7 @@ start 不能大于 end，两个 realm 不能同时为零。Suppress 选项只适
 
 `devices` 会在所有 veth endpoint 移入节点后，在 Linux 节点内部创建设备。设备名遵循
 接口名规则，不能是 `lo`，不能与 linked endpoint 或 `interfaces` key 冲突。必须通过
-`type` 选择 `vlan` 或 `vrf`。
+`type` 选择 `vlan`、`vrf` 或 `bond`。
 
 ###### `type: vlan`
 
@@ -189,6 +189,28 @@ start 不能大于 end，两个 realm 不能同时为零。Suppress 选项只适
 当前只支持一层设备：VLAN 设备不能再以另一个声明设备作为 lower interface。MTU 继承
 lower interface。直连路由、BGP 直连邻居检查以及 OSPF/BGP 自动 network statement 都会
 包含设备地址。
+
+###### `type: bond`
+
+Bond 把两个或更多 linked interface 组合成一个逻辑接口。IP 地址和路由配置在 bond
+上，成员接口不能声明地址。所有成员链路必须使用相同 MTU，一个 linked interface 不能
+同时属于多个 bond。
+
+| 字段 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `devices.<name>.type` | 是 | 无 | 必须是 `bond` |
+| `devices.<name>.mode` | 是 | 无 | `active-backup` 或 `802.3ad` |
+| `devices.<name>.interfaces` | 是 | 无 | 至少两个不重复的 linked member interface |
+| `devices.<name>.addresses` | 否 | `[]` | 配置在 bond 上且不重复的 IPv4/IPv6 CIDR 地址 |
+| `devices.<name>.miimon_ms` | 否 | `100` | `0..60000` ms 的 MII carrier 轮询间隔；零表示禁用 |
+| `devices.<name>.primary` | 否 | `null` | 首选成员；仅用于 `active-backup`，且必须属于成员列表 |
+| `devices.<name>.lacp_rate` | 否 | `slow` | `slow` 或 `fast`；仅用于 `802.3ad` |
+| `devices.<name>.xmit_hash_policy` | 否 | `layer2` | `layer2`、`layer2+3` 或 `layer3+4`；仅用于 `802.3ad` |
+| `devices.<name>.min_links` | 否 | `0` | `0..65535` 的最少活动链路数；仅用于 `802.3ad`，且不能超过成员数量 |
+
+`802.3ad` 的对端也必须运行 LACP。单流通常只会哈希到一个成员，需要多条流才能观察
+跨链路分担。路由和动态路由可以使用 bond，但 bond 当前不能作为 VLAN parent 或 VRF
+member。
 
 ###### `type: vrf`
 

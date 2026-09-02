@@ -8,6 +8,7 @@ from types import MappingProxyType
 
 from nslab.errors import NslabError
 from nslab.planner import (
+    BondDevicePlan,
     DevicePlan,
     LinkPlan,
     NetemPlan,
@@ -137,14 +138,35 @@ def _netem_text(netem: NetemPlan) -> str:
     return " · ".join(values)
 
 
-def _device_text(device: DevicePlan, *, include_addresses: bool = True) -> str:
+def _device_text(
+    device: DevicePlan,
+    *,
+    include_addresses: bool = True,
+    detail: bool = False,
+) -> str:
     if isinstance(device, VlanDevicePlan):
         text = f"{device.name}: vlan {device.vlan_id} on {device.link}"
         if include_addresses and device.addresses:
             text += f" · {', '.join(str(address) for address in device.addresses)}"
         return text
-    assert isinstance(device, VrfDevicePlan)
-    return f"{device.name}: vrf table {device.table} · members {', '.join(device.interfaces)}"
+    if isinstance(device, VrfDevicePlan):
+        return f"{device.name}: vrf table {device.table} · members {', '.join(device.interfaces)}"
+    assert isinstance(device, BondDevicePlan)
+    text = f"{device.name}: bond {device.mode} · members {', '.join(device.interfaces)}"
+    if detail:
+        options = [f"miimon {device.miimon_ms}ms"]
+        if device.primary is not None:
+            options.append(f"primary {device.primary}")
+        if device.lacp_rate is not None:
+            options.append(f"lacp {device.lacp_rate}")
+        if device.xmit_hash_policy is not None:
+            options.append(f"hash {device.xmit_hash_policy}")
+        if device.min_links is not None:
+            options.append(f"min links {device.min_links}")
+        text += f" · {' · '.join(options)}"
+    if include_addresses and device.addresses:
+        text += f" · {', '.join(str(address) for address in device.addresses)}"
+    return text
 
 
 def _node_details(node: NodePlan, plan: TopologyPlan, *, detail: bool) -> tuple[str, ...]:
@@ -153,7 +175,7 @@ def _node_details(node: NodePlan, plan: TopologyPlan, *, detail: bool) -> tuple[
         for interface, addresses in node.interfaces.items()
         if addresses
     ]
-    lines.extend(_device_text(device) for device in node.devices.values())
+    lines.extend(_device_text(device, detail=detail) for device in node.devices.values())
     if detail:
         sections_by_interface: dict[str, list[str]] = {}
         for interface, port in node.bridge_ports.items():
@@ -563,8 +585,7 @@ def _node_document(node: NodePlan) -> dict[str, object]:
                         "type": "vlan",
                     }
                 )
-            else:
-                assert isinstance(device, VrfDevicePlan)
+            elif isinstance(device, VrfDevicePlan):
                 devices.append(
                     {
                         "interfaces": list(device.interfaces),
@@ -573,6 +594,25 @@ def _node_document(node: NodePlan) -> dict[str, object]:
                         "type": "vrf",
                     }
                 )
+            else:
+                assert isinstance(device, BondDevicePlan)
+                bond_document: dict[str, object] = {
+                    "addresses": [str(address) for address in device.addresses],
+                    "interfaces": list(device.interfaces),
+                    "miimon_ms": device.miimon_ms,
+                    "mode": device.mode,
+                    "name": device.name,
+                    "type": "bond",
+                }
+                if device.primary is not None:
+                    bond_document["primary"] = device.primary
+                if device.lacp_rate is not None:
+                    bond_document["lacp_rate"] = device.lacp_rate
+                if device.xmit_hash_policy is not None:
+                    bond_document["xmit_hash_policy"] = device.xmit_hash_policy
+                if device.min_links is not None:
+                    bond_document["min_links"] = device.min_links
+                devices.append(bond_document)
         document["devices"] = devices
     return document
 

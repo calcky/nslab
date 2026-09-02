@@ -10,9 +10,9 @@
 `nslab` 是一个面向 Linux network namespace 实验的声明式 CLI。使用严格校验的
 `nslab.yaml` 描述拓扑，然后通过统一的命令重复部署、检查、执行和销毁实验。
 
-支持 Linux namespace、veth、bridge、STP、VLAN 子接口、VRF、IPv4/IPv6、静态路由、
-策略路由、netem，以及基于 FRRouting 的 OSPFv2/eBGP 和 XDP 实验。网络资源通过
-pyroute2 管理，不依赖生命周期 shell hook。
+支持 Linux namespace、veth、bridge、STP、VLAN 子接口、bond、VRF、IPv4/IPv6、
+静态路由、策略路由、netem，以及基于 FRRouting 的 OSPFv2/eBGP 和 XDP 实验。
+网络资源通过 pyroute2 管理，不依赖生命周期 shell hook。
 
 ## 安装
 
@@ -102,6 +102,8 @@ sudo nslab destroy
 | [bridge-vlan](examples/bridge-vlan/README.md) | Access VLAN 与 tagged trunk |
 | [vlan-subinterface](examples/vlan-subinterface/README.md) | Linux 802.1Q VLAN 子接口 |
 | [bridge-stp](examples/bridge-stp/README.md) | STP 选举、路径选择与重收敛 |
+| [bond-active-backup](examples/bond-active-backup/README.md) | Bond 主备切换与恢复 |
+| [bond-8023ad](examples/bond-8023ad/README.md) | LACP 聚合与多流哈希 |
 | [ipv4-forward](examples/ipv4-forward/README.md) | Linux IPv4 转发 |
 | [ipv6-forward](examples/ipv6-forward/README.md) | Linux IPv6 转发 |
 | [router-on-a-stick](examples/router-on-a-stick/README.md) | 单臂路由与 VLAN 间转发 |

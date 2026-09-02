@@ -14,6 +14,7 @@ from nslab.backend.base import (
 )
 from nslab.errors import NslabError
 from nslab.planner import (
+    BondDevicePlan,
     EndpointPlan,
     LinkPlan,
     NetemPlan,
@@ -24,6 +25,7 @@ from nslab.planner import (
     TopologyPlan,
     VlanDevicePlan,
     VrfDevicePlan,
+    bond_device_mtu,
     node_interface_master,
 )
 
@@ -261,6 +263,31 @@ class FakeNetworkBackend:
                 stp=node.stp,
                 vlan_filtering=node.vlan_filtering,
                 bridge_priority=node.bridge_priority,
+            )
+
+        for device in node.devices.values():
+            if not isinstance(device, BondDevicePlan):
+                continue
+            if device.name in interfaces:
+                raise _resource_error(
+                    "RESOURCE_EXISTS",
+                    "configure_node",
+                    f"{resource}:{device.name}",
+                )
+            interfaces[device.name] = InterfaceInventory(
+                name=device.name,
+                kind="bond",
+                ifindex=self._allocate_ifindex(resource),
+                master=node_interface_master(node, device.name),
+                mtu=bond_device_mtu(node, plan, device),
+                up=True,
+                addresses=device.addresses,
+                bond_mode=device.mode,
+                bond_miimon_ms=device.miimon_ms,
+                bond_primary=device.primary,
+                bond_lacp_rate=device.lacp_rate,
+                bond_xmit_hash_policy=device.xmit_hash_policy,
+                bond_min_links=device.min_links,
             )
 
         for device in node.devices.values():

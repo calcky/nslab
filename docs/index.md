@@ -1,7 +1,7 @@
 # nslab
 
 `nslab` is a declarative CLI for Linux network namespace labs. Describe nodes, veth pairs,
-Linux bridges, addresses, routes, sysctls, STP, VLANs, and netem in a strictly validated
+Linux bridges, addresses, routes, sysctls, STP, VLANs, bonds, and netem in a strictly validated
 `nslab.yaml`, then use the same commands to deploy, inspect, execute, and destroy the topology
 as often as needed.
 
@@ -39,7 +39,7 @@ succeeds.
 | [Getting started](getting-started.md) | Installation, privileges, lifecycle, and recovery |
 | [Manifest](manifest.md) | `nslab.yaml` fields, constraints, and complete snippets |
 | [CLI reference](cli.md) | Commands, options, output formats, and completion |
-| [Examples](examples/index.md) | Bridge, VLAN, VRF, forwarding, netem, XDP, OSPF, and BGP labs |
+| [Examples](examples/index.md) | Bridge, VLAN, bond, VRF, policy routing, forwarding, netem, XDP, OSPF, and BGP labs |
 
 ## Scope
 

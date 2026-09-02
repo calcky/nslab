@@ -15,6 +15,7 @@ from nslab.backend.base import (
 )
 from nslab.errors import NslabError
 from nslab.planner import (
+    BondDevicePlan,
     BridgeVlanPlan,
     IPInterface,
     LinkPlan,
@@ -26,6 +27,7 @@ from nslab.planner import (
     TopologyPlan,
     VlanDevicePlan,
     VrfDevicePlan,
+    bond_device_mtu,
     node_interface_master,
 )
 from nslab.snapshot import SnapshotValidation, validate_snapshot
@@ -64,6 +66,12 @@ class InterfaceView:
     parent: str | None = None
     vlan_id: int | None = None
     vrf_table: int | None = None
+    bond_mode: str | None = None
+    bond_miimon_ms: int | None = None
+    bond_primary: str | None = None
+    bond_lacp_rate: str | None = None
+    bond_xmit_hash_policy: str | None = None
+    bond_min_links: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "addresses", tuple(self.addresses))
@@ -89,6 +97,12 @@ class InterfaceView:
             "parent": self.parent,
             "vlan_id": self.vlan_id,
             "vrf_table": self.vrf_table,
+            "bond_mode": self.bond_mode,
+            "bond_miimon_ms": self.bond_miimon_ms,
+            "bond_primary": self.bond_primary,
+            "bond_lacp_rate": self.bond_lacp_rate,
+            "bond_xmit_hash_policy": self.bond_xmit_hash_policy,
+            "bond_min_links": self.bond_min_links,
         }
 
 
@@ -543,8 +557,7 @@ def _desired_interfaces(node: NodePlan, plan: TopologyPlan) -> tuple[InterfaceVi
                     vlan_id=device.vlan_id,
                 )
             )
-        else:
-            assert isinstance(device, VrfDevicePlan)
+        elif isinstance(device, VrfDevicePlan):
             interfaces.append(
                 InterfaceView(
                     name=device.name,
@@ -553,6 +566,24 @@ def _desired_interfaces(node: NodePlan, plan: TopologyPlan) -> tuple[InterfaceVi
                     mtu=None,
                     up=True,
                     vrf_table=device.table,
+                )
+            )
+        else:
+            assert isinstance(device, BondDevicePlan)
+            interfaces.append(
+                InterfaceView(
+                    name=device.name,
+                    kind="bond",
+                    master=node_interface_master(node, device.name),
+                    mtu=bond_device_mtu(node, plan, device),
+                    up=True,
+                    addresses=_address_strings(device.addresses),
+                    bond_mode=device.mode,
+                    bond_miimon_ms=device.miimon_ms,
+                    bond_primary=device.primary,
+                    bond_lacp_rate=device.lacp_rate,
+                    bond_xmit_hash_policy=device.xmit_hash_policy,
+                    bond_min_links=device.min_links,
                 )
             )
     return tuple(interfaces)
@@ -578,6 +609,12 @@ def _interface_view(interface: InterfaceInventory) -> InterfaceView:
         parent=interface.parent,
         vlan_id=interface.vlan_id,
         vrf_table=interface.vrf_table,
+        bond_mode=interface.bond_mode,
+        bond_miimon_ms=interface.bond_miimon_ms,
+        bond_primary=interface.bond_primary,
+        bond_lacp_rate=interface.bond_lacp_rate,
+        bond_xmit_hash_policy=interface.bond_xmit_hash_policy,
+        bond_min_links=interface.bond_min_links,
     )
 
 
@@ -958,6 +995,16 @@ def _compare_interface(
     compare("parent", desired.parent, actual.parent)
     compare("vlan_id", desired.vlan_id, actual.vlan_id)
     compare("vrf_table", desired.vrf_table, actual.vrf_table)
+    compare("bond_mode", desired.bond_mode, actual.bond_mode)
+    compare("bond_miimon_ms", desired.bond_miimon_ms, actual.bond_miimon_ms)
+    compare("bond_primary", desired.bond_primary, actual.bond_primary)
+    compare("bond_lacp_rate", desired.bond_lacp_rate, actual.bond_lacp_rate)
+    compare(
+        "bond_xmit_hash_policy",
+        desired.bond_xmit_hash_policy,
+        actual.bond_xmit_hash_policy,
+    )
+    compare("bond_min_links", desired.bond_min_links, actual.bond_min_links)
     return differences
 
 

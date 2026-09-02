@@ -133,8 +133,66 @@ class VrfDeviceConfig(BaseModel):
         return interfaces
 
 
+BondMiimonMs = Annotated[StrictInt, Field(ge=0, le=60_000)]
+BondMinLinks = Annotated[StrictInt, Field(ge=0, le=65_535)]
+
+
+class BondDeviceConfig(InterfaceConfig):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    type: Literal["bond"]
+    mode: Literal["active-backup", "802.3ad"]
+    interfaces: Annotated[tuple[str, ...], Field(min_length=2)]
+    miimon_ms: BondMiimonMs = 100
+    primary: str | None = None
+    lacp_rate: Literal["slow", "fast"] | None = None
+    xmit_hash_policy: Literal["layer2", "layer2+3", "layer3+4"] | None = None
+    min_links: BondMinLinks | None = None
+
+    @field_validator("interfaces", mode="before")
+    @classmethod
+    def validate_interface_inputs(cls, value: object) -> object:
+        return _validate_sequence(value, "bond interfaces")
+
+    @field_validator("interfaces")
+    @classmethod
+    def validate_interfaces(cls, interfaces: tuple[str, ...]) -> tuple[str, ...]:
+        for interface in interfaces:
+            _require_name(interface, IFNAME_PATTERN, "bond member interface name")
+            if interface == "lo":
+                raise ValueError("bond member interface cannot be 'lo'")
+        if len(set(interfaces)) != len(interfaces):
+            raise ValueError("bond member interfaces must be unique")
+        return interfaces
+
+    @field_validator("primary")
+    @classmethod
+    def validate_primary_name(cls, primary: str | None) -> str | None:
+        if primary is None:
+            return None
+        value = _require_name(primary, IFNAME_PATTERN, "bond primary interface name")
+        if value == "lo":
+            raise ValueError("bond primary interface cannot be 'lo'")
+        return value
+
+    @model_validator(mode="after")
+    def validate_mode_options(self) -> Self:
+        if self.primary is not None:
+            if self.mode != "active-backup":
+                raise ValueError("bond primary is only valid in active-backup mode")
+            if self.primary not in self.interfaces:
+                raise ValueError("bond primary must be one of its member interfaces")
+
+        lacp_options = (self.lacp_rate, self.xmit_hash_policy, self.min_links)
+        if self.mode != "802.3ad" and any(value is not None for value in lacp_options):
+            raise ValueError("bond lacp_rate, xmit_hash_policy, and min_links require 802.3ad mode")
+        if self.min_links is not None and self.min_links > len(self.interfaces):
+            raise ValueError("bond min_links cannot exceed the number of member interfaces")
+        return self
+
+
 type LinuxDeviceConfig = Annotated[
-    VlanDeviceConfig | VrfDeviceConfig,
+    VlanDeviceConfig | VrfDeviceConfig | BondDeviceConfig,
     Field(discriminator="type"),
 ]
 
@@ -565,6 +623,28 @@ class LinuxNode(_NodeBase):
             for name, device in self.devices.items()
             if isinstance(device, VrfDeviceConfig)
         }
+        bond_devices = {
+            name: device
+            for name, device in self.devices.items()
+            if isinstance(device, BondDeviceConfig)
+        }
+
+        bond_by_member: dict[str, str] = {}
+        for name, bond in bond_devices.items():
+            for interface in bond.interfaces:
+                if interface in self.devices:
+                    raise ValueError(
+                        f"bond member must be a linked interface: {name!r} -> {interface!r}"
+                    )
+                previous_bond = bond_by_member.get(interface)
+                if previous_bond is not None:
+                    raise ValueError(f"interface belongs to more than one bond: {interface!r}")
+                config = self.interfaces.get(interface)
+                if config is not None and config.addresses:
+                    raise ValueError(
+                        f"bond member interface cannot declare addresses: {interface!r}"
+                    )
+                bond_by_member[interface] = name
 
         seen_vlan_links: set[tuple[str, int]] = set()
         for name, device in vlan_devices.items():
@@ -586,10 +666,14 @@ class LinuxNode(_NodeBase):
                 raise ValueError(f"duplicate VRF table: {vrf.table}")
             seen_tables.add(vrf.table)
             for interface in vrf.interfaces:
-                if interface in vrf_devices:
+                if interface in vrf_devices or interface in bond_devices:
                     raise ValueError(
                         f"VRF member must be a linked interface or VLAN device: "
                         f"{name!r} -> {interface!r}"
+                    )
+                if interface in bond_by_member:
+                    raise ValueError(
+                        f"bond member interface cannot belong directly to a VRF: {interface!r}"
                     )
                 previous = tables_by_interface.get(interface)
                 if previous is not None:
@@ -618,6 +702,11 @@ class LinuxNode(_NodeBase):
         connected_networks.update(
             (tables_by_interface.get(name, MAIN_ROUTE_TABLE), address.network)
             for name, device in vlan_devices.items()
+            for address in device.addresses
+        )
+        connected_networks.update(
+            (MAIN_ROUTE_TABLE, address.network)
+            for device in bond_devices.values()
             for address in device.addresses
         )
         _validate_routes_by_table(self.routes, connected_networks, tables_by_interface)
@@ -768,6 +857,7 @@ class Topology(BaseModel):
     @model_validator(mode="after")
     def validate_references(self) -> Self:
         linked_interfaces = {node_name: set[str]() for node_name in self.nodes}
+        linked_mtus = {node_name: dict[str, int]() for node_name in self.nodes}
         used_endpoints: set[str] = set()
         ospf_router_ids: dict[IPv4Address, str] = {}
         bgp_router_ids: dict[IPv4Address, str] = {}
@@ -787,6 +877,7 @@ class Topology(BaseModel):
 
                 used_endpoints.add(endpoint)
                 linked_interfaces[node_name].add(interface_name)
+                linked_mtus[node_name][interface_name] = link.mtu
 
         for node_name, node in self.nodes.items():
             linked = linked_interfaces[node_name]
@@ -802,6 +893,11 @@ class Topology(BaseModel):
                     for name, device in node.devices.items()
                     if isinstance(device, VrfDeviceConfig)
                 }
+                bond_devices = {
+                    name: device
+                    for name, device in node.devices.items()
+                    if isinstance(device, BondDeviceConfig)
+                }
                 for device_name in node.devices:
                     if device_name in linked:
                         raise ValueError(
@@ -815,6 +911,24 @@ class Topology(BaseModel):
                             f"{node_name!r}: {device.link!r}"
                         )
                 available.update(vlan_devices)
+                for bond_name, bond in bond_devices.items():
+                    missing = [
+                        interface for interface in bond.interfaces if interface not in linked
+                    ]
+                    if missing:
+                        raise ValueError(
+                            f"bond member interface is not linked on node {node_name!r}: "
+                            f"{bond_name!r} -> {missing[0]!r}"
+                        )
+                    member_mtus = {
+                        linked_mtus[node_name][interface] for interface in bond.interfaces
+                    }
+                    if len(member_mtus) != 1:
+                        raise ValueError(
+                            f"bond member interfaces must use the same MTU on node "
+                            f"{node_name!r}: {bond_name!r}"
+                        )
+                available.update(bond_devices)
                 for vrf_name, vrf in vrf_devices.items():
                     for interface in vrf.interfaces:
                         if interface not in available:
@@ -895,7 +1009,7 @@ class Topology(BaseModel):
                         *(
                             device
                             for device in node.devices.values()
-                            if isinstance(device, VlanDeviceConfig)
+                            if isinstance(device, (VlanDeviceConfig, BondDeviceConfig))
                         ),
                     )
                     for address in interface.addresses
@@ -982,6 +1096,21 @@ def normalized_manifest(manifest: Manifest) -> dict[str, object]:
             node_document = nodes[node_name]
             assert isinstance(node_document, dict)
             node_document.pop("devices", None)
+        if isinstance(node, LinuxNode):
+            node_document = nodes[node_name]
+            assert isinstance(node_document, dict)
+            devices_document = node_document.get("devices")
+            if isinstance(devices_document, dict):
+                for device_name, device in node.devices.items():
+                    if not isinstance(device, BondDeviceConfig) or device.mode != "802.3ad":
+                        continue
+                    device_document = devices_document[device_name]
+                    assert isinstance(device_document, dict)
+                    device_document["lacp_rate"] = device.lacp_rate or "slow"
+                    device_document["xmit_hash_policy"] = device.xmit_hash_policy or "layer2"
+                    device_document["min_links"] = (
+                        0 if device.min_links is None else device.min_links
+                    )
         if isinstance(node, LinuxNode) and not node.rules:
             node_document = nodes[node_name]
             assert isinstance(node_document, dict)

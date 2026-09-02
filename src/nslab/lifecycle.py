@@ -16,7 +16,13 @@ from nslab.backend.base import (
 )
 from nslab.errors import NslabError, OperationCancelled
 from nslab.manifest import Manifest, manifest_fingerprint, normalized_manifest
-from nslab.planner import TopologyPlan, VlanDevicePlan, VrfDevicePlan, compile_plan
+from nslab.planner import (
+    BondDevicePlan,
+    TopologyPlan,
+    VlanDevicePlan,
+    VrfDevicePlan,
+    compile_plan,
+)
 from nslab.snapshot import validate_snapshot
 from nslab.state import DeploymentLock, SnapshotStatus, StateSnapshot, StateStore
 
@@ -551,9 +557,15 @@ class LifecycleService:
                         parent=device.link,
                         vlan_id=device.vlan_id,
                     )
-                else:
-                    assert isinstance(device, VrfDevicePlan)
+                elif isinstance(device, VrfDevicePlan):
                     ownership.update(kind="vrf", vrf_table=device.table)
+                else:
+                    assert isinstance(device, BondDevicePlan)
+                    ownership.update(
+                        kind="bond",
+                        bond_mode=device.mode,
+                        interfaces=device.interfaces,
+                    )
                 result[f"{node_name}:{device.name}"] = ownership
             for endpoint in endpoints_by_node[node_name]:
                 result[f"{node_name}:{endpoint.interface}"] = {

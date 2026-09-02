@@ -21,6 +21,7 @@ from nslab.manifest import (
     MAIN_ROUTE_TABLE,
     NAME_PATTERN,
     BgpConfig,
+    BondDeviceConfig,
     BridgeNode,
     LinuxNode,
     Manifest,
@@ -132,7 +133,20 @@ class VrfDevicePlan:
     interfaces: tuple[str, ...]
 
 
-type DevicePlan = VlanDevicePlan | VrfDevicePlan
+@dataclass(frozen=True, slots=True)
+class BondDevicePlan:
+    name: str
+    mode: Literal["active-backup", "802.3ad"]
+    interfaces: tuple[str, ...]
+    addresses: tuple[IPInterface, ...] = ()
+    miimon_ms: int = 100
+    primary: str | None = None
+    lacp_rate: Literal["slow", "fast"] | None = None
+    xmit_hash_policy: Literal["layer2", "layer2+3", "layer3+4"] | None = None
+    min_links: int | None = None
+
+
+type DevicePlan = VlanDevicePlan | VrfDevicePlan | BondDevicePlan
 
 
 def _empty_bridge_ports() -> Mapping[str, BridgePortPlan]:
@@ -194,6 +208,20 @@ class TopologyPlan:
     links: tuple[LinkPlan, ...]
 
 
+def bond_device_mtu(node: NodePlan, plan: TopologyPlan, device: BondDevicePlan) -> int:
+    """Return the common MTU declared by a bond's member links."""
+
+    mtus = {
+        link.mtu
+        for link in plan.links
+        for endpoint in (link.left, link.right)
+        if endpoint.node == node.name and endpoint.interface in device.interfaces
+    }
+    if len(mtus) != 1:
+        raise ValueError(f"bond members do not have one planned MTU: {node.name}:{device.name}")
+    return next(iter(mtus))
+
+
 def node_interface_addresses(node: NodePlan) -> Mapping[str, tuple[IPInterface, ...]]:
     """Return address declarations for linked and namespace-local devices."""
 
@@ -203,13 +231,13 @@ def node_interface_addresses(node: NodePlan) -> Mapping[str, tuple[IPInterface, 
             **{
                 name: device.addresses
                 for name, device in node.devices.items()
-                if isinstance(device, VlanDevicePlan)
+                if isinstance(device, (VlanDevicePlan, BondDevicePlan))
             },
         }
     )
 
 
-def node_interface_master(node: NodePlan, interface: str) -> str | None:
+def node_interface_vrf_master(node: NodePlan, interface: str) -> str | None:
     """Return the VRF device that owns an interface, if any."""
 
     return next(
@@ -222,10 +250,24 @@ def node_interface_master(node: NodePlan, interface: str) -> str | None:
     )
 
 
+def node_interface_master(node: NodePlan, interface: str) -> str | None:
+    """Return the bond or VRF device that owns an interface, if any."""
+
+    bond = next(
+        (
+            device.name
+            for device in node.devices.values()
+            if isinstance(device, BondDevicePlan) and interface in device.interfaces
+        ),
+        None,
+    )
+    return bond if bond is not None else node_interface_vrf_master(node, interface)
+
+
 def node_interface_route_table(node: NodePlan, interface: str) -> int:
     """Return the routing table selected by an interface's VRF membership."""
 
-    master = node_interface_master(node, interface)
+    master = node_interface_vrf_master(node, interface)
     if master is None:
         return MAIN_ROUTE_TABLE
     device = node.devices[master]
@@ -287,12 +329,27 @@ def _compile_node(deployment: str, name: str, manifest_node: NodeConfig) -> Node
                     vlan_id=config.id,
                     addresses=tuple(ip_interface(str(address)) for address in config.addresses),
                 )
-            else:
-                assert isinstance(config, VrfDeviceConfig)
+            elif isinstance(config, VrfDeviceConfig):
                 compiled_devices[device_name] = VrfDevicePlan(
                     name=device_name,
                     table=config.table,
                     interfaces=tuple(config.interfaces),
+                )
+            else:
+                assert isinstance(config, BondDeviceConfig)
+                is_lacp = config.mode == "802.3ad"
+                compiled_devices[device_name] = BondDevicePlan(
+                    name=device_name,
+                    mode=config.mode,
+                    interfaces=tuple(config.interfaces),
+                    addresses=tuple(ip_interface(str(address)) for address in config.addresses),
+                    miimon_ms=config.miimon_ms,
+                    primary=config.primary,
+                    lacp_rate=(config.lacp_rate or "slow") if is_lacp else None,
+                    xmit_hash_policy=(config.xmit_hash_policy or "layer2" if is_lacp else None),
+                    min_links=(0 if config.min_links is None else config.min_links)
+                    if is_lacp
+                    else None,
                 )
     devices: Mapping[str, DevicePlan] = MappingProxyType(compiled_devices)
     tables_by_interface = {

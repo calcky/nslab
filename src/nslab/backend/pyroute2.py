@@ -39,6 +39,7 @@ from nslab.backend.base import (
 )
 from nslab.errors import NslabError, OperationCancelled
 from nslab.planner import (
+    BondDevicePlan,
     BridgeVlanPlan,
     EndpointPlan,
     IPInterface,
@@ -50,6 +51,7 @@ from nslab.planner import (
     TopologyPlan,
     VlanDevicePlan,
     VrfDevicePlan,
+    bond_device_mtu,
     node_interface_addresses,
     node_route_tables,
 )
@@ -84,6 +86,18 @@ _RULE_ACTION_FROM_NETLINK = {
     6: "blackhole",
     7: "unreachable",
     8: "prohibit",
+}
+_BOND_MODE_TO_NETLINK = {"active-backup": 1, "802.3ad": 4}
+_BOND_MODE_FROM_NETLINK = {value: key for key, value in _BOND_MODE_TO_NETLINK.items()}
+_BOND_LACP_RATE_TO_NETLINK = {"slow": 0, "fast": 1}
+_BOND_LACP_RATE_FROM_NETLINK = {value: key for key, value in _BOND_LACP_RATE_TO_NETLINK.items()}
+_BOND_XMIT_HASH_POLICY_TO_NETLINK = {
+    "layer2": 0,
+    "layer3+4": 1,
+    "layer2+3": 2,
+}
+_BOND_XMIT_HASH_POLICY_FROM_NETLINK = {
+    value: key for key, value in _BOND_XMIT_HASH_POLICY_TO_NETLINK.items()
 }
 # FRR uses the Linux-assigned protocol identifiers for protocol-originated
 # routes.  ``RTPROT_ZEBRA`` is included for FRR releases that use the generic
@@ -1047,6 +1061,59 @@ class Pyroute2Backend:
                 }
 
                 for device in node.devices.values():
+                    if not isinstance(device, BondDevicePlan):
+                        continue
+                    bond_arguments: dict[str, object] = {
+                        "ifname": device.name,
+                        "kind": "bond",
+                        "bond_mode": _BOND_MODE_TO_NETLINK[device.mode],
+                        "bond_miimon": device.miimon_ms,
+                    }
+                    if device.lacp_rate is not None:
+                        bond_arguments["bond_ad_lacp_rate"] = _BOND_LACP_RATE_TO_NETLINK[
+                            device.lacp_rate
+                        ]
+                    if device.xmit_hash_policy is not None:
+                        bond_arguments["bond_xmit_hash_policy"] = _BOND_XMIT_HASH_POLICY_TO_NETLINK[
+                            device.xmit_hash_policy
+                        ]
+                    if device.min_links is not None:
+                        bond_arguments["bond_min_links"] = device.min_links
+                    namespace.link("add", **bond_arguments)
+                    bond_index = _required_index(
+                        namespace,
+                        device.name,
+                        "configure_node",
+                        f"{node.namespace}:{device.name}",
+                    )
+                    indexes[device.name] = bond_index
+                    namespace.link(
+                        "set",
+                        index=bond_index,
+                        mtu=bond_device_mtu(node, plan, device),
+                    )
+                    for member in device.interfaces:
+                        member_index = indexes.get(member)
+                        if member_index is None:
+                            member_index = _required_index(
+                                namespace,
+                                member,
+                                "configure_node",
+                                f"{node.namespace}:{member}",
+                            )
+                            indexes[member] = member_index
+                        namespace.link("set", index=member_index, state="down")
+                        namespace.link("set", index=member_index, master=bond_index)
+                        namespace.link("set", index=member_index, state="up")
+                    if device.primary is not None:
+                        namespace.link(
+                            "set",
+                            index=bond_index,
+                            kind="bond",
+                            bond_primary=indexes[device.primary],
+                        )
+
+                for device in node.devices.values():
                     if not isinstance(device, VrfDevicePlan):
                         continue
                     namespace.link(
@@ -1660,6 +1727,12 @@ class Pyroute2Backend:
             parent: str | None = None
             vlan_id: int | None = None
             vrf_table: int | None = None
+            bond_mode: str | None = None
+            bond_miimon_ms: int | None = None
+            bond_primary: str | None = None
+            bond_lacp_rate: str | None = None
+            bond_xmit_hash_policy: str | None = None
+            bond_min_links: int | None = None
             if kind == "bridge":
                 info_data = _attribute(link_info, "IFLA_INFO_DATA")
                 stp_value = _attribute(info_data, "IFLA_BR_STP_STATE")
@@ -1684,6 +1757,33 @@ class Pyroute2Backend:
                 vrf_table_value = _attribute(info_data, "IFLA_VRF_TABLE")
                 if vrf_table_value is not None:
                     vrf_table = int(vrf_table_value)
+            if kind == "bond":
+                info_data = _attribute(link_info, "IFLA_INFO_DATA")
+                mode_value = _attribute(info_data, "IFLA_BOND_MODE")
+                if mode_value is not None:
+                    raw_mode = int(mode_value)
+                    bond_mode = _BOND_MODE_FROM_NETLINK.get(raw_mode, f"unknown:{raw_mode}")
+                miimon_value = _attribute(info_data, "IFLA_BOND_MIIMON")
+                if miimon_value is not None:
+                    bond_miimon_ms = int(miimon_value)
+                if bond_mode == "active-backup":
+                    primary_value = _attribute(info_data, "IFLA_BOND_PRIMARY")
+                    if primary_value is not None and int(primary_value) != 0:
+                        bond_primary = names_by_index.get(int(primary_value))
+                if bond_mode == "802.3ad":
+                    lacp_rate_value = _attribute(info_data, "IFLA_BOND_AD_LACP_RATE")
+                    if lacp_rate_value is not None:
+                        bond_lacp_rate = _BOND_LACP_RATE_FROM_NETLINK.get(
+                            int(lacp_rate_value), f"unknown:{int(lacp_rate_value)}"
+                        )
+                    xmit_hash_value = _attribute(info_data, "IFLA_BOND_XMIT_HASH_POLICY")
+                    if xmit_hash_value is not None:
+                        bond_xmit_hash_policy = _BOND_XMIT_HASH_POLICY_FROM_NETLINK.get(
+                            int(xmit_hash_value), f"unknown:{int(xmit_hash_value)}"
+                        )
+                    min_links_value = _attribute(info_data, "IFLA_BOND_MIN_LINKS")
+                    if min_links_value is not None:
+                        bond_min_links = int(min_links_value)
             slave_kind = _attribute(link_info, "IFLA_INFO_SLAVE_KIND")
             if slave_kind == "bridge":
                 slave_data = _attribute(link_info, "IFLA_INFO_SLAVE_DATA")
@@ -1718,6 +1818,12 @@ class Pyroute2Backend:
                 parent=parent,
                 vlan_id=vlan_id,
                 vrf_table=vrf_table,
+                bond_mode=bond_mode,
+                bond_miimon_ms=bond_miimon_ms,
+                bond_primary=bond_primary,
+                bond_lacp_rate=bond_lacp_rate,
+                bond_xmit_hash_policy=bond_xmit_hash_policy,
+                bond_min_links=bond_min_links,
             )
         return interfaces, names_by_index
 

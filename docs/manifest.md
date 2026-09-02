@@ -11,7 +11,7 @@ topology
 │  └─ <node-name>
 │     ├─ kind: linux
 │     │  ├─ interfaces / devices / routes / rules / sysctls
-│     │  ├─ devices → <device-name> → type: vlan | vrf
+│     │  ├─ devices → <device-name> → type: vlan | vrf | bond
 │     │  └─ routing
 │     └─ kind: bridge
 │        ├─ interfaces / routes / sysctls
@@ -61,7 +61,7 @@ and `bridge`.
 
 Interface names contain 1 to 15 letters, digits, `_`, `.`, or `-`. Except for a bridge device
 name, every interface declared in `interfaces` must appear in a `links[].endpoints` entry.
-Namespace-local VLAN and VRF devices belong under `devices`, not `interfaces`.
+Namespace-local VLAN, VRF, and bond devices belong under `devices`, not `interfaces`.
 
 ##### `interfaces.<ifname>`
 
@@ -77,7 +77,7 @@ An interface may contain multiple addresses or no address. Duplicate addresses a
 | --- | --- | --- | --- |
 | `dst` | Yes | None | IPv4/IPv6 destination prefix; `default` means `0.0.0.0/0` |
 | `via` | No | `null` | Next-hop address in the same address family as `dst` |
-| `dev` | Yes | None | Egress interface: a linked interface or the node's bridge device |
+| `dev` | Yes | None | Available egress interface: linked, namespace-local, or the node's bridge device |
 | `table` | No | Automatic | Routing table ID in `1..4294967295`, excluding local table `255` |
 
 A node cannot repeat a destination within one routing table or declare one of that table's
@@ -175,7 +175,7 @@ does not preserve its address through the netlink inventory used for determinist
 
 `devices` creates interfaces inside the Linux node after all veth endpoints have been moved
 into place. Device names follow the interface-name rules, cannot be `lo`, and cannot collide with
-a linked endpoint or an `interfaces` key. `type` is required and selects `vlan` or `vrf`.
+a linked endpoint or an `interfaces` key. `type` is required and selects `vlan`, `vrf`, or `bond`.
 
 ###### `type: vlan`
 
@@ -192,6 +192,28 @@ An 802.1Q VLAN subinterface may be used by `routes[].dev` and
 Only one level is supported: a VLAN device cannot use another declared device as its lower
 interface. Its MTU follows the lower interface. Connected routes, BGP directly connected
 neighbor checks, and automatic OSPF/BGP network statements include device addresses.
+
+###### `type: bond`
+
+A bond combines two or more linked interfaces into one logical interface. IP addresses and routes
+belong to the bond; member interfaces must not declare addresses. All member links must use the
+same MTU, and one linked interface cannot belong to multiple bonds.
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `devices.<name>.type` | Yes | None | Must be `bond` |
+| `devices.<name>.mode` | Yes | None | `active-backup` or `802.3ad` |
+| `devices.<name>.interfaces` | Yes | None | At least two unique linked member interfaces |
+| `devices.<name>.addresses` | No | `[]` | Unique IPv4/IPv6 CIDR addresses assigned to the bond |
+| `devices.<name>.miimon_ms` | No | `100` | MII carrier polling interval in `0..60000` ms; zero disables polling |
+| `devices.<name>.primary` | No | `null` | Preferred member; valid only for `active-backup` and must name a member |
+| `devices.<name>.lacp_rate` | No | `slow` | `slow` or `fast`; valid only for `802.3ad` |
+| `devices.<name>.xmit_hash_policy` | No | `layer2` | `layer2`, `layer2+3`, or `layer3+4`; valid only for `802.3ad` |
+| `devices.<name>.min_links` | No | `0` | Minimum active links in `0..65535`; valid only for `802.3ad` and cannot exceed the member count |
+
+The `802.3ad` peer must also run LACP. A single flow normally hashes to one member; multiple flows
+are needed to observe distribution across links. Routes and dynamic routing may use a bond, but a
+bond cannot currently be a VLAN parent or VRF member.
 
 ###### `type: vrf`
 

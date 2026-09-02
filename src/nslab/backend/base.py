@@ -7,6 +7,7 @@ from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
 from nslab.planner import (
+    BondDevicePlan,
     BridgeVlanPlan,
     IPInterface,
     LinkPlan,
@@ -18,6 +19,7 @@ from nslab.planner import (
     TopologyPlan,
     VlanDevicePlan,
     VrfDevicePlan,
+    bond_device_mtu,
     node_interface_addresses,
     node_interface_master,
     node_interface_route_table,
@@ -46,6 +48,12 @@ class InterfaceInventory:
     parent: str | None = None
     vlan_id: int | None = None
     vrf_table: int | None = None
+    bond_mode: str | None = None
+    bond_miimon_ms: int | None = None
+    bond_primary: str | None = None
+    bond_lacp_rate: str | None = None
+    bond_xmit_hash_policy: str | None = None
+    bond_min_links: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "addresses", tuple(self.addresses))
@@ -157,6 +165,12 @@ class _ExpectedInterface:
     parent: str | None = None
     vlan_id: int | None = None
     vrf_table: int | None = None
+    bond_mode: str | None = None
+    bond_miimon_ms: int | None = None
+    bond_primary: str | None = None
+    bond_lacp_rate: str | None = None
+    bond_xmit_hash_policy: str | None = None
+    bond_min_links: int | None = None
 
 
 def expected_bridge_port_vlans(node: NodePlan, interface: str) -> tuple[BridgeVlanPlan, ...]:
@@ -254,8 +268,7 @@ def _expected_interfaces(node: NodePlan, plan: TopologyPlan) -> dict[str, _Expec
                 parent=device.link,
                 vlan_id=device.vlan_id,
             )
-        else:
-            assert isinstance(device, VrfDevicePlan)
+        elif isinstance(device, VrfDevicePlan):
             expected[device.name] = _ExpectedInterface(
                 kind="vrf",
                 master=None,
@@ -263,6 +276,21 @@ def _expected_interfaces(node: NodePlan, plan: TopologyPlan) -> dict[str, _Expec
                 up=True,
                 addresses=(),
                 vrf_table=device.table,
+            )
+        else:
+            assert isinstance(device, BondDevicePlan)
+            expected[device.name] = _ExpectedInterface(
+                kind="bond",
+                master=node_interface_master(node, device.name),
+                mtu=bond_device_mtu(node, plan, device),
+                up=True,
+                addresses=device.addresses,
+                bond_mode=device.mode,
+                bond_miimon_ms=device.miimon_ms,
+                bond_primary=device.primary,
+                bond_lacp_rate=device.lacp_rate,
+                bond_xmit_hash_policy=device.xmit_hash_policy,
+                bond_min_links=device.min_links,
             )
 
     return expected
@@ -311,6 +339,18 @@ def _interfaces_match(
         if observed.vlan_id != desired.vlan_id:
             return False
         if observed.vrf_table != desired.vrf_table:
+            return False
+        if observed.bond_mode != desired.bond_mode:
+            return False
+        if observed.bond_miimon_ms != desired.bond_miimon_ms:
+            return False
+        if observed.bond_primary != desired.bond_primary:
+            return False
+        if observed.bond_lacp_rate != desired.bond_lacp_rate:
+            return False
+        if observed.bond_xmit_hash_policy != desired.bond_xmit_hash_policy:
+            return False
+        if observed.bond_min_links != desired.bond_min_links:
             return False
 
     return True
