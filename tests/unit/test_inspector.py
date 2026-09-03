@@ -43,7 +43,15 @@ def manifest() -> Manifest:
                             "vlan_filtering": False,
                             "priority": 4096,
                             "ports": {
-                                "swp1": {"path_cost": 10, "priority": 16},
+                                "swp1": {
+                                    "path_cost": 10,
+                                    "priority": 16,
+                                    "hairpin": True,
+                                    "isolated": True,
+                                    "learning": False,
+                                    "flood": False,
+                                    "multicast_flood": False,
+                                },
                                 "swp2": {"path_cost": 100},
                             },
                         },
@@ -344,6 +352,11 @@ def test_report_contains_complete_json_safe_three_way_resources(
     assert desired_bridge.bridge_priority == 4096
     assert desired_swp1.path_cost == 10
     assert desired_swp1.port_priority == 16
+    assert desired_swp1.hairpin is True
+    assert desired_swp1.isolated is True
+    assert desired_swp1.learning is False
+    assert desired_swp1.flood is False
+    assert desired_swp1.multicast_flood is False
     assert tuple(link.index for link in report.nodes[1].state.links) == (0, 1)  # type: ignore[union-attr]
     assert tuple(link.index for link in report.nodes[1].actual.links) == (0, 1)
     assert tuple(link.index for link in report.nodes[2].desired.links) == (1,)
@@ -461,6 +474,11 @@ def test_inspection_reports_explicit_stp_tuning_drift(
         "swp1",
         path_cost=20,
         port_priority=32,
+        hairpin=False,
+        isolated=False,
+        learning=True,
+        flood=True,
+        multicast_flood=True,
     )
 
     report = inspect_topology(plan, snapshot, changed)
@@ -474,6 +492,11 @@ def test_inspection_reports_explicit_stp_tuning_drift(
         ("br0", "bridge_priority", 4096, 8192),
         ("swp1", "path_cost", 10, 20),
         ("swp1", "port_priority", 16, 32),
+        ("swp1", "hairpin", True, False),
+        ("swp1", "isolated", True, False),
+        ("swp1", "learning", False, True),
+        ("swp1", "flood", False, True),
+        ("swp1", "multicast_flood", False, True),
     }
 
 

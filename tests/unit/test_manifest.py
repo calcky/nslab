@@ -196,6 +196,55 @@ def test_loads_bridge_port_vlan_settings(tmp_path: Path, manifest_data: Manifest
     }
 
 
+def test_loads_bridge_port_forwarding_controls(tmp_path: Path, manifest_data: ManifestData) -> None:
+    bridge = manifest_data["topology"]["nodes"]["sw1"]["bridge"]
+    bridge["ports"] = {
+        "swp1": {
+            "hairpin": True,
+            "isolated": True,
+            "learning": False,
+            "flood": False,
+            "multicast_flood": False,
+        }
+    }
+
+    manifest = load_manifest(_write_manifest(tmp_path, manifest_data))
+    sw1 = manifest.topology.nodes["sw1"]
+    assert isinstance(sw1, BridgeNode)
+    port = sw1.bridge.ports["swp1"]
+    assert port.hairpin is True
+    assert port.isolated is True
+    assert port.learning is False
+    assert port.flood is False
+    assert port.multicast_flood is False
+
+    normalized = normalized_manifest(manifest)
+    assert normalized["topology"]["nodes"]["sw1"]["bridge"]["ports"]["swp1"] == {
+        "hairpin": True,
+        "isolated": True,
+        "learning": False,
+        "flood": False,
+        "multicast_flood": False,
+    }
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["hairpin", "isolated", "learning", "flood", "multicast_flood"],
+)
+@pytest.mark.parametrize("value", [0, 1, "true", "false"])
+def test_rejects_non_boolean_bridge_port_forwarding_controls(
+    tmp_path: Path,
+    manifest_data: ManifestData,
+    field: str,
+    value: object,
+) -> None:
+    bridge = manifest_data["topology"]["nodes"]["sw1"]["bridge"]
+    bridge["ports"] = {"swp1": {field: value}}
+
+    _assert_invalid(tmp_path, manifest_data)
+
+
 @pytest.mark.parametrize(
     "vlans",
     [

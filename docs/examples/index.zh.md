@@ -19,6 +19,7 @@ sudo nslab destroy
 | 示例 | 学习内容 |
 | --- | --- |
 | [Bridge FDB](bridge-fdb.md) | Linux bridge 转发、MAC 学习和接口计数器 |
+| [Bridge 端口控制](bridge-port-controls.md) | 端口隔离、hairpin、MAC 学习与泛洪控制 |
 | [Bridge VLAN](bridge-vlan.md) | Access VLAN、PVID、untagged 和 tagged trunk |
 | [VLAN](vlan.md) | 802.1Q 子接口与单臂路由转发 |
 | [Bridge STP](bridge-stp.md) | 根桥选举、端口选择和故障重收敛 |
@@ -51,6 +52,7 @@ sudo nslab destroy
 | --- | --- |
 | [IPv4 转发](ipv4-forward.md) | IPv4 静态路由和 Linux 转发路径 |
 | [IPv6 转发](ipv6-forward.md) | IPv6 默认路由、DAD 和 Linux 转发路径 |
+| [邻居表](neighbors.md) | 固定 MAC、静态 ARP/NDP 与 Proxy ARP/NDP |
 | [ECMP](ecmp.md) | 静态等价下一跳、权重与逐流哈希 |
 
 ## 路由域隔离

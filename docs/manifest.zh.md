@@ -10,11 +10,11 @@ topology
 ├─ nodes
 │  └─ <node-name>
 │     ├─ kind: linux
-│     │  ├─ interfaces / devices / routes → nexthops / rules / sysctls
+│     │  ├─ interfaces / devices / routes → nexthops / neighbors / rules / sysctls
 │     │  ├─ devices → <device-name> → type: vlan | vrf | bond | gre | ipip | vxlan | dummy | geneve | macvlan | ipvlan
 │     │  └─ routing
 │     └─ kind: bridge
-│        ├─ interfaces / devices / routes / sysctls
+│        ├─ interfaces / devices / routes / neighbors / sysctls
 │        ├─ devices → <device-name> → type: vxlan | geneve
 │        └─ bridge → ports → vlans
 └─ links
@@ -61,6 +61,7 @@ topology:
 | `kind` | 是 | 无 | Discriminator，只能是 `linux` 或 `bridge` |
 | `interfaces` | 否 | `{}` | 接口名到接口配置的映射 |
 | `routes` | 否 | `[]` | 静态 IPv4/IPv6 路由列表 |
+| `neighbors` | 否 | `[]` | 静态 IPv4 ARP、IPv6 NDP 和代理邻居条目 |
 | `sysctls` | 否 | `{}` | nslab 允许修改的网络 sysctl |
 | `routing` | 否 | `null` | OSPF/BGP 配置，仅允许用于 `linux` 节点 |
 
@@ -74,8 +75,10 @@ Namespace 内部的 VLAN、VRF、bond、GRE、IPIP、VXLAN、Geneve、dummy、ma
 | 字段 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `addresses` | 否 | `[]` | 唯一的 IPv4/IPv6 CIDR 地址列表，例如 `10.0.0.1/24` 或 `2001:db8::1/64` |
+| `mac` | 否 | 自动 | 固定单播 MAC 地址，例如 `02:00:00:00:00:01` |
 
-一个接口可以同时声明多个地址，也可以不声明地址。重复地址会被拒绝。
+一个接口可以同时声明多个地址，也可以不声明地址。重复地址会被拒绝。MAC 地址会统一
+转换为小写；组播、广播和全零地址会被拒绝。
 
 ##### `routes[]`
 
@@ -117,6 +120,39 @@ routes:
 接口必须归属于同一路由表；因此可以在一个 VRF 内使用 ECMP，但会拒绝意外跨越路由域的
 配置。相同权重是 ECMP，不同权重是加权多路径；分流按多个 flow 统计接近权重，而不是
 逐包轮询。
+
+##### `neighbors[]`
+
+`neighbors` 声明 IPv4 ARP 或 IPv6 NDP 表项。普通条目将 IP 地址映射到固定链路层地址；
+代理条目使 Linux 代替通过其他接口到达的地址响应地址解析请求。
+
+```yaml
+neighbors:
+  - dst: 192.0.2.2
+    dev: eth0
+    lladdr: 02:00:00:00:00:02
+    state: permanent
+  - dst: 2001:db8:1::200
+    dev: eth0
+    proxy: true
+```
+
+| 字段 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `dst` | 是 | 无 | 单播 IPv4 或 IPv6 邻居地址 |
+| `dev` | 是 | 无 | 承载条目的 linked interface、bridge interface 或已声明设备 |
+| `lladdr` | 仅普通条目 | 无 | 冒号分隔的单播邻居 MAC 地址 |
+| `state` | 否 | `permanent` | 普通条目的 NUD 状态：`permanent`、`reachable`、`stale` 或 `noarp` |
+| `proxy` | 否 | `false` | 安装代理条目，而不是普通 IP 到 MAC 映射 |
+
+每个 `dst + dev` 组合必须唯一。普通条目必须声明 `lladdr`；代理条目不能声明 `lladdr`
+或 `state`。声明 IPv4 代理会自动开启 `net.ipv4.conf.<dev>.proxy_arp`；声明 IPv6 代理会
+自动开启 `net.ipv6.conf.<dev>.proxy_ndp`。
+
+`permanent` 不会老化；`reachable` 表示已确认可达；`stale` 保留 MAC，并在使用时要求 NUD
+重新确认；`noarp` 禁止邻居探测。正常流量可能使已声明的 `reachable` 或 `stale` 条目在
+`reachable`、`stale`、`delay` 和 `probe` 之间迁移，inventory 和 drift 检查会把这些健康
+迁移视为匹配。Manifest 中未声明的动态学习条目会被忽略。
 
 ##### `sysctls`
 
@@ -211,6 +247,10 @@ start 不能大于 end，两个 realm 不能同时为零。Suppress 选项只适
 `type` 选择 `vlan`、`vrf`、`bond`、`gre`、`ipip`、`vxlan`、`dummy`、`geneve`、`macvlan`
 或 `ipvlan`。
 
+除 VRF 外，每种设备都支持公共的 `addresses` 字段。以太网类型的 `vlan`、`bond`、
+`vxlan`、`dummy`、`geneve` 和 `macvlan` 还支持公共的 `mac` 字段。GRE、IPIP 和 ipvlan
+没有独立可配置的以太网地址，因此会拒绝 `mac`。
+
 ###### `type: vlan`
 
 802.1Q VLAN 子接口可用于 `routes[].dev` 和 `routing.ospf.passive_interfaces`：
@@ -221,6 +261,7 @@ start 不能大于 end，两个 realm 不能同时为零。Suppress 选项只适
 | `devices.<name>.link` | 是 | 无 | Lower interface，必须是同一节点中的 linked interface |
 | `devices.<name>.id` | 是 | 无 | VLAN ID，范围 `1..4094`，同一 lower interface 上不能重复 |
 | `devices.<name>.addresses` | 否 | `[]` | 配置到 VLAN 设备的唯一 IPv4/IPv6 CIDR 地址 |
+| `devices.<name>.mac` | 否 | 自动 | 固定单播 MAC 地址 |
 
 当前只支持一层设备：VLAN 设备不能再以另一个声明设备作为 lower interface。MTU 继承
 lower interface。直连路由、BGP 直连邻居检查以及 OSPF/BGP 自动 network statement 都会
@@ -238,6 +279,7 @@ lower interface。直连路由、BGP 直连邻居检查以及 OSPF/BGP 自动 ne
 | `devices.<name>.local` | 是 | 无 | 配置在 `link` 上的单播 IPv4/IPv6 源地址 |
 | `devices.<name>.remote` | 是 | 无 | 与 `local` 地址族相同的静态单播 VTEP 地址 |
 | `devices.<name>.addresses` | 否 | `[]` | 配置在 VXLAN 接口上的 IPv4/IPv6 地址 |
+| `devices.<name>.mac` | 否 | 自动 | 固定单播 MAC 地址 |
 | `devices.<name>.dst_port` | 否 | `4789` | UDP 目的端口，范围 `1..65535` |
 | `devices.<name>.learning` | 否 | `true` | 是否开启源 MAC 学习 |
 | `devices.<name>.mtu` | 否 | 自动 | 上限为 underlay MTU 减封装开销 |
@@ -255,6 +297,7 @@ Dummy 设备是 namespace 内部的虚拟接口，没有物理对端，适合承
 | --- | --- | --- | --- |
 | `devices.<name>.type` | 是 | 无 | 必须为 `dummy` |
 | `devices.<name>.addresses` | 否 | `[]` | 配置到 dummy 设备的 IPv4/IPv6 地址 |
+| `devices.<name>.mac` | 否 | 自动 | 固定单播 MAC 地址 |
 | `devices.<name>.mtu` | 否 | `1500` | MTU，范围 `576..9216` |
 
 ###### `type: geneve`
@@ -270,6 +313,7 @@ Linux 节点上的 Geneve 设备是静态单播隧道，可以直接承载地址
 | `devices.<name>.remote` | 是 | 无 | 静态单播 IPv4/IPv6 远端 VTEP 地址 |
 | `devices.<name>.dst_port` | 否 | `6081` | UDP 目的端口，范围 `1..65535` |
 | `devices.<name>.addresses` | 否 | `[]` | 配置到 Geneve 设备的 IPv4/IPv6 地址 |
+| `devices.<name>.mac` | 否 | 自动 | 固定单播 MAC 地址 |
 | `devices.<name>.mtu` | 否 | 自动 | MTU，范围 `576..9216`，上限为 underlay MTU 减封装开销 |
 
 underlay `link` 必须是 linked interface。IPv4 Geneve 从 underlay MTU 减 50 字节，IPv6
@@ -323,6 +367,7 @@ Macvlan 为 linked parent 增加一个拥有独立 MAC 地址的虚拟接口：
 | `devices.<name>.link` | 是 | 无 | 同一节点中的 linked parent interface |
 | `devices.<name>.mode` | 否 | `bridge` | `private`、`vepa`、`bridge`、`passthru` 或 `source` |
 | `devices.<name>.addresses` | 否 | `[]` | 配置到 macvlan 设备的 IPv4/IPv6 地址 |
+| `devices.<name>.mac` | 否 | 自动 | 固定单播 MAC 地址 |
 | `devices.<name>.mtu` | 否 | Parent MTU | MTU，范围 `576..9216` |
 
 parent 必须是 linked interface，不能是另一个声明设备。`bridge` 模式允许同一 parent 上的
@@ -355,6 +400,7 @@ Bond 把两个或更多 linked interface 组合成一个逻辑接口。IP 地址
 | `devices.<name>.mode` | 是 | 无 | `active-backup` 或 `802.3ad` |
 | `devices.<name>.interfaces` | 是 | 无 | 至少两个不重复的 linked member interface |
 | `devices.<name>.addresses` | 否 | `[]` | 配置在 bond 上且不重复的 IPv4/IPv6 CIDR 地址 |
+| `devices.<name>.mac` | 否 | 自动 | Bond 的固定单播 MAC 地址 |
 | `devices.<name>.miimon_ms` | 否 | `100` | `0..60000` ms 的 MII carrier 轮询间隔；零表示禁用 |
 | `devices.<name>.primary` | 否 | `null` | 首选成员；仅用于 `active-backup`，且必须属于成员列表 |
 | `devices.<name>.lacp_rate` | 否 | `slow` | `slow` 或 `fast`；仅用于 `802.3ad` |
@@ -462,6 +508,7 @@ Bridge 节点中的 VXLAN 设备创建静态单播二层隧道，并自动加入
 | `link` | 是 | 无 | 同一 bridge 节点中的 linked underlay interface |
 | `local` | 是 | 无 | 配置在 `link` 上的单播 IPv4/IPv6 源地址 |
 | `remote` | 是 | 无 | 静态单播远端 VTEP 地址，地址族必须与 `local` 相同 |
+| `mac` | 否 | 自动 | 固定单播 MAC 地址 |
 | `dst_port` | 否 | `4789` | UDP 目的端口，范围 `1..65535` |
 | `learning` | 否 | `true` | 是否在 VXLAN 接口上开启源 MAC 学习 |
 | `mtu` | 否 | 自动 | VXLAN MTU，范围 `576..9216`，上限为 underlay MTU 减封装开销 |
@@ -483,6 +530,7 @@ underlay 路由选择源地址，因此没有 `local` 字段。underlay 接口�
 | `vni` | 是 | 无 | Geneve Network Identifier，范围 `1..16777215`，同一节点内唯一 |
 | `link` | 是 | 无 | 同一 bridge 节点中的 linked underlay interface |
 | `remote` | 是 | 无 | 静态单播 IPv4/IPv6 远端 VTEP 地址 |
+| `mac` | 否 | 自动 | 固定单播 MAC 地址 |
 | `dst_port` | 否 | `6081` | UDP 目的端口，范围 `1..65535` |
 | `mtu` | 否 | 自动 | Geneve MTU，范围 `576..9216`，上限为 underlay MTU 减封装开销 |
 
@@ -509,10 +557,16 @@ Bridge 节点的 Geneve 设备不能声明 `addresses`；三层 Geneve 请使用
 | --- | --- | --- | --- |
 | `path_cost` | 否 | `null` | STP path cost，范围 `1..65535`，要求 `stp: true` |
 | `priority` | 否 | `null` | Linux STP port priority，范围 `0..63`，要求 `stp: true` |
+| `hairpin` | 否 | `null` | 是否允许从该端口收到的帧再经同一端口发出 |
+| `isolated` | 否 | `null` | 是否禁止该端口与其他 isolated bridge 端口相互转发 |
+| `learning` | 否 | `null` | 是否在该端口学习源 MAC |
+| `flood` | 否 | `null` | 是否向该端口泛洪未知单播 |
+| `multicast_flood` | 否 | `null` | 是否向该端口泛洪未注册组播 |
 | `vlans` | 否 | `[]` | 端口 VLAN 列表，要求 `vlan_filtering: true` |
 
-端口配置至少要包含一个 STP 或 VLAN 设置；端口必须是 linked access interface 或已声明
-的 VXLAN/Geneve 设备。
+端口配置至少要包含一个 STP、转发或 VLAN 设置；端口必须是 linked access interface 或
+已声明的 VXLAN/Geneve 设备。转发控制为 `null` 时不接管内核默认值；显式配置 `true` 或
+`false` 时，nslab 会设置该值并参与 drift 检查。
 
 每个 `vlans[]` 项：
 

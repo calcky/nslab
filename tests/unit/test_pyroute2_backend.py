@@ -127,7 +127,17 @@ def bridge_node() -> NodePlan:
         stp=True,
         vlan_filtering=False,
         bridge_priority=4096,
-        bridge_ports={"swp1": BridgePortPlan(path_cost=10, priority=16)},
+        bridge_ports={
+            "swp1": BridgePortPlan(
+                path_cost=10,
+                priority=16,
+                hairpin=True,
+                isolated=True,
+                learning=False,
+                flood=False,
+                multicast_flood=False,
+            )
+        },
     )
 
 
@@ -179,6 +189,11 @@ def _link_message(
     bridge_priority: int | None = None,
     path_cost: int | None = None,
     port_priority: int | None = None,
+    hairpin: int | None = None,
+    isolated: int | None = None,
+    learning: int | None = None,
+    flood: int | None = None,
+    multicast_flood: int | None = None,
     alias: str | None = None,
 ) -> dict[str, object]:
     info_data: list[tuple[str, object]] = []
@@ -196,6 +211,16 @@ def _link_message(
         slave_data.append(("IFLA_BRPORT_COST", path_cost))
     if port_priority is not None:
         slave_data.append(("IFLA_BRPORT_PRIORITY", port_priority))
+    if hairpin is not None:
+        slave_data.append(("IFLA_BRPORT_MODE", hairpin))
+    if isolated is not None:
+        slave_data.append(("IFLA_BRPORT_ISOLATED", isolated))
+    if learning is not None:
+        slave_data.append(("IFLA_BRPORT_LEARNING", learning))
+    if flood is not None:
+        slave_data.append(("IFLA_BRPORT_UNICAST_FLOOD", flood))
+    if multicast_flood is not None:
+        slave_data.append(("IFLA_BRPORT_MCAST_FLOOD", multicast_flood))
     if slave_data:
         link_info.extend(
             [
@@ -1567,7 +1592,18 @@ def test_configure_bridge_attaches_ports_and_configures_internal_bridge(
         call.link_lookup(ifname="br0"),
         call.link_lookup(ifname="swp1"),
         call.link("set", index=21, master=20),
-        call.link("set", index=21, kind="bridge_slave", cost=10, priority=16),
+        call.link(
+            "set",
+            index=21,
+            kind="bridge_slave",
+            cost=10,
+            priority=16,
+            mode=1,
+            isolated=1,
+            learning=0,
+            unicast_flood=0,
+            mcast_flood=0,
+        ),
         call.link("set", index=20, state="up"),
         call.close(),
     ]
@@ -3795,6 +3831,11 @@ def test_inventory_records_interfaces_routes_and_declared_sysctls(
             master=20,
             path_cost=10,
             port_priority=16,
+            hairpin=1,
+            isolated=1,
+            learning=0,
+            flood=0,
+            multicast_flood=0,
         ),
     ]
     sw1_handle.get_addr.return_value = [
@@ -3857,6 +3898,11 @@ def test_inventory_records_interfaces_routes_and_declared_sysctls(
     port = inventory.namespaces[sw1.namespace].interfaces["swp1"]
     assert port.path_cost == 10
     assert port.port_priority == 16
+    assert port.hairpin is True
+    assert port.isolated is True
+    assert port.learning is False
+    assert port.flood is False
+    assert port.multicast_flood is False
     assert bridge.vlan_filtering is False
     assert inventory.namespaces[sw1.namespace].interfaces["swp1"].master == "br0"
     pushns.assert_called_once_with(h1.namespace)

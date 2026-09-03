@@ -27,6 +27,7 @@ from nslab.manifest import (
     FqCodelConfig,
     GeneveDeviceConfig,
     GreDeviceConfig,
+    InterfaceConfig,
     IpipDeviceConfig,
     IpvlanDeviceConfig,
     LinuxNode,
@@ -75,6 +76,27 @@ def route_interfaces(route: RoutePlan) -> tuple[str, ...]:
         return tuple(nexthop.dev for nexthop in route.nexthops)
     assert route.dev is not None
     return (route.dev,)
+
+
+type NeighborState = Literal[
+    "incomplete",
+    "reachable",
+    "stale",
+    "delay",
+    "probe",
+    "failed",
+    "noarp",
+    "permanent",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class NeighborPlan:
+    dst: IPAddress
+    dev: str
+    lladdr: str | None
+    state: NeighborState | None
+    proxy: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +166,11 @@ class BridgePortPlan:
     path_cost: int | None
     priority: int | None
     vlans: tuple[BridgeVlanPlan, ...] = ()
+    hairpin: bool | None = None
+    isolated: bool | None = None
+    learning: bool | None = None
+    flood: bool | None = None
+    multicast_flood: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,6 +298,10 @@ def _empty_devices() -> Mapping[str, DevicePlan]:
     return MappingProxyType({})
 
 
+def _empty_mac_addresses() -> Mapping[str, str]:
+    return MappingProxyType({})
+
+
 @dataclass(frozen=True, slots=True)
 class NodePlan:
     name: str
@@ -279,6 +310,8 @@ class NodePlan:
     interfaces: Mapping[str, tuple[IPInterface, ...]]
     routes: tuple[RoutePlan, ...]
     sysctls: Mapping[str, int]
+    mac_addresses: Mapping[str, str] = field(default_factory=_empty_mac_addresses)
+    neighbors: tuple[NeighborPlan, ...] = ()
     rules: tuple[PolicyRulePlan, ...] = ()
     devices: Mapping[str, DevicePlan] = field(default_factory=_empty_devices)
     bridge_name: str | None = None
@@ -554,7 +587,17 @@ def _compile_node(deployment: str, name: str, manifest_node: NodeConfig) -> Node
             for interface_name, config in manifest_node.interfaces.items()
         }
     )
-    sysctls = MappingProxyType(dict(manifest_node.sysctls))
+    compiled_sysctls = dict(manifest_node.sysctls)
+    for neighbor in manifest_node.neighbors:
+        if not neighbor.proxy:
+            continue
+        key = (
+            f"net.ipv4.conf.{neighbor.dev}.proxy_arp"
+            if neighbor.dst.version == 4
+            else f"net.ipv6.conf.{neighbor.dev}.proxy_ndp"
+        )
+        compiled_sysctls[key] = 1
+    sysctls = MappingProxyType(compiled_sysctls)
     compiled_devices: dict[str, DevicePlan] = {}
     if isinstance(manifest_node, LinuxNode):
         for device_name, config in manifest_node.devices.items():
@@ -678,6 +721,20 @@ def _compile_node(deployment: str, name: str, manifest_node: NodeConfig) -> Node
                     mtu=config.mtu,
                 )
     devices: Mapping[str, DevicePlan] = MappingProxyType(compiled_devices)
+    mac_addresses = MappingProxyType(
+        {
+            **{
+                interface_name: config.mac
+                for interface_name, config in manifest_node.interfaces.items()
+                if config.mac is not None
+            },
+            **{
+                device_name: config.mac
+                for device_name, config in manifest_node.devices.items()
+                if isinstance(config, InterfaceConfig) and config.mac is not None
+            },
+        }
+    )
     tables_by_interface = {
         interface: device.table
         for device in devices.values()
@@ -713,6 +770,16 @@ def _compile_node(deployment: str, name: str, manifest_node: NodeConfig) -> Node
             )
         )
     routes = tuple(compiled_routes)
+    neighbors = tuple(
+        NeighborPlan(
+            dst=ip_address(str(neighbor.dst)),
+            dev=neighbor.dev,
+            lladdr=neighbor.lladdr,
+            state=None if neighbor.proxy else (neighbor.state or "permanent"),
+            proxy=neighbor.proxy,
+        )
+        for neighbor in manifest_node.neighbors
+    )
     rules = (
         tuple(
             PolicyRulePlan(
@@ -786,6 +853,11 @@ def _compile_node(deployment: str, name: str, manifest_node: NodeConfig) -> Node
                         )
                         for vlan in config.vlans
                     ),
+                    hairpin=config.hairpin,
+                    isolated=config.isolated,
+                    learning=config.learning,
+                    flood=config.flood,
+                    multicast_flood=config.multicast_flood,
                 )
                 for interface, config in manifest_node.bridge.ports.items()
             }
@@ -804,6 +876,8 @@ def _compile_node(deployment: str, name: str, manifest_node: NodeConfig) -> Node
         interfaces=interfaces,
         routes=routes,
         sysctls=sysctls,
+        mac_addresses=mac_addresses,
+        neighbors=neighbors,
         rules=rules,
         devices=devices,
         routing=routing,

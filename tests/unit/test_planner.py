@@ -188,7 +188,15 @@ def test_compile_plan_preserves_immutable_bridge_stp_settings(
             "stp": True,
             "priority": 4096,
             "ports": {
-                "swp1": {"path_cost": 10, "priority": 16},
+                "swp1": {
+                    "path_cost": 10,
+                    "priority": 16,
+                    "hairpin": True,
+                    "isolated": True,
+                    "learning": False,
+                    "flood": False,
+                    "multicast_flood": False,
+                },
                 "swp2": {"path_cost": 100},
             },
         }
@@ -199,7 +207,15 @@ def test_compile_plan_preserves_immutable_bridge_stp_settings(
 
     assert sw1.bridge_priority == 4096
     assert sw1.bridge_ports == {
-        "swp1": BridgePortPlan(path_cost=10, priority=16),
+        "swp1": BridgePortPlan(
+            path_cost=10,
+            priority=16,
+            hairpin=True,
+            isolated=True,
+            learning=False,
+            flood=False,
+            multicast_flood=False,
+        ),
         "swp2": BridgePortPlan(path_cost=100, priority=None),
     }
     with pytest.raises(TypeError):

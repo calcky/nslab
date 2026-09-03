@@ -489,6 +489,7 @@ class LifecycleService:
                 or observed.interfaces
                 or observed.routes
                 or observed.rules
+                or observed.neighbors
                 or observed.sysctls
             ):
                 return False

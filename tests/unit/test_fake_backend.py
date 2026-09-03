@@ -60,7 +60,15 @@ def bridge_plan() -> TopologyPlan:
                             "vlan_filtering": False,
                             "priority": 4096,
                             "ports": {
-                                "swp1": {"path_cost": 10, "priority": 16},
+                                "swp1": {
+                                    "path_cost": 10,
+                                    "priority": 16,
+                                    "hairpin": True,
+                                    "isolated": True,
+                                    "learning": False,
+                                    "flood": False,
+                                    "multicast_flood": False,
+                                },
                                 "swp2": {"path_cost": 100},
                             },
                         },
@@ -251,6 +259,11 @@ def test_fake_backend_builds_semantically_matching_inventory_and_records_calls(
     assert sw1_inventory.interfaces["swp1"].mtu == 1500
     assert sw1_inventory.interfaces["swp1"].path_cost == 10
     assert sw1_inventory.interfaces["swp1"].port_priority == 16
+    assert sw1_inventory.interfaces["swp1"].hairpin is True
+    assert sw1_inventory.interfaces["swp1"].isolated is True
+    assert sw1_inventory.interfaces["swp1"].learning is False
+    assert sw1_inventory.interfaces["swp1"].flood is False
+    assert sw1_inventory.interfaces["swp1"].multicast_flood is False
     assert sw1_inventory.interfaces["swp2"].master == "br0"
     assert sw1_inventory.interfaces["swp2"].mtu == 1400
     assert sw1_inventory.interfaces["swp2"].path_cost == 100
@@ -444,10 +457,45 @@ def test_semantic_comparison_detects_explicit_stp_tuning_drift(
         "swp1",
         port_priority=32,
     )
+    changed_hairpin = _replace_interface(
+        inventory,
+        sw1.namespace,
+        "swp1",
+        hairpin=False,
+    )
+    changed_isolated = _replace_interface(
+        inventory,
+        sw1.namespace,
+        "swp1",
+        isolated=False,
+    )
+    changed_learning = _replace_interface(
+        inventory,
+        sw1.namespace,
+        "swp1",
+        learning=True,
+    )
+    changed_flood = _replace_interface(
+        inventory,
+        sw1.namespace,
+        "swp1",
+        flood=True,
+    )
+    changed_multicast_flood = _replace_interface(
+        inventory,
+        sw1.namespace,
+        "swp1",
+        multicast_flood=True,
+    )
 
     assert not inventory_matches_plan(bridge_plan, changed_bridge_priority)
     assert not inventory_matches_plan(bridge_plan, changed_path_cost)
     assert not inventory_matches_plan(bridge_plan, changed_port_priority)
+    assert not inventory_matches_plan(bridge_plan, changed_hairpin)
+    assert not inventory_matches_plan(bridge_plan, changed_isolated)
+    assert not inventory_matches_plan(bridge_plan, changed_learning)
+    assert not inventory_matches_plan(bridge_plan, changed_flood)
+    assert not inventory_matches_plan(bridge_plan, changed_multicast_flood)
 
 
 def test_semantic_comparison_requires_matching_unique_link_identities(

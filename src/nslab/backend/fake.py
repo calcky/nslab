@@ -23,6 +23,7 @@ from nslab.planner import (
     IpvlanDevicePlan,
     LinkPlan,
     MacvlanDevicePlan,
+    NeighborPlan,
     NetemPlan,
     NodeKind,
     NodePlan,
@@ -55,6 +56,7 @@ class _FakeNamespaceState:
     routes: tuple[RoutePlan, ...]
     sysctls: dict[str, int]
     rules: tuple[PolicyRulePlan, ...]
+    neighbors: tuple[NeighborPlan, ...]
 
 
 type _EndpointKey = tuple[str, str]
@@ -162,6 +164,7 @@ class FakeNetworkBackend:
             routes=expected_routes(node)[:1],
             sysctls={},
             rules=(),
+            neighbors=(),
         )
 
     def delete_namespace(self, namespace: str) -> None:
@@ -177,6 +180,9 @@ class FakeNetworkBackend:
                 peer_state.interfaces.pop(peer[1], None)
                 peer_state.routes = tuple(
                     route for route in peer_state.routes if peer[1] not in route_interfaces(route)
+                )
+                peer_state.neighbors = tuple(
+                    neighbor for neighbor in peer_state.neighbors if neighbor.dev != peer[1]
                 )
 
         self.namespaces.pop(namespace, None)
@@ -309,6 +315,11 @@ class FakeNetworkBackend:
                 addresses=device.addresses,
                 path_cost=None if port is None else port.path_cost,
                 port_priority=None if port is None else port.priority,
+                hairpin=None if port is None else port.hairpin,
+                isolated=None if port is None else port.isolated,
+                learning=None if port is None else port.learning,
+                flood=None if port is None else port.flood,
+                multicast_flood=None if port is None else port.multicast_flood,
                 bridge_vlans=expected_bridge_port_vlans(node, device.name),
                 vxlan_vni=device.vni,
                 vxlan_link=device.link,
@@ -422,6 +433,11 @@ class FakeNetworkBackend:
                 addresses=device.addresses,
                 path_cost=None if port is None else port.path_cost,
                 port_priority=None if port is None else port.priority,
+                hairpin=None if port is None else port.hairpin,
+                isolated=None if port is None else port.isolated,
+                learning=None if port is None else port.learning,
+                flood=None if port is None else port.flood,
+                multicast_flood=None if port is None else port.multicast_flood,
                 bridge_vlans=expected_bridge_port_vlans(node, device.name),
                 geneve_vni=device.vni,
                 geneve_link=device.link,
@@ -590,15 +606,31 @@ class FakeNetworkBackend:
                     addresses=node.interfaces.get(endpoint.interface, ()),
                     path_cost=None if port is None else port.path_cost,
                     port_priority=None if port is None else port.priority,
+                    hairpin=None if port is None else port.hairpin,
+                    isolated=None if port is None else port.isolated,
+                    learning=None if port is None else port.learning,
+                    flood=None if port is None else port.flood,
+                    multicast_flood=None if port is None else port.multicast_flood,
                     bridge_vlans=expected_bridge_port_vlans(node, endpoint.interface),
                     netem=link.netem,
                     qdisc=link.qdisc,
                 )
 
+        for interface_name, mac in node.mac_addresses.items():
+            interface = interfaces.get(interface_name)
+            if interface is None:
+                raise _resource_error(
+                    "RESOURCE_MISSING",
+                    "configure_node",
+                    f"{resource}:{interface_name}",
+                )
+            interfaces[interface_name] = replace(interface, mac=mac)
+
         state.interfaces = interfaces
         state.routes = expected_routes(node)
         state.sysctls = dict(node.sysctls)
         state.rules = node.rules
+        state.neighbors = node.neighbors
 
     def start_routing(self, plan: TopologyPlan) -> None:
         if not any(node.routing is not None for node in plan.nodes.values()):
@@ -632,6 +664,7 @@ class FakeNetworkBackend:
                     routes=(),
                     sysctls={},
                     rules=(),
+                    neighbors=(),
                 )
             else:
                 namespace_inventory = NamespaceInventory(
@@ -643,6 +676,7 @@ class FakeNetworkBackend:
                     routes=tuple(state.routes),
                     sysctls=dict(state.sysctls),
                     rules=tuple(state.rules),
+                    neighbors=tuple(state.neighbors),
                 )
             namespaces[node.namespace] = namespace_inventory
         return LiveInventory(

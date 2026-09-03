@@ -31,6 +31,7 @@ from nslab.tc import normalize_rate, parse_size
 
 NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 IFNAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
+MAC_PATTERN = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 KERNEL_TUNNEL_FALLBACK_NAMES = frozenset({"gre0", "gretap0", "erspan0", "tunl0"})
 ALLOWED_SYSCTLS = frozenset(
     {
@@ -60,10 +61,21 @@ def _require_interface_name(value: str, label: str) -> str:
     return name
 
 
+def _normalize_mac_address(value: object, label: str) -> str:
+    if not isinstance(value, str) or MAC_PATTERN.fullmatch(value) is None:
+        raise ValueError(f"invalid {label}: {value!r}")
+    normalized = value.lower()
+    first_octet = int(normalized[:2], 16)
+    if first_octet & 1 or normalized == "00:00:00:00:00:00":
+        raise ValueError(f"{label} must be a unicast address: {value!r}")
+    return normalized
+
+
 class InterfaceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     addresses: tuple[IPv4Interface | IPv6Interface, ...] = ()
+    mac: str | None = None
 
     @field_validator("addresses", mode="before")
     @classmethod
@@ -86,6 +98,13 @@ class InterfaceConfig(BaseModel):
                 raise ValueError(f"duplicate interface address: {str(address)!r}")
             seen_addresses.add(address)
         return addresses
+
+    @field_validator("mac", mode="before")
+    @classmethod
+    def validate_mac(cls, value: object) -> object:
+        if value is None:
+            return None
+        return _normalize_mac_address(value, "interface MAC address")
 
 
 VlanDeviceId = Annotated[StrictInt, Field(ge=1, le=4094)]
@@ -552,6 +571,54 @@ class RouteConfig(BaseModel):
         return self
 
 
+NeighborState = Literal["permanent", "reachable", "stale", "noarp"]
+
+
+class NeighborConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    dst: IPv4Address | IPv6Address
+    dev: str
+    lladdr: str | None = None
+    state: NeighborState | None = None
+    proxy: StrictBool = False
+
+    @field_validator("dst", mode="before")
+    @classmethod
+    def validate_destination_input(cls, value: object) -> object:
+        if not isinstance(value, (str, IPv4Address, IPv6Address)):
+            raise ValueError("neighbor destination must be an IPv4 or IPv6 string")
+        return value
+
+    @field_validator("dst")
+    @classmethod
+    def validate_destination(cls, value: IPAddress) -> IPAddress:
+        if value.is_unspecified or value.is_multicast:
+            raise ValueError(f"neighbor destination must be unicast: {str(value)!r}")
+        return value
+
+    @field_validator("dev")
+    @classmethod
+    def validate_device_name(cls, value: str) -> str:
+        return _require_interface_name(value, "neighbor interface name")
+
+    @field_validator("lladdr", mode="before")
+    @classmethod
+    def validate_link_layer_address(cls, value: object) -> object:
+        if value is None:
+            return None
+        return _normalize_mac_address(value, "neighbor link-layer address")
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> Self:
+        if self.proxy:
+            if self.lladdr is not None or self.state is not None:
+                raise ValueError("proxy neighbor cannot declare lladdr or state")
+        elif self.lladdr is None:
+            raise ValueError("non-proxy neighbor requires lladdr")
+        return self
+
+
 def _route_devices(route: RouteConfig) -> tuple[str, ...]:
     if route.nexthops:
         return tuple(nexthop.dev for nexthop in route.nexthops)
@@ -844,6 +911,7 @@ class _NodeBase(BaseModel):
 
     interfaces: dict[str, InterfaceConfig] = Field(default_factory=dict)
     routes: tuple[RouteConfig, ...] = ()
+    neighbors: tuple[NeighborConfig, ...] = ()
     sysctls: dict[str, SysctlValue] = Field(default_factory=dict)
     routing: RoutingConfig | None = None
 
@@ -855,6 +923,21 @@ class _NodeBase(BaseModel):
         for interface_name in interfaces:
             _require_interface_name(interface_name, "interface name")
         return interfaces
+
+    @field_validator("neighbors", mode="before")
+    @classmethod
+    def validate_neighbor_inputs(cls, value: object) -> object:
+        return _validate_sequence(value, "neighbors")
+
+    @field_validator("neighbors")
+    @classmethod
+    def validate_unique_neighbors(
+        cls, neighbors: tuple[NeighborConfig, ...]
+    ) -> tuple[NeighborConfig, ...]:
+        identities = tuple((neighbor.dst, neighbor.dev) for neighbor in neighbors)
+        if len(set(identities)) != len(identities):
+            raise ValueError("neighbor destination and interface pairs must be unique")
+        return neighbors
 
     @field_validator("sysctls", mode="before")
     @classmethod
@@ -989,6 +1072,12 @@ class LinuxNode(_NodeBase):
             for name, device in self.devices.items()
             if isinstance(device, VxlanDeviceConfig)
         }
+
+        for name, device in self.devices.items():
+            if isinstance(device, (GreDeviceConfig, IpipDeviceConfig, IpvlanDeviceConfig)) and (
+                device.mac is not None
+            ):
+                raise ValueError(f"device type does not support a MAC address: {name!r}")
 
         bond_by_member: dict[str, str] = {}
         for name, bond in bond_devices.items():
@@ -1176,6 +1265,11 @@ class BridgePortConfig(BaseModel):
 
     path_cost: BridgePathCost | None = None
     priority: BridgePortPriority | None = None
+    hairpin: StrictBool | None = None
+    isolated: StrictBool | None = None
+    learning: StrictBool | None = None
+    flood: StrictBool | None = None
+    multicast_flood: StrictBool | None = None
     vlans: tuple[BridgeVlanConfig, ...] = ()
 
     @field_validator("vlans")
@@ -1194,8 +1288,17 @@ class BridgePortConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_nonempty_settings(self) -> Self:
-        if self.path_cost is None and self.priority is None and not self.vlans:
-            raise ValueError("bridge port settings must declare STP or VLAN settings")
+        settings = (
+            self.path_cost,
+            self.priority,
+            self.hairpin,
+            self.isolated,
+            self.learning,
+            self.flood,
+            self.multicast_flood,
+        )
+        if all(value is None for value in settings) and not self.vlans:
+            raise ValueError("bridge port settings must declare at least one setting")
         return self
 
 
@@ -1689,6 +1792,11 @@ class Topology(BaseModel):
                         raise ValueError(
                             f"route device is not linked on node {node_name!r}: {route_device!r}"
                         )
+            for neighbor in node.neighbors:
+                if neighbor.dev not in available:
+                    raise ValueError(
+                        f"neighbor device is not linked on node {node_name!r}: {neighbor.dev!r}"
+                    )
 
             routing = node.routing
             if routing is None:
@@ -1749,10 +1857,10 @@ class Topology(BaseModel):
                     for address in interface.addresses
                     if address.version == 4
                 )
-                for neighbor in routing.bgp.neighbors:
-                    if not any(neighbor.address in network for network in interface_networks):
+                for bgp_neighbor in routing.bgp.neighbors:
+                    if not any(bgp_neighbor.address in network for network in interface_networks):
                         raise ValueError(
-                            f"BGP neighbor {neighbor.address} is not directly connected on "
+                            f"BGP neighbor {bgp_neighbor.address} is not directly connected on "
                             f"node {node_name!r}"
                         )
 
@@ -1834,6 +1942,18 @@ def normalized_manifest(manifest: Manifest) -> dict[str, object]:
                 assert isinstance(route_document, dict)
                 if not route.nexthops:
                     route_document.pop("nexthops", None)
+        neighbors_document = node_document.get("neighbors")
+        if isinstance(neighbors_document, list):
+            for neighbor, neighbor_document in zip(
+                node.neighbors,
+                neighbors_document,
+                strict=True,
+            ):
+                assert isinstance(neighbor_document, dict)
+                if not neighbor.proxy:
+                    neighbor_document.pop("proxy", None)
+        if not node.neighbors:
+            node_document.pop("neighbors", None)
         if isinstance(node, (LinuxNode, BridgeNode)) and not node.devices:
             node_document.pop("devices", None)
         if isinstance(node, LinuxNode):

@@ -1,0 +1,77 @@
+version: 1
+name: neighbors
+
+topology:
+  nodes:
+    h1:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [192.0.2.1/24, 2001:db8:1::1/64]
+          mac: 02:00:00:00:01:01
+
+    r1:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [192.0.2.254/24, 2001:db8:1::fe/64]
+          mac: 02:00:00:00:01:fe
+        eth1:
+          addresses: [198.51.100.1/24, 2001:db8:2::1/64]
+          mac: 02:00:00:00:02:01
+      routes:
+        - dst: 192.0.2.200/32
+          via: 198.51.100.2
+          dev: eth1
+        - dst: 2001:db8:1::200/128
+          via: 2001:db8:2::2
+          dev: eth1
+      neighbors:
+        - dst: 192.0.2.200
+          dev: eth0
+          proxy: true
+        - dst: 2001:db8:1::200
+          dev: eth0
+          proxy: true
+        - dst: 198.51.100.2
+          dev: eth1
+          lladdr: 02:00:00:00:02:02
+          state: permanent
+        - dst: 2001:db8:2::2
+          dev: eth1
+          lladdr: 02:00:00:00:02:02
+          state: reachable
+      sysctls:
+        net.ipv4.ip_forward: 1
+        net.ipv6.conf.all.forwarding: 1
+
+    h2:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [198.51.100.2/24, 2001:db8:2::2/64]
+          mac: 02:00:00:00:02:02
+      devices:
+        service0:
+          type: dummy
+          addresses: [192.0.2.200/32, 2001:db8:1::200/128]
+      routes:
+        - dst: 192.0.2.0/24
+          via: 198.51.100.1
+          dev: eth0
+        - dst: 2001:db8:1::/64
+          via: 2001:db8:2::1
+          dev: eth0
+      neighbors:
+        - dst: 198.51.100.1
+          dev: eth0
+          lladdr: 02:00:00:00:02:01
+          state: stale
+        - dst: 2001:db8:2::1
+          dev: eth0
+          lladdr: 02:00:00:00:02:01
+          state: noarp
+
+  links:
+    - endpoints: [h1:eth0, r1:eth0]
+    - endpoints: [r1:eth1, h2:eth0]

@@ -11,6 +11,7 @@ from nslab.backend.base import (
     expected_bridge_port_vlans,
     expected_routes,
     inventory_matches_plan,
+    neighbors_match,
     recorded_link_ids_match_inventory,
 )
 from nslab.errors import NslabError
@@ -26,6 +27,7 @@ from nslab.planner import (
     IpvlanDevicePlan,
     LinkPlan,
     MacvlanDevicePlan,
+    NeighborPlan,
     NetemPlan,
     NodeKind,
     NodePlan,
@@ -72,11 +74,17 @@ class InterfaceView:
     mtu: int | None
     up: bool
     addresses: tuple[str, ...] = ()
+    mac: str | None = None
     stp: bool | None = None
     vlan_filtering: bool | None = None
     bridge_priority: int | None = None
     path_cost: int | None = None
     port_priority: int | None = None
+    hairpin: bool | None = None
+    isolated: bool | None = None
+    learning: bool | None = None
+    flood: bool | None = None
+    multicast_flood: bool | None = None
     bridge_vlans: tuple[str, ...] = ()
     netem: str | None = None
     qdisc: str | None = None
@@ -125,11 +133,17 @@ class InterfaceView:
             "mtu": self.mtu,
             "up": self.up,
             "addresses": list(self.addresses),
+            "mac": self.mac,
             "stp": self.stp,
             "vlan_filtering": self.vlan_filtering,
             "bridge_priority": self.bridge_priority,
             "path_cost": self.path_cost,
             "port_priority": self.port_priority,
+            "hairpin": self.hairpin,
+            "isolated": self.isolated,
+            "learning": self.learning,
+            "flood": self.flood,
+            "multicast_flood": self.multicast_flood,
             "bridge_vlans": list(self.bridge_vlans),
             "netem": self.netem,
             "qdisc": self.qdisc,
@@ -176,6 +190,24 @@ class RouteNextHopView:
 
     def to_dict(self) -> dict[str, object]:
         return {"via": self.via, "dev": self.dev, "weight": self.weight}
+
+
+@dataclass(frozen=True, slots=True)
+class NeighborView:
+    dst: str
+    dev: str
+    lladdr: str | None
+    state: str | None
+    proxy: bool
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "dst": self.dst,
+            "dev": self.dev,
+            "lladdr": self.lladdr,
+            "state": self.state,
+            "proxy": self.proxy,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -345,6 +377,7 @@ class NodeResourceView:
     interfaces: tuple[InterfaceView, ...]
     routes: tuple[RouteView, ...]
     rules: tuple[PolicyRuleView, ...]
+    neighbors: tuple[NeighborView, ...]
     sysctls: tuple[SysctlView, ...]
     links: tuple[LinkView, ...]
     root_temporaries: tuple[RootTemporaryView, ...]
@@ -353,6 +386,7 @@ class NodeResourceView:
         object.__setattr__(self, "interfaces", tuple(self.interfaces))
         object.__setattr__(self, "routes", tuple(self.routes))
         object.__setattr__(self, "rules", tuple(self.rules))
+        object.__setattr__(self, "neighbors", tuple(self.neighbors))
         object.__setattr__(self, "sysctls", tuple(self.sysctls))
         object.__setattr__(self, "links", tuple(self.links))
         object.__setattr__(self, "root_temporaries", tuple(self.root_temporaries))
@@ -366,6 +400,7 @@ class NodeResourceView:
             "interfaces": [interface.to_dict() for interface in self.interfaces],
             "routes": [route.to_dict() for route in self.routes],
             "rules": [rule.to_dict() for rule in self.rules],
+            "neighbors": [neighbor.to_dict() for neighbor in self.neighbors],
             "sysctls": [sysctl.to_dict() for sysctl in self.sysctls],
             "links": [link.to_dict() for link in self.links],
             "root_temporaries": [item.to_dict() for item in self.root_temporaries],
@@ -554,6 +589,53 @@ def _ordered_actual_routes(
     return tuple(ordered)
 
 
+def _neighbor_key(neighbor: NeighborPlan) -> tuple[int, int, str]:
+    return neighbor.dst.version, int(neighbor.dst), neighbor.dev
+
+
+def _neighbor_view(neighbor: NeighborPlan) -> NeighborView:
+    return NeighborView(
+        dst=str(neighbor.dst),
+        dev=neighbor.dev,
+        lladdr=neighbor.lladdr,
+        state=neighbor.state,
+        proxy=neighbor.proxy,
+    )
+
+
+def _neighbor_string(neighbor: NeighborPlan) -> str:
+    if neighbor.proxy:
+        return f"{neighbor.dst}@{neighbor.dev}|proxy"
+    return f"{neighbor.dst}@{neighbor.dev}|{neighbor.lladdr}|{neighbor.state}"
+
+
+def _neighbor_strings(neighbors: Sequence[NeighborPlan]) -> tuple[str, ...]:
+    return tuple(_neighbor_string(neighbor) for neighbor in sorted(neighbors, key=_neighbor_key))
+
+
+def _ordered_actual_neighbors(
+    desired: Sequence[NeighborPlan],
+    actual: Sequence[NeighborPlan],
+) -> tuple[NeighborPlan, ...]:
+    actual_by_identity = {(neighbor.dst, neighbor.dev): neighbor for neighbor in actual}
+    ordered = [
+        actual_by_identity[(neighbor.dst, neighbor.dev)]
+        for neighbor in desired
+        if (neighbor.dst, neighbor.dev) in actual_by_identity
+    ]
+    ordered.extend(
+        sorted(
+            (
+                neighbor
+                for neighbor in actual
+                if (neighbor.dst, neighbor.dev) not in {(item.dst, item.dev) for item in ordered}
+            ),
+            key=_neighbor_key,
+        )
+    )
+    return tuple(ordered)
+
+
 def _rule_key(rule: PolicyRulePlan) -> tuple[int, int, str]:
     return rule.family, rule.priority, _rule_string(rule)
 
@@ -645,6 +727,11 @@ def _desired_interfaces(node: NodePlan, plan: TopologyPlan) -> tuple[InterfaceVi
                     addresses=_address_strings(node.interfaces.get(endpoint.interface, ())),
                     path_cost=None if port is None else port.path_cost,
                     port_priority=None if port is None else port.priority,
+                    hairpin=None if port is None else port.hairpin,
+                    isolated=None if port is None else port.isolated,
+                    learning=None if port is None else port.learning,
+                    flood=None if port is None else port.flood,
+                    multicast_flood=None if port is None else port.multicast_flood,
                     bridge_vlans=_bridge_vlan_strings(
                         expected_bridge_port_vlans(node, endpoint.interface)
                     ),
@@ -748,6 +835,11 @@ def _desired_interfaces(node: NodePlan, plan: TopologyPlan) -> tuple[InterfaceVi
                     addresses=_address_strings(device.addresses),
                     path_cost=None if port is None else port.path_cost,
                     port_priority=None if port is None else port.priority,
+                    hairpin=None if port is None else port.hairpin,
+                    isolated=None if port is None else port.isolated,
+                    learning=None if port is None else port.learning,
+                    flood=None if port is None else port.flood,
+                    multicast_flood=None if port is None else port.multicast_flood,
                     bridge_vlans=_bridge_vlan_strings(
                         expected_bridge_port_vlans(node, device.name)
                     ),
@@ -796,6 +888,11 @@ def _desired_interfaces(node: NodePlan, plan: TopologyPlan) -> tuple[InterfaceVi
                     addresses=_address_strings(device.addresses),
                     path_cost=None if port is None else port.path_cost,
                     port_priority=None if port is None else port.priority,
+                    hairpin=None if port is None else port.hairpin,
+                    isolated=None if port is None else port.isolated,
+                    learning=None if port is None else port.learning,
+                    flood=None if port is None else port.flood,
+                    multicast_flood=None if port is None else port.multicast_flood,
                     bridge_vlans=_bridge_vlan_strings(
                         expected_bridge_port_vlans(node, device.name)
                     ),
@@ -807,7 +904,9 @@ def _desired_interfaces(node: NodePlan, plan: TopologyPlan) -> tuple[InterfaceVi
                     vxlan_learning=device.learning,
                 )
             )
-    return tuple(interfaces)
+    return tuple(
+        replace(interface, mac=node.mac_addresses.get(interface.name)) for interface in interfaces
+    )
 
 
 def _interface_view(interface: InterfaceInventory) -> InterfaceView:
@@ -818,11 +917,17 @@ def _interface_view(interface: InterfaceInventory) -> InterfaceView:
         mtu=interface.mtu,
         up=interface.up,
         addresses=_address_strings(interface.addresses),
+        mac=interface.mac,
         stp=interface.stp,
         vlan_filtering=interface.vlan_filtering,
         bridge_priority=interface.bridge_priority,
         path_cost=interface.path_cost,
         port_priority=interface.port_priority,
+        hairpin=interface.hairpin,
+        isolated=interface.isolated,
+        learning=interface.learning,
+        flood=interface.flood,
+        multicast_flood=interface.multicast_flood,
         bridge_vlans=_bridge_vlan_strings(interface.bridge_vlans),
         netem=_netem_string(interface.netem),
         qdisc=_qdisc_string(interface.qdisc),
@@ -1015,6 +1120,7 @@ def _desired_node_view(node: NodePlan, plan: TopologyPlan) -> NodeResourceView:
         interfaces=_desired_interfaces(node, plan),
         routes=tuple(_route_view(route) for route in expected_routes(node)),
         rules=tuple(_rule_view(rule) for rule in node.rules),
+        neighbors=tuple(_neighbor_view(neighbor) for neighbor in node.neighbors),
         sysctls=tuple(
             SysctlView(name=name, value=value) for name, value in sorted(node.sysctls.items())
         ),
@@ -1051,6 +1157,7 @@ def _state_node_view(
         interfaces=tuple(state_interfaces),
         routes=tuple(_route_view(route) for route in expected_routes(node)),
         rules=tuple(_rule_view(rule) for rule in node.rules),
+        neighbors=tuple(_neighbor_view(neighbor) for neighbor in node.neighbors),
         sysctls=tuple(
             SysctlView(name=name, value=value) for name, value in sorted(node.sysctls.items())
         ),
@@ -1132,6 +1239,7 @@ def _actual_node_view(
     actual_interfaces: list[InterfaceView] = []
     actual_routes: tuple[RoutePlan, ...] = ()
     actual_rules: tuple[PolicyRulePlan, ...] = ()
+    actual_neighbors: tuple[NeighborPlan, ...] = ()
     actual_sysctls: Mapping[str, int] = {}
     if observed_namespace is not None:
         expected_names = {interface.name for interface in expected_interfaces}
@@ -1148,6 +1256,10 @@ def _actual_node_view(
             observed_namespace.routes,
         )
         actual_rules = _ordered_actual_rules(node.rules, observed_namespace.rules)
+        actual_neighbors = _ordered_actual_neighbors(
+            node.neighbors,
+            observed_namespace.neighbors,
+        )
         actual_sysctls = observed_namespace.sysctls
 
     planned_links = tuple(
@@ -1162,6 +1274,7 @@ def _actual_node_view(
         interfaces=tuple(actual_interfaces),
         routes=tuple(_route_view(route) for route in actual_routes),
         rules=tuple(_rule_view(rule) for rule in actual_rules),
+        neighbors=tuple(_neighbor_view(neighbor) for neighbor in actual_neighbors),
         sysctls=tuple(
             SysctlView(name=name, value=actual_sysctls.get(name)) for name in sorted(node.sysctls)
         ),
@@ -1225,6 +1338,8 @@ def _compare_interface(
         compare("mtu", desired.mtu, actual.mtu)
     compare("up", desired.up, actual.up)
     compare("addresses", desired.addresses, _address_strings(actual.addresses))
+    if desired.mac is not None:
+        compare("mac", desired.mac, actual.mac)
     compare("stp", desired.stp, actual.stp)
     compare("vlan_filtering", desired.vlan_filtering, actual.vlan_filtering)
     if desired.bridge_priority is not None:
@@ -1233,6 +1348,16 @@ def _compare_interface(
         compare("path_cost", desired.path_cost, actual.path_cost)
     if desired.port_priority is not None:
         compare("port_priority", desired.port_priority, actual.port_priority)
+    if desired.hairpin is not None:
+        compare("hairpin", desired.hairpin, actual.hairpin)
+    if desired.isolated is not None:
+        compare("isolated", desired.isolated, actual.isolated)
+    if desired.learning is not None:
+        compare("learning", desired.learning, actual.learning)
+    if desired.flood is not None:
+        compare("flood", desired.flood, actual.flood)
+    if desired.multicast_flood is not None:
+        compare("multicast_flood", desired.multicast_flood, actual.multicast_flood)
     compare("bridge_vlans", desired.bridge_vlans, _bridge_vlan_strings(actual.bridge_vlans))
     compare("netem", desired.netem, _netem_string(actual.netem))
     compare("qdisc", desired.qdisc, _qdisc_string(actual.qdisc))
@@ -1456,6 +1581,18 @@ def _live_differences(
                 )
             )
             impacted_nodes.add(node.name)
+        if not neighbors_match(node.neighbors, observed.neighbors):
+            differences.append(
+                _difference(
+                    scope="node",
+                    source="live",
+                    node=node.name,
+                    property="neighbors",
+                    desired=_neighbor_strings(node.neighbors),
+                    actual=_neighbor_strings(observed.neighbors),
+                )
+            )
+            impacted_nodes.add(node.name)
         for name, value in node.sysctls.items():
             actual_sysctl = observed.sysctls.get(name)
             if actual_sysctl != value:
@@ -1630,6 +1767,7 @@ def _inventory_is_absent(plan: TopologyPlan, inventory: LiveInventory) -> bool:
             or observed.interfaces
             or observed.routes
             or observed.rules
+            or observed.neighbors
             or observed.sysctls
         ):
             return False

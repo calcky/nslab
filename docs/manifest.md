@@ -10,11 +10,11 @@ topology
 ├─ nodes
 │  └─ <node-name>
 │     ├─ kind: linux
-│     │  ├─ interfaces / devices / routes → nexthops / rules / sysctls
+│     │  ├─ interfaces / devices / routes → nexthops / neighbors / rules / sysctls
 │     │  ├─ devices → <device-name> → type: vlan | vrf | bond | gre | ipip | vxlan | dummy | geneve | macvlan | ipvlan
 │     │  └─ routing
 │     └─ kind: bridge
-│        ├─ interfaces / devices / routes / sysctls
+│        ├─ interfaces / devices / routes / neighbors / sysctls
 │        ├─ devices → <device-name> → type: vxlan | geneve
 │        └─ bridge → ports → vlans
 └─ links
@@ -62,6 +62,7 @@ and `bridge`.
 | `kind` | Yes | None | Discriminator: `linux` or `bridge` |
 | `interfaces` | No | `{}` | Mapping from interface name to interface configuration |
 | `routes` | No | `[]` | Static IPv4/IPv6 routes |
+| `neighbors` | No | `[]` | Static IPv4 ARP, IPv6 NDP, and proxy neighbor entries |
 | `sysctls` | No | `{}` | Network sysctls that nslab permits |
 | `routing` | No | `null` | OSPF/BGP configuration, allowed only on `linux` nodes |
 
@@ -75,8 +76,10 @@ belong under `devices`, not `interfaces`.
 | Field | Required | Default | Description |
 | --- | --- | --- | --- |
 | `addresses` | No | `[]` | Unique IPv4/IPv6 CIDR addresses, such as `10.0.0.1/24` or `2001:db8::1/64` |
+| `mac` | No | Automatic | Fixed unicast MAC in colon-delimited form, such as `02:00:00:00:00:01` |
 
-An interface may contain multiple addresses or no address. Duplicate addresses are rejected.
+An interface may contain multiple addresses or no address. Duplicate addresses are rejected. MAC
+addresses are normalized to lowercase; multicast, broadcast, and all-zero addresses are rejected.
 
 ##### `routes[]`
 
@@ -119,6 +122,42 @@ At least two unique `via + dev` combinations are required. When `table` is omitt
 interfaces must resolve to the same routing table; this permits ECMP inside one VRF but rejects a
 route that accidentally spans routing domains. Equal weights provide ECMP. Unequal values provide
 weighted multipath distribution, which is statistical across flows rather than packet-by-packet.
+
+##### `neighbors[]`
+
+`neighbors` declares entries in the IPv4 ARP or IPv6 NDP table. A regular entry maps an IP address
+to a fixed link-layer address; a proxy entry makes Linux answer address resolution for an address
+that is reached through another interface.
+
+```yaml
+neighbors:
+  - dst: 192.0.2.2
+    dev: eth0
+    lladdr: 02:00:00:00:00:02
+    state: permanent
+  - dst: 2001:db8:1::200
+    dev: eth0
+    proxy: true
+```
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `dst` | Yes | None | Unicast IPv4 or IPv6 neighbor address |
+| `dev` | Yes | None | Linked interface, bridge interface, or declared device containing the entry |
+| `lladdr` | Regular only | None | Unicast neighbor MAC in colon-delimited form |
+| `state` | No | `permanent` | Regular-entry NUD state: `permanent`, `reachable`, `stale`, or `noarp` |
+| `proxy` | No | `false` | Install a proxy entry instead of a regular IP-to-MAC mapping |
+
+Each `dst + dev` pair must be unique. A regular entry requires `lladdr`; a proxy entry forbids both
+`lladdr` and `state`. Declaring an IPv4 proxy automatically enables
+`net.ipv4.conf.<dev>.proxy_arp`; an IPv6 proxy similarly enables
+`net.ipv6.conf.<dev>.proxy_ndp`.
+
+`permanent` does not age. `reachable` is confirmed reachable, while `stale` retains the MAC and
+asks NUD to confirm it when used. `noarp` suppresses neighbor probing. Normal traffic may move a
+declared `reachable` or `stale` entry among `reachable`, `stale`, `delay`, and `probe`; inventory
+and drift checks treat those healthy transitions as matching. Dynamically learned entries not
+declared in the manifest are ignored.
 
 ##### `sysctls`
 
@@ -213,6 +252,11 @@ into place. Device names follow the interface-name rules, cannot be `lo`, and ca
 a linked endpoint or an `interfaces` key. `type` is required and selects `vlan`, `vrf`, `bond`,
 `gre`, `ipip`, `vxlan`, `dummy`, `geneve`, `macvlan`, or `ipvlan`.
 
+The common `addresses` field is available on every device except VRF. The common `mac` field is
+available on Ethernet-like `vlan`, `bond`, `vxlan`, `dummy`, `geneve`, and `macvlan` devices. GRE,
+IPIP, and ipvlan devices reject `mac` because their kernel link types do not expose an independent
+configurable Ethernet address.
+
 ###### `type: vlan`
 
 An 802.1Q VLAN subinterface may be used by `routes[].dev` and
@@ -224,6 +268,7 @@ An 802.1Q VLAN subinterface may be used by `routes[].dev` and
 | `devices.<name>.link` | Yes | None | Lower interface; must be a linked interface on the same node |
 | `devices.<name>.id` | Yes | None | VLAN ID in `1..4094`, unique on the lower interface |
 | `devices.<name>.addresses` | No | `[]` | Unique IPv4/IPv6 CIDR addresses assigned to the VLAN device |
+| `devices.<name>.mac` | No | Automatic | Fixed unicast MAC address |
 
 Only one level is supported: a VLAN device cannot use another declared device as its lower
 interface. Its MTU follows the lower interface. Connected routes, BGP directly connected
@@ -242,6 +287,7 @@ may own addresses and routes directly:
 | `devices.<name>.local` | Yes | None | Unicast IPv4/IPv6 source address configured on `link` |
 | `devices.<name>.remote` | Yes | None | Static unicast VTEP address in the same family as `local` |
 | `devices.<name>.addresses` | No | `[]` | IPv4/IPv6 addresses assigned to the VXLAN interface |
+| `devices.<name>.mac` | No | Automatic | Fixed unicast MAC address |
 | `devices.<name>.dst_port` | No | `4789` | UDP destination port in `1..65535` |
 | `devices.<name>.learning` | No | `true` | Enable source-MAC learning |
 | `devices.<name>.mtu` | No | Automatic | MTU bounded by underlay MTU minus encapsulation overhead |
@@ -260,6 +306,7 @@ stable address or route target:
 | --- | --- | --- | --- |
 | `devices.<name>.type` | Yes | None | Must be `dummy` |
 | `devices.<name>.addresses` | No | `[]` | IPv4/IPv6 addresses assigned to the dummy device |
+| `devices.<name>.mac` | No | Automatic | Fixed unicast MAC address |
 | `devices.<name>.mtu` | No | `1500` | MTU in `576..9216` |
 
 ###### `type: geneve`
@@ -276,6 +323,7 @@ source address is selected by the route to `remote`; unlike VXLAN, the manifest 
 | `devices.<name>.remote` | Yes | None | Static unicast IPv4/IPv6 remote VTEP address |
 | `devices.<name>.dst_port` | No | `6081` | UDP destination port in `1..65535` |
 | `devices.<name>.addresses` | No | `[]` | IPv4/IPv6 addresses assigned to the Geneve device |
+| `devices.<name>.mac` | No | Automatic | Fixed unicast MAC address |
 | `devices.<name>.mtu` | No | Automatic | MTU in `576..9216`, bounded by underlay MTU minus encapsulation overhead |
 
 The underlay `link` must be a linked interface. IPv4 Geneve subtracts 50 bytes from the underlay
@@ -331,6 +379,7 @@ A macvlan device gives a linked parent interface an additional virtual interface
 | `devices.<name>.link` | Yes | None | Linked parent interface on the same node |
 | `devices.<name>.mode` | No | `bridge` | `private`, `vepa`, `bridge`, `passthru`, or `source` |
 | `devices.<name>.addresses` | No | `[]` | IPv4/IPv6 addresses assigned to the macvlan device |
+| `devices.<name>.mac` | No | Automatic | Fixed unicast MAC address |
 | `devices.<name>.mtu` | No | Parent MTU | MTU in `576..9216` |
 
 The parent must be a linked interface, not another declared device. `bridge` mode permits sibling
@@ -364,6 +413,7 @@ same MTU, and one linked interface cannot belong to multiple bonds.
 | `devices.<name>.mode` | Yes | None | `active-backup` or `802.3ad` |
 | `devices.<name>.interfaces` | Yes | None | At least two unique linked member interfaces |
 | `devices.<name>.addresses` | No | `[]` | Unique IPv4/IPv6 CIDR addresses assigned to the bond |
+| `devices.<name>.mac` | No | Automatic | Fixed unicast MAC address for the bond |
 | `devices.<name>.miimon_ms` | No | `100` | MII carrier polling interval in `0..60000` ms; zero disables polling |
 | `devices.<name>.primary` | No | `null` | Preferred member; valid only for `active-backup` and must name a member |
 | `devices.<name>.lacp_rate` | No | `slow` | `slow` or `fast`; valid only for `802.3ad` |
@@ -474,6 +524,7 @@ Its lower `link` must be a linked interface with the exact `local` address confi
 | `link` | Yes | None | Linked underlay interface on the same bridge node |
 | `local` | Yes | None | Unicast IPv4/IPv6 source address configured on `link` |
 | `remote` | Yes | None | Static unicast remote VTEP address in the same family as `local` |
+| `mac` | No | Automatic | Fixed unicast MAC address |
 | `dst_port` | No | `4789` | UDP destination port in `1..65535` |
 | `learning` | No | `true` | Enable source-MAC learning on the VXLAN interface |
 | `mtu` | No | Automatic | VXLAN MTU in `576..9216`, bounded by underlay MTU minus encapsulation overhead |
@@ -496,6 +547,7 @@ field. The underlay interface remains outside the bridge:
 | `vni` | Yes | None | Geneve Network Identifier in `1..16777215`, unique on the node |
 | `link` | Yes | None | Linked underlay interface on the same bridge node |
 | `remote` | Yes | None | Static unicast IPv4/IPv6 remote VTEP address |
+| `mac` | No | Automatic | Fixed unicast MAC address |
 | `dst_port` | No | `6081` | UDP destination port in `1..65535` |
 | `mtu` | No | Automatic | Geneve MTU in `576..9216`, bounded by underlay MTU minus encapsulation overhead |
 
@@ -523,10 +575,16 @@ itself, use the same `bridge.name` under the node's `interfaces` mapping.
 | --- | --- | --- | --- |
 | `path_cost` | No | `null` | STP path cost in `1..65535`; requires `stp: true` |
 | `priority` | No | `null` | Linux STP port priority in `0..63`; requires `stp: true` |
+| `hairpin` | No | `null` | Allow frames received on this port to be sent back through the same port |
+| `isolated` | No | `null` | Prevent forwarding between this port and other isolated bridge ports |
+| `learning` | No | `null` | Enable or disable source-MAC learning on this port |
+| `flood` | No | `null` | Enable or disable unknown-unicast flooding toward this port |
+| `multicast_flood` | No | `null` | Enable or disable unregistered-multicast flooding toward this port |
 | `vlans` | No | `[]` | Port VLAN entries; requires `vlan_filtering: true` |
 
-A port configuration must contain at least one STP or VLAN setting, and the port must be a linked
-access interface or declared VXLAN/Geneve device.
+A port configuration must contain at least one STP, forwarding, or VLAN setting, and the port must
+be a linked access interface or declared VXLAN/Geneve device. A `null` forwarding control leaves
+the kernel default unmanaged; an explicit `true` or `false` is configured and checked for drift.
 
 Each `vlans[]` item contains:
 

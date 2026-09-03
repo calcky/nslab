@@ -19,6 +19,7 @@ sudo nslab destroy
 | Example | Focus |
 | --- | --- |
 | [Bridge FDB](bridge-fdb.md) | Linux bridge forwarding, MAC learning, and counters |
+| [Bridge port controls](bridge-port-controls.md) | Port isolation, hairpin, learning, and flood controls |
 | [Bridge VLAN](bridge-vlan.md) | Access VLANs, PVID, untagged access, and tagged trunks |
 | [VLAN](vlan.md) | 802.1Q subinterfaces and router-on-a-stick forwarding |
 | [Bridge STP](bridge-stp.md) | Root election, port selection, and failure reconvergence |
@@ -51,6 +52,7 @@ sudo nslab destroy
 | --- | --- |
 | [IPv4 forwarding](ipv4-forward.md) | IPv4 static routes and the Linux forwarding path |
 | [IPv6 forwarding](ipv6-forward.md) | IPv6 default routes, DAD, and the Linux forwarding path |
+| [Neighbor tables](neighbors.md) | Fixed MAC addresses, static ARP/NDP, and proxying |
 | [ECMP](ecmp.md) | Static equal-cost next hops, weights, and per-flow hashing |
 
 ## Routing isolation

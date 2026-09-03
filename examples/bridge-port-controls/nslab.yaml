@@ -1,0 +1,46 @@
+version: 1
+name: bridge-port-controls
+
+topology:
+  nodes:
+    h1:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.20.0.1/24]
+          mac: 02:00:00:00:20:01
+
+    sw1:
+      kind: bridge
+      bridge:
+        name: br0
+        stp: false
+        vlan_filtering: false
+        ports:
+          swp1:
+            hairpin: true
+            isolated: true
+          swp2:
+            isolated: true
+            learning: false
+            flood: false
+            multicast_flood: false
+
+    h2:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.20.0.2/24]
+          mac: 02:00:00:00:20:02
+
+    h3:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.20.0.3/24]
+          mac: 02:00:00:00:20:03
+
+  links:
+    - endpoints: [h1:eth0, sw1:swp1]
+    - endpoints: [h2:eth0, sw1:swp2]
+    - endpoints: [h3:eth0, sw1:swp3]

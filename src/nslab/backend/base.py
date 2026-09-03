@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from ipaddress import IPv4Interface, IPv4Network
 from types import MappingProxyType
 from typing import Protocol, runtime_checkable
@@ -18,6 +18,7 @@ from nslab.planner import (
     IpvlanDevicePlan,
     LinkPlan,
     MacvlanDevicePlan,
+    NeighborPlan,
     NetemPlan,
     NodeKind,
     NodePlan,
@@ -54,11 +55,17 @@ class InterfaceInventory:
     mtu: int
     up: bool
     addresses: tuple[IPInterface, ...] = ()
+    mac: str | None = None
     stp: bool | None = None
     vlan_filtering: bool | None = None
     bridge_priority: int | None = None
     path_cost: int | None = None
     port_priority: int | None = None
+    hairpin: bool | None = None
+    isolated: bool | None = None
+    learning: bool | None = None
+    flood: bool | None = None
+    multicast_flood: bool | None = None
     bridge_vlans: tuple[BridgeVlanPlan, ...] = ()
     netem: NetemPlan | None = None
     qdisc: QdiscPlan | None = None
@@ -111,6 +118,7 @@ class NamespaceInventory:
     routes: tuple[RoutePlan, ...]
     sysctls: Mapping[str, int]
     rules: tuple[PolicyRulePlan, ...] = ()
+    neighbors: tuple[NeighborPlan, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -121,6 +129,7 @@ class NamespaceInventory:
         object.__setattr__(self, "routes", tuple(self.routes))
         object.__setattr__(self, "sysctls", MappingProxyType(dict(self.sysctls)))
         object.__setattr__(self, "rules", tuple(self.rules))
+        object.__setattr__(self, "neighbors", tuple(self.neighbors))
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,11 +203,17 @@ class _ExpectedInterface:
     mtu: int | None
     up: bool
     addresses: tuple[IPInterface, ...]
+    mac: str | None = None
     stp: bool | None = None
     vlan_filtering: bool | None = None
     bridge_priority: int | None = None
     path_cost: int | None = None
     port_priority: int | None = None
+    hairpin: bool | None = None
+    isolated: bool | None = None
+    learning: bool | None = None
+    flood: bool | None = None
+    multicast_flood: bool | None = None
     bridge_vlans: tuple[BridgeVlanPlan, ...] = ()
     netem: NetemPlan | None = None
     qdisc: QdiscPlan | None = None
@@ -314,6 +329,11 @@ def _expected_interfaces(node: NodePlan, plan: TopologyPlan) -> dict[str, _Expec
                 addresses=node.interfaces.get(endpoint.interface, ()),
                 path_cost=None if port is None else port.path_cost,
                 port_priority=None if port is None else port.priority,
+                hairpin=None if port is None else port.hairpin,
+                isolated=None if port is None else port.isolated,
+                learning=None if port is None else port.learning,
+                flood=None if port is None else port.flood,
+                multicast_flood=None if port is None else port.multicast_flood,
                 bridge_vlans=expected_bridge_port_vlans(node, endpoint.interface),
                 netem=link.netem,
                 qdisc=link.qdisc,
@@ -398,6 +418,11 @@ def _expected_interfaces(node: NodePlan, plan: TopologyPlan) -> dict[str, _Expec
                     addresses=device.addresses,
                     path_cost=None if port is None else port.path_cost,
                     port_priority=None if port is None else port.priority,
+                    hairpin=None if port is None else port.hairpin,
+                    isolated=None if port is None else port.isolated,
+                    learning=None if port is None else port.learning,
+                    flood=None if port is None else port.flood,
+                    multicast_flood=None if port is None else port.multicast_flood,
                     bridge_vlans=expected_bridge_port_vlans(node, device.name),
                     geneve_vni=device.vni,
                     geneve_link=device.link,
@@ -437,6 +462,11 @@ def _expected_interfaces(node: NodePlan, plan: TopologyPlan) -> dict[str, _Expec
                 addresses=device.addresses,
                 path_cost=None if port is None else port.path_cost,
                 port_priority=None if port is None else port.priority,
+                hairpin=None if port is None else port.hairpin,
+                isolated=None if port is None else port.isolated,
+                learning=None if port is None else port.learning,
+                flood=None if port is None else port.flood,
+                multicast_flood=None if port is None else port.multicast_flood,
                 bridge_vlans=expected_bridge_port_vlans(node, device.name),
                 vxlan_vni=device.vni,
                 vxlan_link=device.link,
@@ -446,7 +476,10 @@ def _expected_interfaces(node: NodePlan, plan: TopologyPlan) -> dict[str, _Expec
                 vxlan_learning=device.learning,
             )
 
-    return expected
+    return {
+        name: replace(interface, mac=node.mac_addresses.get(name))
+        for name, interface in expected.items()
+    }
 
 
 def _interfaces_match(
@@ -470,6 +503,8 @@ def _interfaces_match(
             return False
         if frozenset(observed.addresses) != frozenset(desired.addresses):
             return False
+        if desired.mac is not None and observed.mac != desired.mac:
+            return False
         if observed.stp is not desired.stp:
             return False
         if observed.vlan_filtering is not desired.vlan_filtering:
@@ -482,6 +517,19 @@ def _interfaces_match(
         if desired.path_cost is not None and observed.path_cost != desired.path_cost:
             return False
         if desired.port_priority is not None and observed.port_priority != desired.port_priority:
+            return False
+        if desired.hairpin is not None and observed.hairpin is not desired.hairpin:
+            return False
+        if desired.isolated is not None and observed.isolated is not desired.isolated:
+            return False
+        if desired.learning is not None and observed.learning is not desired.learning:
+            return False
+        if desired.flood is not None and observed.flood is not desired.flood:
+            return False
+        if (
+            desired.multicast_flood is not None
+            and observed.multicast_flood is not desired.multicast_flood
+        ):
             return False
         if observed.bridge_vlans != desired.bridge_vlans:
             return False
@@ -590,6 +638,37 @@ def _routes_match(
 
 def _declared_sysctls_match(desired: Mapping[str, int], actual: Mapping[str, int]) -> bool:
     return all(actual.get(key) == value for key, value in desired.items())
+
+
+_HEALTHY_DYNAMIC_NEIGHBOR_STATES = frozenset({"reachable", "stale", "delay", "probe"})
+
+
+def neighbors_match(
+    desired: Sequence[NeighborPlan],
+    actual: Sequence[NeighborPlan],
+) -> bool:
+    """Compare declared neighbors while allowing normal healthy NUD transitions."""
+
+    if len(desired) != len(actual):
+        return False
+    actual_by_identity = {(neighbor.dst, neighbor.dev): neighbor for neighbor in actual}
+    if len(actual_by_identity) != len(actual):
+        return False
+    for expected in desired:
+        observed = actual_by_identity.get((expected.dst, expected.dev))
+        if observed is None:
+            return False
+        if (
+            observed.lladdr != expected.lladdr
+            or observed.proxy is not expected.proxy
+            or (
+                expected.state in {"reachable", "stale"}
+                and observed.state not in _HEALTHY_DYNAMIC_NEIGHBOR_STATES
+            )
+            or (expected.state not in {"reachable", "stale"} and observed.state != expected.state)
+        ):
+            return False
+    return True
 
 
 def _links_match(plan: TopologyPlan, inventory: LiveInventory) -> bool:
@@ -704,6 +783,8 @@ def inventory_matches_plan(plan: TopologyPlan, inventory: LiveInventory) -> bool
         ):
             return False
         if frozenset(observed.rules) != frozenset(node.rules):
+            return False
+        if not neighbors_match(node.neighbors, observed.neighbors):
             return False
         if not _declared_sysctls_match(node.sysctls, observed.sysctls):
             return False

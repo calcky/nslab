@@ -187,6 +187,30 @@ def test_terminal_graph_renders_bridge_vlan_membership_only_with_detail() -> Non
     assert "swp2: vlans 10, 20" in detailed
 
 
+def test_terminal_graph_renders_bridge_port_controls_only_with_detail() -> None:
+    document = _bridge_manifest().model_dump(mode="json")
+    bridge = document["topology"]["nodes"]["sw1"]["bridge"]
+    bridge["ports"] = {
+        "swp1": {
+            "hairpin": True,
+            "isolated": True,
+            "learning": False,
+            "flood": False,
+            "multicast_flood": False,
+        }
+    }
+    plan = compile_plan(Manifest.model_validate(document))
+
+    compact = render_graph(plan, "tree")
+    detailed = render_graph(plan, "tree", detail=True)
+
+    assert "hairpin" not in compact
+    assert (
+        "swp1: port hairpin on · isolated on · learning off · flood off · multicast flood off"
+        in detailed
+    )
+
+
 def test_terminal_graph_renders_netem_only_with_detail_and_json_keeps_structure() -> None:
     document = _bridge_manifest().model_dump(mode="json")
     document["topology"]["links"][0]["netem"] = {

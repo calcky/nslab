@@ -272,6 +272,18 @@ def _node_details(node: NodePlan, plan: TopologyPlan, *, detail: bool) -> tuple[
                 stp_settings.append(f"priority {port.priority}")
             if stp_settings:
                 sections.append(f"stp {' · '.join(stp_settings)}")
+            port_settings = []
+            for label, value in (
+                ("hairpin", port.hairpin),
+                ("isolated", port.isolated),
+                ("learning", port.learning),
+                ("flood", port.flood),
+                ("multicast flood", port.multicast_flood),
+            ):
+                if value is not None:
+                    port_settings.append(f"{label} {'on' if value else 'off'}")
+            if port_settings:
+                sections.append(f"port {' · '.join(port_settings)}")
             if port.vlans:
                 vlan_settings = []
                 for vlan in port.vlans:

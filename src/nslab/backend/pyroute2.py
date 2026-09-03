@@ -54,6 +54,8 @@ from nslab.planner import (
     IpvlanDevicePlan,
     LinkPlan,
     MacvlanDevicePlan,
+    NeighborPlan,
+    NeighborState,
     NetemPlan,
     NodePlan,
     PolicyRulePlan,
@@ -88,6 +90,28 @@ _PYROUTE2_CONFIG_LOCK = threading.Lock()
 
 _IFF_UP = 1
 _ARPHRD_LOOPBACK = 772
+_NTF_PROXY = 0x08
+_NUD_NONE = 0x00
+_NEIGHBOR_STATE_TO_NETLINK: dict[NeighborState, int] = {
+    "incomplete": 0x01,
+    "reachable": 0x02,
+    "stale": 0x04,
+    "delay": 0x08,
+    "probe": 0x10,
+    "failed": 0x20,
+    "noarp": 0x40,
+    "permanent": 0x80,
+}
+_NEIGHBOR_STATE_FROM_NETLINK = {value: key for key, value in _NEIGHBOR_STATE_TO_NETLINK.items()}
+_ALLOWED_NEIGHBOR_ATTRIBUTES = frozenset(
+    {
+        "NDA_DST",
+        "NDA_LLADDR",
+        "NDA_CACHEINFO",
+        "NDA_PROBES",
+        "NDA_PROTOCOL",
+    }
+)
 _RT_TABLE_MAIN = 254
 _RTN_UNICAST = 1
 _RTPROT_KERNEL = 2
@@ -443,6 +467,14 @@ def _unsupported_inventory_route(namespace: str, reason: str) -> NslabError:
             "resource": namespace,
             "reason": reason,
         },
+    )
+
+
+def _unsupported_inventory_neighbor(namespace: str, reason: str) -> NslabError:
+    return NslabError(
+        code="INVENTORY_UNSUPPORTED",
+        message=f"unsupported neighbor in network inventory: {namespace}",
+        details={"namespace": namespace, "reason": reason},
     )
 
 
@@ -1266,6 +1298,19 @@ class Pyroute2Backend:
                     )
                     for interface in node.interfaces
                 }
+                for interface, mac in node.mac_addresses.items():
+                    if interface in node.devices:
+                        continue
+                    index = indexes.get(interface)
+                    if index is None:
+                        index = _required_index(
+                            namespace,
+                            interface,
+                            "configure_node",
+                            f"{node.namespace}:{interface}",
+                        )
+                        indexes[interface] = index
+                    namespace.link("set", index=index, address=mac)
 
                 for device in node.devices.values():
                     if not isinstance(device, BondDevicePlan):
@@ -1607,6 +1652,11 @@ class Pyroute2Backend:
                         state="up",
                     )
 
+                for interface, mac in node.mac_addresses.items():
+                    if interface not in node.devices:
+                        continue
+                    namespace.link("set", index=indexes[interface], address=mac)
+
                 for device in node.devices.values():
                     if not isinstance(device, VrfDevicePlan):
                         continue
@@ -1664,6 +1714,16 @@ class Pyroute2Backend:
                                 port_arguments["cost"] = port.path_cost
                             if port.priority is not None:
                                 port_arguments["priority"] = port.priority
+                            if port.hairpin is not None:
+                                port_arguments["mode"] = int(port.hairpin)
+                            if port.isolated is not None:
+                                port_arguments["isolated"] = int(port.isolated)
+                            if port.learning is not None:
+                                port_arguments["learning"] = int(port.learning)
+                            if port.flood is not None:
+                                port_arguments["unicast_flood"] = int(port.flood)
+                            if port.multicast_flood is not None:
+                                port_arguments["mcast_flood"] = int(port.multicast_flood)
                             namespace.link("set", **port_arguments)
                             if port.vlans:
                                 namespace.vlan_filter(
@@ -1743,6 +1803,34 @@ class Pyroute2Backend:
                     if route.table != _RT_TABLE_MAIN:
                         route_arguments["table"] = route.table
                     namespace.route("add", **route_arguments)
+
+                for neighbor in node.neighbors:
+                    neighbor_index = indexes.get(neighbor.dev)
+                    if neighbor_index is None:
+                        neighbor_index = _required_index(
+                            namespace,
+                            neighbor.dev,
+                            "configure_node",
+                            f"{node.namespace}:{neighbor.dev}",
+                        )
+                        indexes[neighbor.dev] = neighbor_index
+                    neighbor_arguments: dict[str, object] = {
+                        "family": (
+                            socket.AF_INET if neighbor.dst.version == 4 else socket.AF_INET6
+                        ),
+                        "dst": str(neighbor.dst),
+                        "ifindex": neighbor_index,
+                    }
+                    if neighbor.proxy:
+                        neighbor_arguments.update(flags=_NTF_PROXY, state=_NUD_NONE)
+                    else:
+                        assert neighbor.lladdr is not None
+                        assert neighbor.state is not None
+                        neighbor_arguments.update(
+                            lladdr=neighbor.lladdr,
+                            state=_NEIGHBOR_STATE_TO_NETLINK[neighbor.state],
+                        )
+                    namespace.neigh("add", **neighbor_arguments)
 
                 for rule in sorted(
                     node.rules,
@@ -1958,6 +2046,8 @@ class Pyroute2Backend:
         *,
         inspect_qdiscs: bool,
     ) -> NamespaceInventory:
+        neighbor_messages: tuple[Any, ...] = ()
+        proxy_neighbor_messages: list[Any] = []
         with _managed_handle(namespace) as handle:
             link_messages = tuple(handle.get_links())
             families = self._inventory_families(node)
@@ -1990,6 +2080,42 @@ class Pyroute2Backend:
             rule_messages = tuple(
                 (family, tuple(handle.get_rules(family=family))) for family in rule_families
             )
+            regular_neighbor_families = tuple(
+                dict.fromkeys(
+                    socket.AF_INET if neighbor.dst.version == 4 else socket.AF_INET6
+                    for neighbor in node.neighbors
+                    if not neighbor.proxy
+                )
+            )
+            neighbor_messages = tuple(
+                message
+                for family in regular_neighbor_families
+                for message in handle.get_neighbours(family=family)
+            )
+            indexes_by_name = {
+                str(name): int(_value(message, "index"))
+                for message in link_messages
+                if (name := _attribute(message, "IFLA_IFNAME")) is not None
+            }
+            for neighbor in node.neighbors:
+                if not neighbor.proxy:
+                    continue
+                index = indexes_by_name.get(neighbor.dev)
+                if index is None:
+                    continue
+                try:
+                    messages = handle.neigh(
+                        "get",
+                        family=(socket.AF_INET if neighbor.dst.version == 4 else socket.AF_INET6),
+                        dst=str(neighbor.dst),
+                        ifindex=index,
+                        flags=_NTF_PROXY,
+                    )
+                except NetlinkError as error:
+                    if _is_missing_error(error.code):
+                        continue
+                    raise
+                proxy_neighbor_messages.extend(messages)
         interfaces, names_by_index = self._inventory_interfaces(
             link_messages,
             address_messages,
@@ -2045,6 +2171,12 @@ class Pyroute2Backend:
                 ),
             )
         )
+        neighbors = self._inventory_neighbors(
+            (*neighbor_messages, *proxy_neighbor_messages),
+            names_by_index,
+            node.neighbors,
+            node.namespace,
+        )
         sysctls = self._read_sysctls(node)
         return NamespaceInventory(
             node=node.name,
@@ -2055,6 +2187,7 @@ class Pyroute2Backend:
             routes=routes,
             sysctls=sysctls,
             rules=rules,
+            neighbors=neighbors,
         )
 
     @staticmethod
@@ -2067,6 +2200,7 @@ class Pyroute2Backend:
             )
             or any(route.dst.version == 6 for route in node.routes)
             or any(rule.family == 6 for rule in node.rules)
+            or any(neighbor.dst.version == 6 for neighbor in node.neighbors)
             or "net.ipv6.conf.all.forwarding" in node.sysctls
         )
         if has_ipv6:
@@ -2084,6 +2218,7 @@ class Pyroute2Backend:
             routes=(),
             sysctls={},
             rules=(),
+            neighbors=(),
         )
 
     @staticmethod
@@ -2329,6 +2464,11 @@ class Pyroute2Backend:
             bridge_priority: int | None = None
             path_cost: int | None = None
             port_priority: int | None = None
+            hairpin: bool | None = None
+            isolated: bool | None = None
+            learning: bool | None = None
+            flood: bool | None = None
+            multicast_flood: bool | None = None
             parent: str | None = None
             vlan_id: int | None = None
             vrf_table: int | None = None
@@ -2525,11 +2665,27 @@ class Pyroute2Backend:
                 slave_data = _attribute(link_info, "IFLA_INFO_SLAVE_DATA")
                 cost_value = _attribute(slave_data, "IFLA_BRPORT_COST")
                 port_priority_value = _attribute(slave_data, "IFLA_BRPORT_PRIORITY")
+                hairpin_value = _attribute(slave_data, "IFLA_BRPORT_MODE")
+                isolated_value = _attribute(slave_data, "IFLA_BRPORT_ISOLATED")
+                learning_value = _attribute(slave_data, "IFLA_BRPORT_LEARNING")
+                flood_value = _attribute(slave_data, "IFLA_BRPORT_UNICAST_FLOOD")
+                multicast_flood_value = _attribute(slave_data, "IFLA_BRPORT_MCAST_FLOOD")
                 if cost_value is not None:
                     path_cost = int(cost_value)
                 if port_priority_value is not None:
                     port_priority = int(port_priority_value)
+                if hairpin_value is not None:
+                    hairpin = bool(int(hairpin_value))
+                if isolated_value is not None:
+                    isolated = bool(int(isolated_value))
+                if learning_value is not None:
+                    learning = bool(int(learning_value))
+                if flood_value is not None:
+                    flood = bool(int(flood_value))
+                if multicast_flood_value is not None:
+                    multicast_flood = bool(int(multicast_flood_value))
             mtu_value = _attribute(message, "IFLA_MTU")
+            mac_value = _attribute(message, "IFLA_ADDRESS")
             link_id_value = _attribute(message, "IFLA_IFALIAS")
             interfaces[name] = InterfaceInventory(
                 name=name,
@@ -2539,11 +2695,17 @@ class Pyroute2Backend:
                 mtu=int(mtu_value) if mtu_value is not None else 0,
                 up=bool(int(_value(message, "flags", 0)) & _IFF_UP),
                 addresses=tuple(addresses_by_index.get(index, ())),
+                mac=None if mac_value is None else str(mac_value).lower(),
                 stp=stp,
                 vlan_filtering=vlan_filtering,
                 bridge_priority=bridge_priority,
                 path_cost=path_cost,
                 port_priority=port_priority,
+                hairpin=hairpin,
+                isolated=isolated,
+                learning=learning,
+                flood=flood,
+                multicast_flood=multicast_flood,
                 bridge_vlans=(
                     tuple(sorted(vlans_by_index.get(index, ()), key=lambda vlan: vlan.vid))
                     if slave_kind == "bridge"
@@ -2584,6 +2746,80 @@ class Pyroute2Backend:
                 ipvlan_mode=ipvlan_mode,
             )
         return interfaces, names_by_index
+
+    @staticmethod
+    def _inventory_neighbors(
+        messages: Sequence[Any],
+        names_by_index: Mapping[int, str],
+        declared: Sequence[NeighborPlan],
+        namespace: str,
+    ) -> tuple[NeighborPlan, ...]:
+        declared_by_identity = {
+            (neighbor.dst, neighbor.dev, neighbor.proxy): neighbor for neighbor in declared
+        }
+        observed_by_identity: dict[tuple[object, str, bool], NeighborPlan] = {}
+
+        for message in messages:
+            try:
+                family = int(_value(message, "family", 0))
+                index = int(_value(message, "ifindex"))
+                flags = int(_value(message, "flags", 0))
+                state_value = int(_value(message, "state", 0))
+                neighbor_type = int(_value(message, "ndm_type", _RTN_UNICAST))
+            except (TypeError, ValueError):
+                continue
+            if family not in {socket.AF_INET, socket.AF_INET6}:
+                continue
+            interface = names_by_index.get(index)
+            destination_value = _attribute(message, "NDA_DST")
+            if interface is None or destination_value is None:
+                continue
+            try:
+                destination = ip_address(str(destination_value))
+            except ValueError:
+                continue
+            proxy = bool(flags & _NTF_PROXY)
+            identity = (destination, interface, proxy)
+            if identity not in declared_by_identity:
+                continue
+            if identity in observed_by_identity:
+                raise _unsupported_inventory_neighbor(namespace, "duplicate")
+            if flags != (_NTF_PROXY if proxy else 0):
+                raise _unsupported_inventory_neighbor(namespace, "flags")
+            if neighbor_type != _RTN_UNICAST:
+                raise _unsupported_inventory_neighbor(namespace, "type")
+            if not _attribute_names(message) <= _ALLOWED_NEIGHBOR_ATTRIBUTES:
+                raise _unsupported_inventory_neighbor(namespace, "attribute")
+
+            link_layer_value = _attribute(message, "NDA_LLADDR")
+            if proxy:
+                if state_value != _NUD_NONE or link_layer_value is not None:
+                    raise _unsupported_inventory_neighbor(namespace, "proxy")
+                observed = NeighborPlan(
+                    dst=destination,
+                    dev=interface,
+                    lladdr=None,
+                    state=None,
+                    proxy=True,
+                )
+            else:
+                state = _NEIGHBOR_STATE_FROM_NETLINK.get(state_value)
+                if state is None:
+                    raise _unsupported_inventory_neighbor(namespace, "state")
+                observed = NeighborPlan(
+                    dst=destination,
+                    dev=interface,
+                    lladdr=(None if link_layer_value is None else str(link_layer_value).lower()),
+                    state=state,
+                    proxy=False,
+                )
+            observed_by_identity[identity] = observed
+
+        return tuple(
+            observed_by_identity[identity]
+            for neighbor in declared
+            if (identity := (neighbor.dst, neighbor.dev, neighbor.proxy)) in observed_by_identity
+        )
 
     @staticmethod
     def _inventory_connected_routes(

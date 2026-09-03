@@ -63,8 +63,10 @@ plugins:
             Link conditions: 链路条件
             Packet processing: 数据包处理
             Dynamic routing: 动态路由
+            Bridge port controls: Bridge 端口控制
             IPv4 forwarding: IPv4 转发
             IPv6 forwarding: IPv6 转发
+            Neighbor tables: 邻居表
             ECMP multipath routing: ECMP 等价多路径路由
             VLAN: VLAN 子接口与单臂路由
             Bond overview: Bond 概览
@@ -118,6 +120,7 @@ nav:
       - Overview: examples/index.md
       - Layer 2 switching:
           - Bridge FDB: examples/bridge-fdb.md
+          - Bridge port controls: examples/bridge-port-controls.md
           - Bridge VLAN: examples/bridge-vlan.md
           - VLAN: examples/vlan.md
           - Bridge STP: examples/bridge-stp.md
@@ -134,6 +137,7 @@ nav:
       - IP forwarding:
           - IPv4 forwarding: examples/ipv4-forward.md
           - IPv6 forwarding: examples/ipv6-forward.md
+          - Neighbor tables: examples/neighbors.md
           - ECMP multipath routing: examples/ecmp.md
       - Routing isolation:
           - Linux VRF: examples/vrf.md
