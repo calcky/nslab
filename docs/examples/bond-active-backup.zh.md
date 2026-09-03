@@ -3,6 +3,7 @@
 这个实验在两个 Linux network namespace 之间建立两条链路，并在两端分别创建
 `bond0`。`eth0` 是首选活动成员，`eth1` 是备用成员；关闭主链路后，两端会通过
 MII carrier 检测切换到 `eth1`，恢复后再选择 `eth0`。
+两种 bond 模式的对比见 [Bond 概览](bond.md)。
 
 ## 拓扑图
 

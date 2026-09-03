@@ -3,6 +3,7 @@
 This lab creates two links between two Linux network namespaces and builds a `bond0` at each end.
 `eth0` is the preferred active member and `eth1` is its standby. MII carrier monitoring moves both
 ends to `eth1` when the primary link fails and selects `eth0` again after it recovers.
+See the [Bond overview](bond.md) for a comparison with the `802.3ad` lab.
 
 ## Topology
 

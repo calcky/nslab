@@ -3,6 +3,7 @@
 这个实验用两对 veth 直连两个 Linux network namespace。两端的 `bond0` 都运行
 IEEE 802.3ad/LACP，协商出一个包含两个成员的聚合器，并使用 `layer3+4` 哈希为不同
 网络流选择成员链路。
+两种 bond 模式的对比见 [Bond 概览](bond.md)。
 
 ## 拓扑图
 

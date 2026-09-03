@@ -28,6 +28,7 @@ sudo nslab destroy
 
 | Example | Focus |
 | --- | --- |
+| [Bond overview](bond.md) | Compare bonding modes and choose a runnable lab |
 | [Bond active-backup](bond-active-backup.md) | Preferred-link failover and recovery |
 | [Bond 802.3ad](bond-8023ad.md) | LACP negotiation and per-flow hashing |
 

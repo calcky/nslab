@@ -3,6 +3,7 @@
 This lab directly connects two Linux network namespaces with two veth pairs. Both `bond0`
 interfaces run IEEE 802.3ad/LACP, negotiate a two-member aggregator, and use a `layer3+4` hash to
 select a member for each network flow.
+See the [Bond overview](bond.md) for a comparison with the `active-backup` lab.
 
 ## Topology
 

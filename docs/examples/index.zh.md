@@ -28,6 +28,7 @@ sudo nslab destroy
 
 | 示例 | 学习内容 |
 | --- | --- |
+| [Bond 概览](bond.md) | 对比 bonding 模式并选择可运行实验 |
 | [Bond active-backup](bond-active-backup.md) | 首选链路的故障切换与恢复 |
 | [Bond 802.3ad](bond-8023ad.md) | LACP 协商与逐流哈希 |
 

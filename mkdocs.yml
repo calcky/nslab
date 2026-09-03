@@ -64,6 +64,7 @@ plugins:
             IPv4 forwarding: IPv4 转发
             IPv6 forwarding: IPv6 转发
             VLAN: VLAN 子接口与单臂路由
+            Bond overview: Bond 概览
             Bond active-backup: Bond 主备模式
             Bond 802.3ad: Bond 802.3ad
             Linux VRF: Linux VRF
@@ -116,6 +117,7 @@ nav:
           - Bridge STP: examples/bridge-stp.md
           - VXLAN: examples/vxlan.md
       - Link aggregation:
+          - Bond overview: examples/bond.md
           - Bond active-backup: examples/bond-active-backup.md
           - Bond 802.3ad: examples/bond-8023ad.md
       - IP forwarding:
