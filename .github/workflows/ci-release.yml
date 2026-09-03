@@ -88,6 +88,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang libbpf-dev iproute2 iputils-ping frr frr-pythontools
+          # VRF is an optional kernel module on hosted Ubuntu runners.  Load it
+          # when available; the integration test has a capability-based skip
+          # for kernels that do not ship the module.
+          sudo modprobe vrf || echo "VRF kernel module unavailable; VRF test will be skipped"
           sudo systemctl disable --now frr.service || true
       - name: Sync integration environment
         run: uv sync --locked --python 3.12

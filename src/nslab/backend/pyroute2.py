@@ -1462,15 +1462,21 @@ class Pyroute2Backend:
                     vrf_index = indexes[device.name]
                     namespace.link("set", index=vrf_index, state="up")
                     for member in device.interfaces:
-                        member_index = indexes.get(member)
-                        if member_index is None:
-                            member_index = _required_index(
-                                namespace,
-                                member,
-                                "configure_node",
-                                f"{node.namespace}:{member}",
-                            )
-                            indexes[member] = member_index
+                        # Refresh the index after all devices have been created.
+                        # This avoids using a stale lookup result on kernels that
+                        # recycle interface indexes while veths are moved.
+                        member_index = _required_index(
+                            namespace,
+                            member,
+                            "configure_node",
+                            f"{node.namespace}:{member}",
+                        )
+                        indexes[member] = member_index
+                        # Linux VRF accepts a member in either state on most
+                        # kernels, but older runner kernels reject an UP veth.
+                        # Keep the attach sequence deterministic and let the
+                        # address pass below bring the member back up.
+                        namespace.link("set", index=member_index, state="down")
                         namespace.link("set", index=member_index, master=vrf_index)
 
                 if node.kind == "bridge":

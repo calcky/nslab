@@ -22,6 +22,7 @@ pytestmark = pytest.mark.root
 
 _IS_LINUX = sys.platform.startswith("linux")
 _IS_ROOT = getattr(os, "geteuid", lambda: -1)() == 0
+_VRF_MODULE = Path("/sys/module/vrf")
 _EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "vrf" / "nslab.yaml"
 
 
@@ -55,6 +56,10 @@ def _cleanup_namespaces(backend: Pyroute2Backend, plan: TopologyPlan) -> None:
 
 @pytest.mark.skipif(not _IS_LINUX, reason="requires Linux network namespaces")
 @pytest.mark.skipif(not _IS_ROOT, reason="requires effective UID 0")
+@pytest.mark.skipif(
+    not _VRF_MODULE.exists(),
+    reason="requires the Linux VRF kernel module (modprobe vrf)",
+)
 def test_vrf_example_lifecycle_routes_and_overlapping_connectivity(tmp_path: Path) -> None:
     deployment = f"vrf-e2e-{os.getpid()}-{uuid.uuid4().hex[:6]}"
     manifest = load_manifest(_EXAMPLE)
