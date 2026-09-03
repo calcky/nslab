@@ -7,14 +7,8 @@
 
 ## 拓扑图
 
-```console
-$ nslab graph --format mermaid
-flowchart LR
-    n0["h1\nlinux"]
-    n1["r1\nlinux\nblue: vrf table 1001 · members blue0\nred: vrf table 1002 · members red0"]
-    n2["h2\nlinux"]
-    n0 -- "eth0 <-> blue0" --- n1
-    n1 -- "red0 <-> eth0" --- n2
+```bash
+nslab graph --format mermaid
 ```
 
 ```mermaid

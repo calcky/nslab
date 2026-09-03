@@ -6,20 +6,8 @@ VLAN 10/20 子接口。这样可以先验证同 VLAN 二层互通，再验证经
 
 ## 拓扑图
 
-```console
-$ nslab graph --format mermaid
-flowchart LR
-    n0["h1\nlinux\nvlan10: vlan 10 on eth0"]
-    n1["h2\nlinux\nvlan10: vlan 10 on eth0"]
-    n2["h10\nlinux"]
-    n3["sw1\nbridge"]
-    n4["r1\nlinux\nvlan10: vlan 10 on eth0\nvlan20: vlan 20 on eth0"]
-    n5["h20\nlinux"]
-    n0 -- "eth0 <-> trunk1" --- n3
-    n1 -- "eth0 <-> trunk2" --- n3
-    n2 -- "eth0 <-> access10" --- n3
-    n3 -- "router <-> eth0" --- n4
-    n3 -- "access20 <-> eth0" --- n5
+```bash
+nslab graph --format mermaid
 ```
 
 ```mermaid

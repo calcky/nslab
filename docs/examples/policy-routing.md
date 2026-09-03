@@ -8,16 +8,8 @@ uses table 100; mark `2` takes precedence and selects table 200.
 
 ## Graph
 
-```console
-$ nslab graph --format mermaid
-flowchart LR
-    n0["h1\nlinux"]
-    n1["r1\nlinux"]
-    n2["isp1\nlinux"]
-    n3["isp2\nlinux"]
-    n0 -- "eth0 <-> eth0" --- n1
-    n1 -- "eth1 <-> eth0" --- n2
-    n1 -- "eth2 <-> eth0" --- n3
+```bash
+nslab graph --format mermaid
 ```
 
 ```mermaid

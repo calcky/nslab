@@ -5,17 +5,8 @@ UDP 流量，`geneve100` 则分别加入本地 bridge。
 
 ## 拓扑图
 
-```console
-$ nslab graph --format mermaid
-%%{init: {"flowchart": {"curve": "step"}}}%%
-flowchart TB
-    n0["h1\nlinux\neth0: 10.60.0.1/24"]
-    n1["vtep1\nbridge · br0\nunderlay0: 192.0.2.1/30\ngeneve100: geneve 100 -> 192.0.2.2"]
-    n2["vtep2\nbridge · br0\nunderlay0: 192.0.2.2/30\ngeneve100: geneve 100 -> 192.0.2.1"]
-    n3["h2\nlinux\neth0: 10.60.0.2/24"]
-    n1 -- "access0 ↔ eth0" --- n0
-    n1 -- "underlay0 ↔ underlay0" --- n2
-    n2 -- "access0 ↔ eth0" --- n3
+```bash
+nslab graph --format mermaid
 ```
 
 ```mermaid

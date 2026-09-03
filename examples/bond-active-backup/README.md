@@ -6,13 +6,8 @@ MII carrier 检测切换到 `eth1`，恢复后再选择 `eth0`。
 
 ## 拓扑图
 
-```console
-$ nslab graph --format mermaid
-flowchart LR
-    n0["h1\nlinux\nbond0: bond active-backup · members eth0, eth1"]
-    n1["h2\nlinux\nbond0: bond active-backup · members eth0, eth1"]
-    n0 -- "eth0 <-> eth0" --- n1
-    n0 -- "eth1 <-> eth1" --- n1
+```bash
+nslab graph --format mermaid
 ```
 
 ```mermaid

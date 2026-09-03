@@ -6,27 +6,8 @@ underlay bridge：`vtep1` 和 `vtep2` 使用 VNI 100 提供二层 bridge overlay
 
 ## 拓扑图
 
-```console
-$ nslab graph --format mermaid
-%%{init: {"flowchart": {"curve": "step"}}}%%
-flowchart TB
-    n0["h1\nlinux\neth0: 10.70.0.1/24"]
-    n1["vtep1\nbridge · br0\nunderlay0: 192.0.2.1/24\nvxlan100: vxlan 100 -> 192.0.2.2"]
-    n2["vtep2\nbridge · br0\nunderlay0: 192.0.2.2/24\nvxlan100: vxlan 100 -> 192.0.2.1"]
-    n3["h2\nlinux\neth0: 10.70.0.2/24"]
-    n4["h3\nlinux\neth0: 10.80.1.1/24"]
-    n5["r1\nlinux\nlan0: 10.80.1.254/24\nunderlay0: 192.0.2.3/24\nvxlan200: vxlan 200 -> 192.0.2.4 · 10.255.200.1/30"]
-    n6["r2\nlinux\nunderlay0: 192.0.2.4/24\nlan0: 10.80.2.254/24\nvxlan200: vxlan 200 -> 192.0.2.3 · 10.255.200.2/30"]
-    n7["h4\nlinux\neth0: 10.80.2.2/24"]
-    n8["underlay\nbridge · br0"]
-    n8 -- "p1 ↔ underlay0" --- n1
-    n8 -- "p2 ↔ underlay0" --- n2
-    n8 -- "p3 ↔ underlay0" --- n5
-    n8 -- "p4 ↔ underlay0" --- n6
-    n1 -- "access0 ↔ eth0" --- n0
-    n2 -- "access0 ↔ eth0" --- n3
-    n5 -- "lan0 ↔ eth0" --- n4
-    n6 -- "lan0 ↔ eth0" --- n7
+```bash
+nslab graph --format mermaid
 ```
 
 ```mermaid

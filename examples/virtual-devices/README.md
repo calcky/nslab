@@ -6,14 +6,8 @@ create both device families without sharing one parent.
 
 ## Topology
 
-```console
-$ nslab graph --format mermaid
-flowchart LR
-    n0["h1\nlinux\ndummy0: dummy\nmac0: macvlan bridge on eth0\nip0: ipvlan l3 on eth1"]
-    n1["h2\nlinux"]
-    n2["h3\nlinux"]
-    n0 -- "eth0 <-> eth0" --- n1
-    n0 -- "eth1 <-> eth0" --- n2
+```bash
+nslab graph --format mermaid
 ```
 
 ```mermaid
