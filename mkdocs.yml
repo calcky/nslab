@@ -63,13 +63,13 @@ plugins:
             Dynamic routing: 动态路由
             IPv4 forwarding: IPv4 转发
             IPv6 forwarding: IPv6 转发
-            VLAN subinterfaces: VLAN 子接口
+            VLAN: VLAN 子接口与单臂路由
             Bond active-backup: Bond 主备模式
             Bond 802.3ad: Bond 802.3ad
-            Router on a stick: 单臂路由
             Linux VRF: Linux VRF
             Policy routing: 策略路由
             XDP receive and transmit: XDP 收发包
+            VXLAN: 二层与三层 VXLAN
           theme:
             palette:
               - media: "(prefers-color-scheme: light)"
@@ -112,15 +112,15 @@ nav:
       - Layer 2 switching:
           - Bridge FDB: examples/bridge-fdb.md
           - Bridge VLAN: examples/bridge-vlan.md
-          - VLAN subinterfaces: examples/vlan-subinterface.md
+          - VLAN: examples/vlan.md
           - Bridge STP: examples/bridge-stp.md
+          - VXLAN: examples/vxlan.md
       - Link aggregation:
           - Bond active-backup: examples/bond-active-backup.md
           - Bond 802.3ad: examples/bond-8023ad.md
       - IP forwarding:
           - IPv4 forwarding: examples/ipv4-forward.md
           - IPv6 forwarding: examples/ipv6-forward.md
-          - Router on a stick: examples/router-on-a-stick.md
       - Routing isolation:
           - Linux VRF: examples/vrf.md
           - Policy routing: examples/policy-routing.md

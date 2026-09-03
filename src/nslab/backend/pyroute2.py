@@ -14,6 +14,7 @@ from ipaddress import (
     IPv4Network,
     IPv6Address,
     IPv6Network,
+    ip_address,
     ip_interface,
 )
 from pathlib import Path
@@ -51,9 +52,12 @@ from nslab.planner import (
     TopologyPlan,
     VlanDevicePlan,
     VrfDevicePlan,
+    VxlanDevicePlan,
     bond_device_mtu,
     node_interface_addresses,
+    node_interface_master,
     node_route_tables,
+    vxlan_device_mtu,
 )
 from nslab.routing import FrrRuntime
 
@@ -1156,6 +1160,51 @@ class Pyroute2Backend:
                     )
 
                 for device in node.devices.values():
+                    if not isinstance(device, VxlanDevicePlan):
+                        continue
+                    underlay_index = indexes.get(device.link)
+                    if underlay_index is None:
+                        underlay_index = _required_index(
+                            namespace,
+                            device.link,
+                            "configure_node",
+                            f"{node.namespace}:{device.link}",
+                        )
+                        indexes[device.link] = underlay_index
+                    vxlan_arguments: dict[str, object] = {
+                        "ifname": device.name,
+                        "kind": "vxlan",
+                        "vxlan_id": device.vni,
+                        "vxlan_link": underlay_index,
+                        "vxlan_port": device.dst_port,
+                        "vxlan_learning": int(device.learning),
+                    }
+                    if device.local.version == 4:
+                        vxlan_arguments.update(
+                            vxlan_local=str(device.local),
+                            vxlan_group=str(device.remote),
+                        )
+                    else:
+                        vxlan_arguments.update(
+                            vxlan_local6=str(device.local),
+                            vxlan_group6=str(device.remote),
+                        )
+                    namespace.link("add", **vxlan_arguments)
+                    vxlan_index = _required_index(
+                        namespace,
+                        device.name,
+                        "configure_node",
+                        f"{node.namespace}:{device.name}",
+                    )
+                    indexes[device.name] = vxlan_index
+                    namespace.link(
+                        "set",
+                        index=vxlan_index,
+                        mtu=vxlan_device_mtu(node, plan, device),
+                    )
+                    namespace.link("set", index=vxlan_index, state="up")
+
+                for device in node.devices.values():
                     if not isinstance(device, VrfDevicePlan):
                         continue
                     vrf_index = indexes[device.name]
@@ -1224,6 +1273,8 @@ class Pyroute2Backend:
                                         index=port_index,
                                         vlan_info={"vid": vlan.vid, "flags": flags},
                                     )
+                        if isinstance(node.devices.get(interface), VxlanDevicePlan):
+                            namespace.link("set", index=port_index, state="up")
                     if bridge_name not in node.interfaces:
                         namespace.link("set", index=bridge_index, state="up")
 
@@ -1328,13 +1379,17 @@ class Pyroute2Backend:
 
     @staticmethod
     def _node_link_interfaces(node: NodePlan, plan: TopologyPlan) -> tuple[str, ...]:
-        interfaces = (
+        linked_interfaces = (
             endpoint.interface
             for link in plan.links
             for endpoint in (link.left, link.right)
             if endpoint.namespace == node.namespace
+            and node_interface_master(node, endpoint.interface) == node.bridge_name
         )
-        return tuple(dict.fromkeys(interfaces))
+        vxlan_interfaces = (
+            device.name for device in node.devices.values() if isinstance(device, VxlanDevicePlan)
+        )
+        return tuple(dict.fromkeys((*linked_interfaces, *vxlan_interfaces)))
 
     def _write_sysctls(self, node: NodePlan) -> None:
         if not node.sysctls:
@@ -1733,6 +1788,12 @@ class Pyroute2Backend:
             bond_lacp_rate: str | None = None
             bond_xmit_hash_policy: str | None = None
             bond_min_links: int | None = None
+            vxlan_vni: int | None = None
+            vxlan_link: str | None = None
+            vxlan_local: IPv4Address | IPv6Address | None = None
+            vxlan_remote: IPv4Address | IPv6Address | None = None
+            vxlan_dst_port: int | None = None
+            vxlan_learning: bool | None = None
             if kind == "bridge":
                 info_data = _attribute(link_info, "IFLA_INFO_DATA")
                 stp_value = _attribute(info_data, "IFLA_BR_STP_STATE")
@@ -1784,6 +1845,30 @@ class Pyroute2Backend:
                     min_links_value = _attribute(info_data, "IFLA_BOND_MIN_LINKS")
                     if min_links_value is not None:
                         bond_min_links = int(min_links_value)
+            if kind == "vxlan":
+                info_data = _attribute(link_info, "IFLA_INFO_DATA")
+                vni_value = _attribute(info_data, "IFLA_VXLAN_ID")
+                link_value = _attribute(info_data, "IFLA_VXLAN_LINK")
+                local_value = _attribute(info_data, "IFLA_VXLAN_LOCAL")
+                if local_value is None:
+                    local_value = _attribute(info_data, "IFLA_VXLAN_LOCAL6")
+                remote_value = _attribute(info_data, "IFLA_VXLAN_GROUP")
+                if remote_value is None:
+                    remote_value = _attribute(info_data, "IFLA_VXLAN_GROUP6")
+                port_value = _attribute(info_data, "IFLA_VXLAN_PORT")
+                learning_value = _attribute(info_data, "IFLA_VXLAN_LEARNING")
+                if vni_value is not None:
+                    vxlan_vni = int(vni_value)
+                if link_value is not None:
+                    vxlan_link = names_by_index.get(int(link_value))
+                if local_value is not None:
+                    vxlan_local = ip_address(local_value)
+                if remote_value is not None:
+                    vxlan_remote = ip_address(remote_value)
+                if port_value is not None:
+                    vxlan_dst_port = int(port_value)
+                if learning_value is not None:
+                    vxlan_learning = bool(int(learning_value))
             slave_kind = _attribute(link_info, "IFLA_INFO_SLAVE_KIND")
             if slave_kind == "bridge":
                 slave_data = _attribute(link_info, "IFLA_INFO_SLAVE_DATA")
@@ -1824,6 +1909,12 @@ class Pyroute2Backend:
                 bond_lacp_rate=bond_lacp_rate,
                 bond_xmit_hash_policy=bond_xmit_hash_policy,
                 bond_min_links=bond_min_links,
+                vxlan_vni=vxlan_vni,
+                vxlan_link=vxlan_link,
+                vxlan_local=vxlan_local,
+                vxlan_remote=vxlan_remote,
+                vxlan_dst_port=vxlan_dst_port,
+                vxlan_learning=vxlan_learning,
             )
         return interfaces, names_by_index
 

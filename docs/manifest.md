@@ -11,10 +11,11 @@ topology
 │  └─ <node-name>
 │     ├─ kind: linux
 │     │  ├─ interfaces / devices / routes / rules / sysctls
-│     │  ├─ devices → <device-name> → type: vlan | vrf | bond
+│     │  ├─ devices → <device-name> → type: vlan | vrf | bond | vxlan
 │     │  └─ routing
 │     └─ kind: bridge
-│        ├─ interfaces / routes / sysctls
+│        ├─ interfaces / devices / routes / sysctls
+│        ├─ devices → <device-name> → type: vxlan
 │        └─ bridge → ports → vlans
 └─ links
    └─ endpoints / mtu / netem
@@ -61,7 +62,7 @@ and `bridge`.
 
 Interface names contain 1 to 15 letters, digits, `_`, `.`, or `-`. Except for a bridge device
 name, every interface declared in `interfaces` must appear in a `links[].endpoints` entry.
-Namespace-local VLAN, VRF, and bond devices belong under `devices`, not `interfaces`.
+Namespace-local VLAN, VRF, bond, and VXLAN devices belong under `devices`, not `interfaces`.
 
 ##### `interfaces.<ifname>`
 
@@ -175,7 +176,8 @@ does not preserve its address through the netlink inventory used for determinist
 
 `devices` creates interfaces inside the Linux node after all veth endpoints have been moved
 into place. Device names follow the interface-name rules, cannot be `lo`, and cannot collide with
-a linked endpoint or an `interfaces` key. `type` is required and selects `vlan`, `vrf`, or `bond`.
+a linked endpoint or an `interfaces` key. `type` is required and selects `vlan`, `vrf`, `bond`, or
+`vxlan`.
 
 ###### `type: vlan`
 
@@ -192,6 +194,28 @@ An 802.1Q VLAN subinterface may be used by `routes[].dev` and
 Only one level is supported: a VLAN device cannot use another declared device as its lower
 interface. Its MTU follows the lower interface. Connected routes, BGP directly connected
 neighbor checks, and automatic OSPF/BGP network statements include device addresses.
+
+###### `type: vxlan`
+
+A standalone VXLAN device is a Linux Layer 3 interface. It uses a static unicast remote VTEP and
+may own addresses and routes directly:
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `devices.<name>.type` | Yes | None | Must be `vxlan` |
+| `devices.<name>.vni` | Yes | None | VXLAN Network Identifier in `1..16777215`, unique on the node |
+| `devices.<name>.link` | Yes | None | Linked underlay interface on the same node |
+| `devices.<name>.local` | Yes | None | Unicast IPv4/IPv6 source address configured on `link` |
+| `devices.<name>.remote` | Yes | None | Static unicast VTEP address in the same family as `local` |
+| `devices.<name>.addresses` | No | `[]` | IPv4/IPv6 addresses assigned to the VXLAN interface |
+| `devices.<name>.dst_port` | No | `4789` | UDP destination port in `1..65535` |
+| `devices.<name>.learning` | No | `true` | Enable source-MAC learning |
+| `devices.<name>.mtu` | No | Automatic | MTU bounded by underlay MTU minus encapsulation overhead |
+
+The underlay `link` must be linked and contain the exact `local` address. The automatic MTU
+subtracts 50 bytes for IPv4 or 70 bytes for IPv6. A standalone VXLAN has no bridge master, so it
+can be used as `routes[].dev`, as shown in the combined VXLAN example at
+`examples/vxlan/nslab.yaml`.
 
 ###### `type: bond`
 
@@ -279,16 +303,51 @@ A bridge node creates a Linux bridge in its own namespace. It accepts the common
 
 | Node field | Required | Default | Description |
 | --- | --- | --- | --- |
+| `devices` | No | `{}` | Static VXLAN devices attached to this bridge |
 | `bridge` | Yes | None | Linux bridge device and port configuration object |
 
 ```yaml
 sw1:
   kind: bridge
+  interfaces:
+    underlay0:
+      addresses: [192.0.2.1/30]
+  devices:
+    vxlan100:
+      type: vxlan
+      vni: 100
+      link: underlay0
+      local: 192.0.2.1
+      remote: 192.0.2.2
   bridge:
     name: br0
     stp: true
     vlan_filtering: false
 ```
+
+##### `devices.<name>` with `type: vxlan`
+
+A bridge-node VXLAN device creates a static unicast Layer 2 tunnel and automatically joins
+`bridge.name`.
+Its lower `link` must be a linked interface with the exact `local` address configured under
+`interfaces`; that underlay interface stays outside the bridge.
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `type` | Yes | None | Must be `vxlan` |
+| `vni` | Yes | None | VXLAN Network Identifier in `1..16777215`, unique on the node |
+| `link` | Yes | None | Linked underlay interface on the same bridge node |
+| `local` | Yes | None | Unicast IPv4/IPv6 source address configured on `link` |
+| `remote` | Yes | None | Static unicast remote VTEP address in the same family as `local` |
+| `dst_port` | No | `4789` | UDP destination port in `1..65535` |
+| `learning` | No | `true` | Enable source-MAC learning on the VXLAN interface |
+| `mtu` | No | Automatic | VXLAN MTU in `576..9216`, bounded by underlay MTU minus encapsulation overhead |
+
+The automatic MTU subtracts 50 bytes for an IPv4 underlay or 70 bytes for IPv6. A custom value
+cannot exceed that limit. `local` and `remote` cannot be equal, unspecified, or multicast. The
+kernel installs a permanent all-zero-MAC FDB entry for the static remote. `bridge.ports` may name
+the VXLAN device to configure STP or VLAN behavior, but it cannot name a VXLAN underlay interface.
+Bridge-node VXLAN devices cannot declare `addresses`; use a Linux node for routed VXLAN.
 
 ##### `bridge`
 
@@ -298,7 +357,7 @@ sw1:
 | `stp` | Yes | None | Enable Linux bridge STP |
 | `vlan_filtering` | Yes | None | Enable VLAN-aware filtering |
 | `priority` | No | `null` | Bridge priority in `0..65535` |
-| `ports` | No | `{}` | Mapping from linked port name to STP/VLAN settings |
+| `ports` | No | `{}` | Mapping from linked access or VXLAN port name to STP/VLAN settings |
 
 `bridge.name` cannot collide with a linked endpoint. To assign an IP address to the bridge
 itself, use the same `bridge.name` under the node's `interfaces` mapping.
@@ -311,7 +370,8 @@ itself, use the same `bridge.name` under the node's `interfaces` mapping.
 | `priority` | No | `null` | Linux STP port priority in `0..63`; requires `stp: true` |
 | `vlans` | No | `[]` | Port VLAN entries; requires `vlan_filtering: true` |
 
-A port configuration must contain at least one STP or VLAN setting, and the port must be linked.
+A port configuration must contain at least one STP or VLAN setting, and the port must be a linked
+access interface or declared VXLAN device.
 
 Each `vlans[]` item contains:
 

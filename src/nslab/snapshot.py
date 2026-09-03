@@ -13,6 +13,7 @@ from nslab.planner import (
     TopologyPlan,
     VlanDevicePlan,
     VrfDevicePlan,
+    VxlanDevicePlan,
     compile_plan,
 )
 from nslab.state import StateSnapshot
@@ -80,12 +81,21 @@ def _expected_ownership(plan: TopologyPlan) -> dict[str, dict[str, object]]:
                 )
             elif isinstance(device, VrfDevicePlan):
                 identity.update(kind="vrf", vrf_table=device.table)
-            else:
-                assert isinstance(device, BondDevicePlan)
+            elif isinstance(device, BondDevicePlan):
                 identity.update(
                     kind="bond",
                     bond_mode=device.mode,
                     interfaces=device.interfaces,
+                )
+            else:
+                assert isinstance(device, VxlanDevicePlan)
+                identity.update(
+                    kind="vxlan",
+                    vni=device.vni,
+                    link=device.link,
+                    local=str(device.local),
+                    remote=str(device.remote),
+                    dst_port=device.dst_port,
                 )
             expected[f"{node.name}:{device.name}"] = identity
     for link in plan.links:

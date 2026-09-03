@@ -21,6 +21,7 @@ from nslab.planner import (
     TopologyPlan,
     VlanDevicePlan,
     VrfDevicePlan,
+    VxlanDevicePlan,
     compile_plan,
 )
 from nslab.snapshot import validate_snapshot
@@ -559,12 +560,21 @@ class LifecycleService:
                     )
                 elif isinstance(device, VrfDevicePlan):
                     ownership.update(kind="vrf", vrf_table=device.table)
-                else:
-                    assert isinstance(device, BondDevicePlan)
+                elif isinstance(device, BondDevicePlan):
                     ownership.update(
                         kind="bond",
                         bond_mode=device.mode,
                         interfaces=device.interfaces,
+                    )
+                else:
+                    assert isinstance(device, VxlanDevicePlan)
+                    ownership.update(
+                        kind="vxlan",
+                        vni=device.vni,
+                        link=device.link,
+                        local=str(device.local),
+                        remote=str(device.remote),
+                        dst_port=device.dst_port,
                     )
                 result[f"{node_name}:{device.name}"] = ownership
             for endpoint in endpoints_by_node[node_name]:

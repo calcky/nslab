@@ -25,8 +25,10 @@ from nslab.planner import (
     TopologyPlan,
     VlanDevicePlan,
     VrfDevicePlan,
+    VxlanDevicePlan,
     bond_device_mtu,
     node_interface_master,
+    vxlan_device_mtu,
 )
 
 
@@ -266,6 +268,41 @@ class FakeNetworkBackend:
             )
 
         for device in node.devices.values():
+            if not isinstance(device, VxlanDevicePlan):
+                continue
+            if device.link not in interfaces:
+                raise _resource_error(
+                    "RESOURCE_MISSING",
+                    "configure_node",
+                    f"{resource}:{device.link}",
+                )
+            if device.name in interfaces:
+                raise _resource_error(
+                    "RESOURCE_EXISTS",
+                    "configure_node",
+                    f"{resource}:{device.name}",
+                )
+            port = node.bridge_ports.get(device.name)
+            interfaces[device.name] = InterfaceInventory(
+                name=device.name,
+                kind="vxlan",
+                ifindex=self._allocate_ifindex(resource),
+                master=node_interface_master(node, device.name),
+                mtu=vxlan_device_mtu(node, plan, device),
+                up=True,
+                addresses=device.addresses,
+                path_cost=None if port is None else port.path_cost,
+                port_priority=None if port is None else port.priority,
+                bridge_vlans=expected_bridge_port_vlans(node, device.name),
+                vxlan_vni=device.vni,
+                vxlan_link=device.link,
+                vxlan_local=device.local,
+                vxlan_remote=device.remote,
+                vxlan_dst_port=device.dst_port,
+                vxlan_learning=device.learning,
+            )
+
+        for device in node.devices.values():
             if not isinstance(device, BondDevicePlan):
                 continue
             if device.name in interfaces:
@@ -364,11 +401,7 @@ class FakeNetworkBackend:
                 port = node.bridge_ports.get(endpoint.interface)
                 interfaces[endpoint.interface] = replace(
                     interface,
-                    master=(
-                        node.bridge_name
-                        if node.kind == "bridge"
-                        else node_interface_master(node, endpoint.interface)
-                    ),
+                    master=node_interface_master(node, endpoint.interface),
                     mtu=link.mtu,
                     up=True,
                     addresses=node.interfaces.get(endpoint.interface, ()),

@@ -16,6 +16,7 @@ from nslab.planner import (
     TopologyPlan,
     VlanDevicePlan,
     VrfDevicePlan,
+    VxlanDevicePlan,
 )
 
 
@@ -151,19 +152,32 @@ def _device_text(
         return text
     if isinstance(device, VrfDevicePlan):
         return f"{device.name}: vrf table {device.table} · members {', '.join(device.interfaces)}"
-    assert isinstance(device, BondDevicePlan)
-    text = f"{device.name}: bond {device.mode} · members {', '.join(device.interfaces)}"
+    if isinstance(device, BondDevicePlan):
+        text = f"{device.name}: bond {device.mode} · members {', '.join(device.interfaces)}"
+        if detail:
+            options = [f"miimon {device.miimon_ms}ms"]
+            if device.primary is not None:
+                options.append(f"primary {device.primary}")
+            if device.lacp_rate is not None:
+                options.append(f"lacp {device.lacp_rate}")
+            if device.xmit_hash_policy is not None:
+                options.append(f"hash {device.xmit_hash_policy}")
+            if device.min_links is not None:
+                options.append(f"min links {device.min_links}")
+            text += f" · {' · '.join(options)}"
+        if include_addresses and device.addresses:
+            text += f" · {', '.join(str(address) for address in device.addresses)}"
+        return text
+    assert isinstance(device, VxlanDevicePlan)
+    text = f"{device.name}: vxlan {device.vni} -> {device.remote}"
     if detail:
-        options = [f"miimon {device.miimon_ms}ms"]
-        if device.primary is not None:
-            options.append(f"primary {device.primary}")
-        if device.lacp_rate is not None:
-            options.append(f"lacp {device.lacp_rate}")
-        if device.xmit_hash_policy is not None:
-            options.append(f"hash {device.xmit_hash_policy}")
-        if device.min_links is not None:
-            options.append(f"min links {device.min_links}")
-        text += f" · {' · '.join(options)}"
+        text += (
+            f" · local {device.local} via {device.link}"
+            f" · udp {device.dst_port}"
+            f" · learning {'on' if device.learning else 'off'}"
+        )
+        if device.mtu is not None:
+            text += f" · mtu {device.mtu}"
     if include_addresses and device.addresses:
         text += f" · {', '.join(str(address) for address in device.addresses)}"
     return text
@@ -527,15 +541,85 @@ def _escape_label(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("\r", "\\r").replace("\n", "\\n")
 
 
+def _mermaid_node_line(
+    node: NodePlan,
+    node_id: str,
+    *,
+    compact_vxlan: bool = False,
+) -> str:
+    device_lines: list[str] = []
+    for device in node.devices.values():
+        if compact_vxlan and isinstance(device, VxlanDevicePlan):
+            device_lines.append(f"{device.name} (VNI {device.vni})")
+        else:
+            device_lines.append(_device_text(device, include_addresses=False))
+    suffix = "".join(f"\n{line}" for line in device_lines)
+    label = _escape_label(f"{node.name}\n{node.kind}{suffix}")
+    return f'{node_id}["{label}"]'
+
+
+def _mermaid_box_node_line(node: NodePlan, node_id: str, plan: TopologyPlan) -> str:
+    content = (
+        node.name,
+        _node_kind_text(node, detail=False),
+        *_node_details(node, plan, detail=False),
+    )
+    label = _escape_label("\n".join(content))
+    return f'{node_id}["{label}"]'
+
+
+def _vxlan_nodes(plan: TopologyPlan) -> set[str]:
+    return {
+        name
+        for name, node in plan.nodes.items()
+        if any(isinstance(device, VxlanDevicePlan) for device in node.devices.values())
+    }
+
+
+def _append_mermaid_box_component(
+    lines: list[str],
+    plan: TopologyPlan,
+    component: _DisplayComponent,
+    node_ids: Mapping[str, str],
+) -> None:
+    members = set(component.children)
+    for name in plan.nodes:
+        if name in members:
+            lines.append("    " + _mermaid_box_node_line(plan.nodes[name], node_ids[name], plan))
+
+    queue = deque([component.root])
+    while queue:
+        parent = queue.popleft()
+        for edge in component.children[parent]:
+            label = _escape_label(f"{edge.parent_interface} ↔ {edge.child_interface}")
+            lines.append(f'    {node_ids[parent]} -- "{label}" --- {node_ids[edge.child]}')
+            queue.append(edge.child)
+
+    for link in component.cross_links:
+        label = _escape_label(f"{link.left.interface} ↔ {link.right.interface}")
+        lines.append(f'    {node_ids[link.left.node]} -. "{label}" .- {node_ids[link.right.node]}')
+
+
+def _render_vxlan_mermaid(
+    plan: TopologyPlan,
+) -> str:
+    node_ids = {name: f"n{index}" for index, name in enumerate(plan.nodes)}
+
+    lines = ['%%{init: {"flowchart": {"curve": "step"}}}%%', "flowchart TB"]
+    for component in _build_display_forest(plan):
+        _append_mermaid_box_component(lines, plan, component, node_ids)
+
+    return "\n".join(lines)
+
+
 def _render_mermaid(plan: TopologyPlan) -> str:
+    if _vxlan_nodes(plan):
+        return _render_vxlan_mermaid(plan)
+
     lines = ["flowchart LR"]
     node_ids = {name: f"n{index}" for index, name in enumerate(plan.nodes)}
     for name, node in plan.nodes.items():
-        device_lines = "".join(
-            f"\n{_device_text(device, include_addresses=False)}" for device in node.devices.values()
-        )
-        label = _escape_label(f"{node.name}\n{node.kind}{device_lines}")
-        lines.append(f'    {node_ids[name]}["{label}"]')
+        lines.append("    " + _mermaid_node_line(node, node_ids[name]))
     for link in plan.links:
         label = _escape_label(f"{link.left.interface} <-> {link.right.interface}")
         left = node_ids[link.left.node]
@@ -594,8 +678,7 @@ def _node_document(node: NodePlan) -> dict[str, object]:
                         "type": "vrf",
                     }
                 )
-            else:
-                assert isinstance(device, BondDevicePlan)
+            elif isinstance(device, BondDevicePlan):
                 bond_document: dict[str, object] = {
                     "addresses": [str(address) for address in device.addresses],
                     "interfaces": list(device.interfaces),
@@ -613,6 +696,22 @@ def _node_document(node: NodePlan) -> dict[str, object]:
                 if device.min_links is not None:
                     bond_document["min_links"] = device.min_links
                 devices.append(bond_document)
+            else:
+                assert isinstance(device, VxlanDevicePlan)
+                vxlan_document: dict[str, object] = {
+                    "dst_port": device.dst_port,
+                    "learning": device.learning,
+                    "link": device.link,
+                    "local": str(device.local),
+                    "mtu": device.mtu,
+                    "name": device.name,
+                    "remote": str(device.remote),
+                    "type": "vxlan",
+                    "vni": device.vni,
+                }
+                if device.addresses:
+                    vxlan_document["addresses"] = [str(address) for address in device.addresses]
+                devices.append(vxlan_document)
         document["devices"] = devices
     return document
 

@@ -27,8 +27,10 @@ from nslab.planner import (
     TopologyPlan,
     VlanDevicePlan,
     VrfDevicePlan,
+    VxlanDevicePlan,
     bond_device_mtu,
     node_interface_master,
+    vxlan_device_mtu,
 )
 from nslab.snapshot import SnapshotValidation, validate_snapshot
 from nslab.state import StateSnapshot
@@ -72,6 +74,12 @@ class InterfaceView:
     bond_lacp_rate: str | None = None
     bond_xmit_hash_policy: str | None = None
     bond_min_links: int | None = None
+    vxlan_vni: int | None = None
+    vxlan_link: str | None = None
+    vxlan_local: str | None = None
+    vxlan_remote: str | None = None
+    vxlan_dst_port: int | None = None
+    vxlan_learning: bool | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "addresses", tuple(self.addresses))
@@ -103,6 +111,12 @@ class InterfaceView:
             "bond_lacp_rate": self.bond_lacp_rate,
             "bond_xmit_hash_policy": self.bond_xmit_hash_policy,
             "bond_min_links": self.bond_min_links,
+            "vxlan_vni": self.vxlan_vni,
+            "vxlan_link": self.vxlan_link,
+            "vxlan_local": self.vxlan_local,
+            "vxlan_remote": self.vxlan_remote,
+            "vxlan_dst_port": self.vxlan_dst_port,
+            "vxlan_learning": self.vxlan_learning,
         }
 
 
@@ -527,11 +541,7 @@ def _desired_interfaces(node: NodePlan, plan: TopologyPlan) -> tuple[InterfaceVi
                 InterfaceView(
                     name=endpoint.interface,
                     kind="veth",
-                    master=(
-                        node.bridge_name
-                        if node.kind == "bridge"
-                        else node_interface_master(node, endpoint.interface)
-                    ),
+                    master=node_interface_master(node, endpoint.interface),
                     mtu=link.mtu,
                     up=True,
                     addresses=_address_strings(node.interfaces.get(endpoint.interface, ())),
@@ -568,8 +578,7 @@ def _desired_interfaces(node: NodePlan, plan: TopologyPlan) -> tuple[InterfaceVi
                     vrf_table=device.table,
                 )
             )
-        else:
-            assert isinstance(device, BondDevicePlan)
+        elif isinstance(device, BondDevicePlan):
             interfaces.append(
                 InterfaceView(
                     name=device.name,
@@ -584,6 +593,30 @@ def _desired_interfaces(node: NodePlan, plan: TopologyPlan) -> tuple[InterfaceVi
                     bond_lacp_rate=device.lacp_rate,
                     bond_xmit_hash_policy=device.xmit_hash_policy,
                     bond_min_links=device.min_links,
+                )
+            )
+        else:
+            assert isinstance(device, VxlanDevicePlan)
+            port = node.bridge_ports.get(device.name)
+            interfaces.append(
+                InterfaceView(
+                    name=device.name,
+                    kind="vxlan",
+                    master=node_interface_master(node, device.name),
+                    mtu=vxlan_device_mtu(node, plan, device),
+                    up=True,
+                    addresses=_address_strings(device.addresses),
+                    path_cost=None if port is None else port.path_cost,
+                    port_priority=None if port is None else port.priority,
+                    bridge_vlans=_bridge_vlan_strings(
+                        expected_bridge_port_vlans(node, device.name)
+                    ),
+                    vxlan_vni=device.vni,
+                    vxlan_link=device.link,
+                    vxlan_local=str(device.local),
+                    vxlan_remote=str(device.remote),
+                    vxlan_dst_port=device.dst_port,
+                    vxlan_learning=device.learning,
                 )
             )
     return tuple(interfaces)
@@ -615,6 +648,12 @@ def _interface_view(interface: InterfaceInventory) -> InterfaceView:
         bond_lacp_rate=interface.bond_lacp_rate,
         bond_xmit_hash_policy=interface.bond_xmit_hash_policy,
         bond_min_links=interface.bond_min_links,
+        vxlan_vni=interface.vxlan_vni,
+        vxlan_link=interface.vxlan_link,
+        vxlan_local=None if interface.vxlan_local is None else str(interface.vxlan_local),
+        vxlan_remote=None if interface.vxlan_remote is None else str(interface.vxlan_remote),
+        vxlan_dst_port=interface.vxlan_dst_port,
+        vxlan_learning=interface.vxlan_learning,
     )
 
 
@@ -1005,6 +1044,20 @@ def _compare_interface(
         actual.bond_xmit_hash_policy,
     )
     compare("bond_min_links", desired.bond_min_links, actual.bond_min_links)
+    compare("vxlan_vni", desired.vxlan_vni, actual.vxlan_vni)
+    compare("vxlan_link", desired.vxlan_link, actual.vxlan_link)
+    compare(
+        "vxlan_local",
+        desired.vxlan_local,
+        None if actual.vxlan_local is None else str(actual.vxlan_local),
+    )
+    compare(
+        "vxlan_remote",
+        desired.vxlan_remote,
+        None if actual.vxlan_remote is None else str(actual.vxlan_remote),
+    )
+    compare("vxlan_dst_port", desired.vxlan_dst_port, actual.vxlan_dst_port)
+    compare("vxlan_learning", desired.vxlan_learning, actual.vxlan_learning)
     return differences
 
 

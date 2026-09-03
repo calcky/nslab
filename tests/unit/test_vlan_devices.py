@@ -25,7 +25,13 @@ from nslab.manifest import (
     load_manifest,
     normalized_manifest,
 )
-from nslab.planner import NodePlan, VlanDevicePlan, compile_plan, node_interface_addresses
+from nslab.planner import (
+    BridgeVlanPlan,
+    NodePlan,
+    VlanDevicePlan,
+    compile_plan,
+    node_interface_addresses,
+)
 from nslab.routing import render_frr_config
 from nslab.state import StateStore
 
@@ -79,14 +85,60 @@ def _manifest() -> Manifest:
     return Manifest.model_validate(_document())
 
 
-@pytest.mark.parametrize("example", ["vlan-subinterface", "router-on-a-stick"])
-def test_vlan_example_manifest_compiles(example: str) -> None:
-    manifest = load_manifest(_EXAMPLES / example / "nslab.yaml")
+def test_vlan_example_manifest_combines_subinterfaces_and_router_on_a_stick() -> None:
+    manifest = load_manifest(_EXAMPLES / "vlan" / "nslab.yaml")
 
     plan = compile_plan(manifest)
 
-    assert plan.name == example
-    assert any(node.devices for node in plan.nodes.values())
+    assert plan.name == "vlan"
+    assert tuple(plan.nodes) == ("h1", "h2", "h10", "sw1", "r1", "h20")
+    assert len(plan.links) == 5
+    assert tuple(
+        (link.left.node, link.left.interface, link.right.node, link.right.interface)
+        for link in plan.links
+    ) == (
+        ("h1", "eth0", "sw1", "trunk1"),
+        ("h2", "eth0", "sw1", "trunk2"),
+        ("h10", "eth0", "sw1", "access10"),
+        ("sw1", "router", "r1", "eth0"),
+        ("sw1", "access20", "h20", "eth0"),
+    )
+    assert plan.nodes["h1"].devices["vlan10"] == VlanDevicePlan(
+        name="vlan10",
+        link="eth0",
+        vlan_id=10,
+        addresses=(IPv4Interface("192.168.10.3/24"),),
+    )
+    assert plan.nodes["h2"].devices["vlan10"] == VlanDevicePlan(
+        name="vlan10",
+        link="eth0",
+        vlan_id=10,
+        addresses=(IPv4Interface("192.168.10.4/24"),),
+    )
+    assert plan.nodes["r1"].devices["vlan10"] == VlanDevicePlan(
+        name="vlan10",
+        link="eth0",
+        vlan_id=10,
+        addresses=(IPv4Interface("192.168.10.1/24"),),
+    )
+    assert plan.nodes["r1"].devices["vlan20"] == VlanDevicePlan(
+        name="vlan20",
+        link="eth0",
+        vlan_id=20,
+        addresses=(IPv4Interface("192.168.20.1/24"),),
+    )
+    assert plan.nodes["r1"].sysctls == {"net.ipv4.ip_forward": 1}
+    assert plan.nodes["sw1"].vlan_filtering is True
+    assert plan.nodes["sw1"].bridge_ports["trunk1"].vlans == (
+        BridgeVlanPlan(vid=10, pvid=False, untagged=False),
+    )
+    assert plan.nodes["sw1"].bridge_ports["trunk2"].vlans == (
+        BridgeVlanPlan(vid=10, pvid=False, untagged=False),
+    )
+    assert plan.nodes["h1"].routes[0].dev == "vlan10"
+    assert str(plan.nodes["h1"].routes[0].via) == "192.168.10.1"
+    assert plan.nodes["h2"].routes[0].dev == "vlan10"
+    assert str(plan.nodes["h2"].routes[0].via) == "192.168.10.1"
 
 
 def _link_message(
@@ -140,7 +192,7 @@ def test_manifest_and_plan_preserve_vlan_device_configuration() -> None:
         (lambda node: node["devices"]["vlan10"].update({"id": 0}), "greater than or equal"),
         (
             lambda node: node["devices"]["vlan10"].update({"type": "vxlan"}),
-            "does not match any of the expected tags",
+            "Field required",
         ),
         (lambda node: node["devices"]["vlan10"].update({"link": "lo"}), "cannot be 'lo'"),
         (

@@ -191,8 +191,56 @@ class BondDeviceConfig(InterfaceConfig):
         return self
 
 
+VxlanVni = Annotated[StrictInt, Field(ge=1, le=16_777_215)]
+VxlanPort = Annotated[StrictInt, Field(ge=1, le=65_535)]
+VxlanMtu = Annotated[StrictInt, Field(ge=576, le=9_216)]
+
+
+class VxlanDeviceConfig(InterfaceConfig):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    type: Literal["vxlan"]
+    vni: VxlanVni
+    link: str
+    local: IPv4Address | IPv6Address
+    remote: IPv4Address | IPv6Address
+    dst_port: VxlanPort = 4789
+    learning: StrictBool = True
+    mtu: VxlanMtu | None = None
+
+    @field_validator("link")
+    @classmethod
+    def validate_link_name(cls, value: str) -> str:
+        link = _require_name(value, IFNAME_PATTERN, "VXLAN underlay interface name")
+        if link == "lo":
+            raise ValueError("VXLAN underlay interface cannot be 'lo'")
+        return link
+
+    @field_validator("local", "remote", mode="before")
+    @classmethod
+    def validate_address_input(cls, value: object) -> object:
+        if not isinstance(value, (str, IPv4Address, IPv6Address)):
+            raise ValueError("VXLAN endpoints must be IPv4 or IPv6 strings")
+        return value
+
+    @field_validator("local", "remote")
+    @classmethod
+    def validate_unicast_address(cls, value: IPAddress) -> IPAddress:
+        if value.is_unspecified or value.is_multicast:
+            raise ValueError("VXLAN endpoints must be unicast addresses")
+        return value
+
+    @model_validator(mode="after")
+    def validate_endpoints(self) -> Self:
+        if self.local.version != self.remote.version:
+            raise ValueError("VXLAN local and remote must use the same address family")
+        if self.local == self.remote:
+            raise ValueError("VXLAN local and remote addresses must be different")
+        return self
+
+
 type LinuxDeviceConfig = Annotated[
-    VlanDeviceConfig | VrfDeviceConfig | BondDeviceConfig,
+    VlanDeviceConfig | VrfDeviceConfig | BondDeviceConfig | VxlanDeviceConfig,
     Field(discriminator="type"),
 ]
 
@@ -628,6 +676,11 @@ class LinuxNode(_NodeBase):
             for name, device in self.devices.items()
             if isinstance(device, BondDeviceConfig)
         }
+        vxlan_devices = {
+            name: device
+            for name, device in self.devices.items()
+            if isinstance(device, VxlanDeviceConfig)
+        }
 
         bond_by_member: dict[str, str] = {}
         for name, bond in bond_devices.items():
@@ -658,6 +711,17 @@ class LinuxNode(_NodeBase):
                     f"duplicate VLAN ID {device.id} on parent interface {device.link!r}"
                 )
             seen_vlan_links.add(identity)
+
+        seen_vxlan_vnis: set[int] = set()
+        for name, vxlan in vxlan_devices.items():
+            if vxlan.link in self.devices:
+                raise ValueError(
+                    f"VXLAN underlay interface must be a linked interface: "
+                    f"{name!r} -> {vxlan.link!r}"
+                )
+            if vxlan.vni in seen_vxlan_vnis:
+                raise ValueError(f"duplicate VXLAN VNI: {vxlan.vni}")
+            seen_vxlan_vnis.add(vxlan.vni)
 
         seen_tables: set[int] = set()
         tables_by_interface: dict[str, int] = {}
@@ -707,6 +771,11 @@ class LinuxNode(_NodeBase):
         connected_networks.update(
             (MAIN_ROUTE_TABLE, address.network)
             for device in bond_devices.values()
+            for address in device.addresses
+        )
+        connected_networks.update(
+            (tables_by_interface.get(name, MAIN_ROUTE_TABLE), address.network)
+            for name, device in vxlan_devices.items()
             for address in device.addresses
         )
         _validate_routes_by_table(self.routes, connected_networks, tables_by_interface)
@@ -796,10 +865,38 @@ class BridgeNode(_NodeBase):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     kind: Literal["bridge"]
+    devices: dict[str, VxlanDeviceConfig] = Field(default_factory=dict)
     bridge: BridgeConfig
+
+    @field_validator("devices")
+    @classmethod
+    def validate_device_names(
+        cls, devices: dict[str, VxlanDeviceConfig]
+    ) -> dict[str, VxlanDeviceConfig]:
+        for device_name in devices:
+            _require_name(device_name, IFNAME_PATTERN, "device name")
+            if device_name == "lo":
+                raise ValueError("device name cannot be 'lo'")
+        return devices
 
     @model_validator(mode="after")
     def validate_routes(self) -> Self:
+        collisions = set(self.interfaces) & set(self.devices)
+        if collisions:
+            name = sorted(collisions)[0]
+            raise ValueError(f"device name conflicts with an interface: {name!r}")
+        if self.bridge.name in self.devices:
+            raise ValueError(
+                f"device name conflicts with the bridge interface: {self.bridge.name!r}"
+            )
+        seen_vnis: set[int] = set()
+        for device_name, device in self.devices.items():
+            if device.addresses:
+                raise ValueError(f"bridge VXLAN device cannot declare addresses: {device_name!r}")
+            if device.vni in seen_vnis:
+                raise ValueError(f"duplicate VXLAN VNI: {device.vni}")
+            seen_vnis.add(device.vni)
+
         connected_networks = {
             (MAIN_ROUTE_TABLE, address.network)
             for interface in self.interfaces.values()
@@ -898,6 +995,11 @@ class Topology(BaseModel):
                     for name, device in node.devices.items()
                     if isinstance(device, BondDeviceConfig)
                 }
+                vxlan_devices = {
+                    name: device
+                    for name, device in node.devices.items()
+                    if isinstance(device, VxlanDeviceConfig)
+                }
                 for device_name in node.devices:
                     if device_name in linked:
                         raise ValueError(
@@ -929,6 +1031,33 @@ class Topology(BaseModel):
                             f"{node_name!r}: {bond_name!r}"
                         )
                 available.update(bond_devices)
+                for device_name, vxlan in vxlan_devices.items():
+                    if vxlan.link not in linked:
+                        raise ValueError(
+                            f"VXLAN underlay interface is not linked on node "
+                            f"{node_name!r}: {device_name!r} -> {vxlan.link!r}"
+                        )
+                    configured_addresses = node.interfaces.get(vxlan.link)
+                    if configured_addresses is None or vxlan.local not in {
+                        address.ip for address in configured_addresses.addresses
+                    }:
+                        raise ValueError(
+                            f"VXLAN local address is not configured on underlay interface "
+                            f"{node_name!r}: {device_name!r} -> {vxlan.link!r}"
+                        )
+                    overhead = 50 if vxlan.local.version == 4 else 70
+                    maximum_mtu = linked_mtus[node_name][vxlan.link] - overhead
+                    if maximum_mtu < 576:
+                        raise ValueError(
+                            f"VXLAN underlay MTU is too small on node {node_name!r}: "
+                            f"{device_name!r}"
+                        )
+                    if vxlan.mtu is not None and vxlan.mtu > maximum_mtu:
+                        raise ValueError(
+                            f"VXLAN MTU exceeds encapsulation limit on node {node_name!r}: "
+                            f"{device_name!r} maximum is {maximum_mtu}"
+                        )
+                available.update(vxlan_devices)
                 for vrf_name, vrf in vrf_devices.items():
                     for interface in vrf.interfaces:
                         if interface not in available:
@@ -945,6 +1074,42 @@ class Topology(BaseModel):
                                 f"{node_name!r}: {rule_interface!r}"
                             )
             if isinstance(node, BridgeNode):
+                vxlan_devices = node.devices
+                for device_name in vxlan_devices:
+                    if device_name in linked:
+                        raise ValueError(
+                            f"device name conflicts with a linked endpoint on node "
+                            f"{node_name!r}: {device_name!r}"
+                        )
+                underlay_interfaces: set[str] = set()
+                for device_name, vxlan in vxlan_devices.items():
+                    if vxlan.link not in linked:
+                        raise ValueError(
+                            f"VXLAN underlay interface is not linked on node "
+                            f"{node_name!r}: {device_name!r} -> {vxlan.link!r}"
+                        )
+                    configured_addresses = node.interfaces.get(vxlan.link)
+                    if configured_addresses is None or vxlan.local not in {
+                        address.ip for address in configured_addresses.addresses
+                    }:
+                        raise ValueError(
+                            f"VXLAN local address is not configured on underlay interface "
+                            f"{node_name!r}: {device_name!r} -> {vxlan.link!r}"
+                        )
+                    overhead = 50 if vxlan.local.version == 4 else 70
+                    maximum_mtu = linked_mtus[node_name][vxlan.link] - overhead
+                    if maximum_mtu < 576:
+                        raise ValueError(
+                            f"VXLAN underlay MTU is too small on node {node_name!r}: "
+                            f"{device_name!r}"
+                        )
+                    if vxlan.mtu is not None and vxlan.mtu > maximum_mtu:
+                        raise ValueError(
+                            f"VXLAN MTU exceeds encapsulation limit on node {node_name!r}: "
+                            f"{device_name!r} maximum is {maximum_mtu}"
+                        )
+                    underlay_interfaces.add(vxlan.link)
+
                 if node.bridge.name in linked:
                     raise ValueError(
                         f"bridge interface conflicts with a linked endpoint on node "
@@ -952,9 +1117,14 @@ class Topology(BaseModel):
                     )
                 available.add(node.bridge.name)
                 for port_name in node.bridge.ports:
-                    if port_name not in linked:
+                    if port_name in underlay_interfaces:
                         raise ValueError(
-                            f"configured bridge port is not linked on node "
+                            f"VXLAN underlay interface cannot be a bridge port on node "
+                            f"{node_name!r}: {port_name!r}"
+                        )
+                    if port_name not in linked and port_name not in vxlan_devices:
+                        raise ValueError(
+                            f"configured bridge port is not linked or a VXLAN device on node "
                             f"{node_name!r}: {port_name!r}"
                         )
 
@@ -1009,7 +1179,10 @@ class Topology(BaseModel):
                         *(
                             device
                             for device in node.devices.values()
-                            if isinstance(device, (VlanDeviceConfig, BondDeviceConfig))
+                            if isinstance(
+                                device,
+                                (VlanDeviceConfig, BondDeviceConfig, VxlanDeviceConfig),
+                            )
                         ),
                     )
                     for address in interface.addresses
@@ -1092,7 +1265,7 @@ def normalized_manifest(manifest: Manifest) -> dict[str, object]:
     nodes = topology["nodes"]
     assert isinstance(nodes, dict)
     for node_name, node in manifest.topology.nodes.items():
-        if isinstance(node, LinuxNode) and not node.devices:
+        if isinstance(node, (LinuxNode, BridgeNode)) and not node.devices:
             node_document = nodes[node_name]
             assert isinstance(node_document, dict)
             node_document.pop("devices", None)

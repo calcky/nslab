@@ -30,6 +30,7 @@ from nslab.manifest import (
     RoutingConfig,
     VlanDeviceConfig,
     VrfDeviceConfig,
+    VxlanDeviceConfig,
     manifest_fingerprint,
 )
 from nslab.naming import namespace_name, temporary_veth_names
@@ -146,7 +147,20 @@ class BondDevicePlan:
     min_links: int | None = None
 
 
-type DevicePlan = VlanDevicePlan | VrfDevicePlan | BondDevicePlan
+@dataclass(frozen=True, slots=True)
+class VxlanDevicePlan:
+    name: str
+    vni: int
+    link: str
+    local: IPAddress
+    remote: IPAddress
+    dst_port: int = 4789
+    learning: bool = True
+    mtu: int | None = None
+    addresses: tuple[IPInterface, ...] = ()
+
+
+type DevicePlan = VlanDevicePlan | VrfDevicePlan | BondDevicePlan | VxlanDevicePlan
 
 
 def _empty_bridge_ports() -> Mapping[str, BridgePortPlan]:
@@ -222,6 +236,25 @@ def bond_device_mtu(node: NodePlan, plan: TopologyPlan, device: BondDevicePlan) 
     return next(iter(mtus))
 
 
+def vxlan_device_mtu(node: NodePlan, plan: TopologyPlan, device: VxlanDevicePlan) -> int:
+    """Return an explicit VXLAN MTU or derive one from its underlay link."""
+
+    if device.mtu is not None:
+        return device.mtu
+    underlay_mtu = next(
+        (
+            link.mtu
+            for link in plan.links
+            for endpoint in (link.left, link.right)
+            if endpoint.node == node.name and endpoint.interface == device.link
+        ),
+        None,
+    )
+    if underlay_mtu is None:
+        raise ValueError(f"VXLAN underlay is not planned: {node.name}:{device.link}")
+    return underlay_mtu - (50 if device.local.version == 4 else 70)
+
+
 def node_interface_addresses(node: NodePlan) -> Mapping[str, tuple[IPInterface, ...]]:
     """Return address declarations for linked and namespace-local devices."""
 
@@ -231,7 +264,7 @@ def node_interface_addresses(node: NodePlan) -> Mapping[str, tuple[IPInterface, 
             **{
                 name: device.addresses
                 for name, device in node.devices.items()
-                if isinstance(device, (VlanDevicePlan, BondDevicePlan))
+                if isinstance(device, (VlanDevicePlan, BondDevicePlan, VxlanDevicePlan))
             },
         }
     )
@@ -251,7 +284,7 @@ def node_interface_vrf_master(node: NodePlan, interface: str) -> str | None:
 
 
 def node_interface_master(node: NodePlan, interface: str) -> str | None:
-    """Return the bond or VRF device that owns an interface, if any."""
+    """Return the L2 or L3 master that owns an interface, if any."""
 
     bond = next(
         (
@@ -261,7 +294,21 @@ def node_interface_master(node: NodePlan, interface: str) -> str | None:
         ),
         None,
     )
-    return bond if bond is not None else node_interface_vrf_master(node, interface)
+    if bond is not None:
+        return bond
+    vrf = node_interface_vrf_master(node, interface)
+    if vrf is not None:
+        return vrf
+    if node.kind != "bridge":
+        return None
+    if interface == node.bridge_name:
+        return None
+    if any(
+        isinstance(device, VxlanDevicePlan) and device.link == interface
+        for device in node.devices.values()
+    ):
+        return None
+    return node.bridge_name
 
 
 def node_interface_route_table(node: NodePlan, interface: str) -> int:
@@ -335,6 +382,18 @@ def _compile_node(deployment: str, name: str, manifest_node: NodeConfig) -> Node
                     table=config.table,
                     interfaces=tuple(config.interfaces),
                 )
+            elif isinstance(config, VxlanDeviceConfig):
+                compiled_devices[device_name] = VxlanDevicePlan(
+                    name=device_name,
+                    vni=config.vni,
+                    link=config.link,
+                    local=ip_address(str(config.local)),
+                    remote=ip_address(str(config.remote)),
+                    addresses=tuple(ip_interface(str(address)) for address in config.addresses),
+                    dst_port=config.dst_port,
+                    learning=config.learning,
+                    mtu=config.mtu,
+                )
             else:
                 assert isinstance(config, BondDeviceConfig)
                 is_lacp = config.mode == "802.3ad"
@@ -351,6 +410,20 @@ def _compile_node(deployment: str, name: str, manifest_node: NodeConfig) -> Node
                     if is_lacp
                     else None,
                 )
+    elif isinstance(manifest_node, BridgeNode):
+        for device_name, vxlan_config in manifest_node.devices.items():
+            assert isinstance(vxlan_config, VxlanDeviceConfig)
+            compiled_devices[device_name] = VxlanDevicePlan(
+                name=device_name,
+                vni=vxlan_config.vni,
+                link=vxlan_config.link,
+                local=ip_address(str(vxlan_config.local)),
+                remote=ip_address(str(vxlan_config.remote)),
+                addresses=tuple(ip_interface(str(address)) for address in vxlan_config.addresses),
+                dst_port=vxlan_config.dst_port,
+                learning=vxlan_config.learning,
+                mtu=vxlan_config.mtu,
+            )
     devices: Mapping[str, DevicePlan] = MappingProxyType(compiled_devices)
     tables_by_interface = {
         interface: device.table

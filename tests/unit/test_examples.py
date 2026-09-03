@@ -21,22 +21,33 @@ _DOCS = Path(__file__).resolve().parents[2] / "docs"
 _DOCS_EXAMPLES = _DOCS / "examples"
 
 
+def _example_manifests() -> list[Path]:
+    """Return the default and named manifests shipped by each example."""
+
+    return sorted(_EXAMPLES.glob("*/nslab*.yaml"))
+
+
+def _manifest_id(path: Path) -> str:
+    return path.relative_to(_EXAMPLES).with_suffix("").as_posix().replace("/", "-")
+
+
 @pytest.mark.parametrize(
     "manifest_path",
-    sorted(_EXAMPLES.glob("*/nslab.yaml")),
-    ids=lambda path: path.parent.name,
+    _example_manifests(),
+    ids=_manifest_id,
 )
 def test_every_example_manifest_compiles(manifest_path: Path) -> None:
-    plan = compile_plan(load_manifest(manifest_path))
+    manifest = load_manifest(manifest_path)
+    plan = compile_plan(manifest)
 
-    assert plan.name == manifest_path.parent.name
+    assert plan.name == manifest.name
     assert plan.nodes
 
 
 @pytest.mark.parametrize(
     "manifest_path",
-    sorted(_EXAMPLES.glob("*/nslab.yaml")),
-    ids=lambda path: path.parent.name,
+    _example_manifests(),
+    ids=_manifest_id,
 )
 def test_every_example_has_a_usage_readme(manifest_path: Path) -> None:
     readme = manifest_path.with_name("README.md")
@@ -49,19 +60,21 @@ def test_every_example_has_a_usage_readme(manifest_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "manifest_path",
-    sorted(_EXAMPLES.glob("*/nslab.yaml")),
-    ids=lambda path: path.parent.name,
+    _example_manifests(),
+    ids=_manifest_id,
 )
 def test_every_example_document_has_current_mermaid_and_command_output(
     manifest_path: Path,
 ) -> None:
-    name = manifest_path.parent.name
-    plan = compile_plan(load_manifest(manifest_path))
+    manifest = load_manifest(manifest_path)
+    name = manifest.name
+    plan = compile_plan(manifest)
     expected_graph = f"```mermaid\n{render_graph(plan, 'mermaid')}\n```"
+    manifest_filename = manifest_path.name
     documents = (
         manifest_path.with_name("README.md"),
-        _DOCS_EXAMPLES / f"{name}.md",
-        _DOCS_EXAMPLES / f"{name}.zh.md",
+        _DOCS_EXAMPLES / f"{manifest_path.parent.name}.md",
+        _DOCS_EXAMPLES / f"{manifest_path.parent.name}.zh.md",
     )
     documented_commands: list[tuple[str, ...]] = []
 
@@ -69,6 +82,8 @@ def test_every_example_document_has_current_mermaid_and_command_output(
         content = document.read_text(encoding="utf-8")
         lines = content.splitlines()
         assert "nslab graph --format mermaid" in content
+        if manifest_filename != "nslab.yaml":
+            assert f"nslab graph --topo {manifest_filename} --format mermaid" in content
         assert expected_graph in content
         assert f"deployed topology: {name}" in content
         assert "status: deployed" in content

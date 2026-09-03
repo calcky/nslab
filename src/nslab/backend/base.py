@@ -9,6 +9,7 @@ from typing import Protocol, runtime_checkable
 from nslab.planner import (
     BondDevicePlan,
     BridgeVlanPlan,
+    IPAddress,
     IPInterface,
     LinkPlan,
     NetemPlan,
@@ -19,10 +20,12 @@ from nslab.planner import (
     TopologyPlan,
     VlanDevicePlan,
     VrfDevicePlan,
+    VxlanDevicePlan,
     bond_device_mtu,
     node_interface_addresses,
     node_interface_master,
     node_interface_route_table,
+    vxlan_device_mtu,
 )
 
 
@@ -54,6 +57,12 @@ class InterfaceInventory:
     bond_lacp_rate: str | None = None
     bond_xmit_hash_policy: str | None = None
     bond_min_links: int | None = None
+    vxlan_vni: int | None = None
+    vxlan_link: str | None = None
+    vxlan_local: IPAddress | None = None
+    vxlan_remote: IPAddress | None = None
+    vxlan_dst_port: int | None = None
+    vxlan_learning: bool | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "addresses", tuple(self.addresses))
@@ -171,10 +180,20 @@ class _ExpectedInterface:
     bond_lacp_rate: str | None = None
     bond_xmit_hash_policy: str | None = None
     bond_min_links: int | None = None
+    vxlan_vni: int | None = None
+    vxlan_link: str | None = None
+    vxlan_local: IPAddress | None = None
+    vxlan_remote: IPAddress | None = None
+    vxlan_dst_port: int | None = None
+    vxlan_learning: bool | None = None
 
 
 def expected_bridge_port_vlans(node: NodePlan, interface: str) -> tuple[BridgeVlanPlan, ...]:
-    if node.kind != "bridge" or not node.vlan_filtering:
+    if (
+        node.kind != "bridge"
+        or not node.vlan_filtering
+        or node_interface_master(node, interface) != node.bridge_name
+    ):
         return ()
     port = node.bridge_ports.get(interface)
     if port is not None and port.vlans:
@@ -243,11 +262,7 @@ def _expected_interfaces(node: NodePlan, plan: TopologyPlan) -> dict[str, _Expec
             port = node.bridge_ports.get(endpoint.interface)
             expected[endpoint.interface] = _ExpectedInterface(
                 kind="veth",
-                master=(
-                    node.bridge_name
-                    if node.kind == "bridge"
-                    else node_interface_master(node, endpoint.interface)
-                ),
+                master=node_interface_master(node, endpoint.interface),
                 mtu=link.mtu,
                 up=True,
                 addresses=node.interfaces.get(endpoint.interface, ()),
@@ -277,8 +292,7 @@ def _expected_interfaces(node: NodePlan, plan: TopologyPlan) -> dict[str, _Expec
                 addresses=(),
                 vrf_table=device.table,
             )
-        else:
-            assert isinstance(device, BondDevicePlan)
+        elif isinstance(device, BondDevicePlan):
             expected[device.name] = _ExpectedInterface(
                 kind="bond",
                 master=node_interface_master(node, device.name),
@@ -291,6 +305,25 @@ def _expected_interfaces(node: NodePlan, plan: TopologyPlan) -> dict[str, _Expec
                 bond_lacp_rate=device.lacp_rate,
                 bond_xmit_hash_policy=device.xmit_hash_policy,
                 bond_min_links=device.min_links,
+            )
+        else:
+            assert isinstance(device, VxlanDevicePlan)
+            port = node.bridge_ports.get(device.name)
+            expected[device.name] = _ExpectedInterface(
+                kind="vxlan",
+                master=node_interface_master(node, device.name),
+                mtu=vxlan_device_mtu(node, plan, device),
+                up=True,
+                addresses=device.addresses,
+                path_cost=None if port is None else port.path_cost,
+                port_priority=None if port is None else port.priority,
+                bridge_vlans=expected_bridge_port_vlans(node, device.name),
+                vxlan_vni=device.vni,
+                vxlan_link=device.link,
+                vxlan_local=device.local,
+                vxlan_remote=device.remote,
+                vxlan_dst_port=device.dst_port,
+                vxlan_learning=device.learning,
             )
 
     return expected
@@ -351,6 +384,18 @@ def _interfaces_match(
         if observed.bond_xmit_hash_policy != desired.bond_xmit_hash_policy:
             return False
         if observed.bond_min_links != desired.bond_min_links:
+            return False
+        if observed.vxlan_vni != desired.vxlan_vni:
+            return False
+        if observed.vxlan_link != desired.vxlan_link:
+            return False
+        if observed.vxlan_local != desired.vxlan_local:
+            return False
+        if observed.vxlan_remote != desired.vxlan_remote:
+            return False
+        if observed.vxlan_dst_port != desired.vxlan_dst_port:
+            return False
+        if observed.vxlan_learning is not desired.vxlan_learning:
             return False
 
     return True

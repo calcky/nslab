@@ -11,10 +11,11 @@ topology
 │  └─ <node-name>
 │     ├─ kind: linux
 │     │  ├─ interfaces / devices / routes / rules / sysctls
-│     │  ├─ devices → <device-name> → type: vlan | vrf | bond
+│     │  ├─ devices → <device-name> → type: vlan | vrf | bond | vxlan
 │     │  └─ routing
 │     └─ kind: bridge
-│        ├─ interfaces / routes / sysctls
+│        ├─ interfaces / devices / routes / sysctls
+│        ├─ devices → <device-name> → type: vxlan
 │        └─ bridge → ports → vlans
 └─ links
    └─ endpoints / mtu / netem
@@ -60,7 +61,8 @@ topology:
 
 接口名必须为 1 到 15 个字符，可包含字母、数字、`_`、`.` 和 `-`。除 bridge 设备名外，
 `interfaces` 中声明的接口必须在 `links[].endpoints` 中出现。
-Namespace 内部的 VLAN、VRF 和 bond 设备应声明在 `devices`，而不是 `interfaces`。
+Namespace 内部的 VLAN、VRF、bond 和 VXLAN 设备应声明在 `devices`，而不是
+`interfaces`。
 
 ##### `interfaces.<ifname>`
 
@@ -173,7 +175,7 @@ start 不能大于 end，两个 realm 不能同时为零。Suppress 选项只适
 
 `devices` 会在所有 veth endpoint 移入节点后，在 Linux 节点内部创建设备。设备名遵循
 接口名规则，不能是 `lo`，不能与 linked endpoint 或 `interfaces` key 冲突。必须通过
-`type` 选择 `vlan`、`vrf` 或 `bond`。
+`type` 选择 `vlan`、`vrf`、`bond` 或 `vxlan`。
 
 ###### `type: vlan`
 
@@ -189,6 +191,26 @@ start 不能大于 end，两个 realm 不能同时为零。Suppress 选项只适
 当前只支持一层设备：VLAN 设备不能再以另一个声明设备作为 lower interface。MTU 继承
 lower interface。直连路由、BGP 直连邻居检查以及 OSPF/BGP 自动 network statement 都会
 包含设备地址。
+
+###### `type: vxlan`
+
+独立 VXLAN 设备是 Linux 三层接口。它使用静态单播远端 VTEP，可以直接承载地址和路由：
+
+| 字段 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `devices.<name>.type` | 是 | 无 | 必须为 `vxlan` |
+| `devices.<name>.vni` | 是 | 无 | VXLAN Network Identifier，范围 `1..16777215`，节点内唯一 |
+| `devices.<name>.link` | 是 | 无 | 同一节点中的 linked underlay interface |
+| `devices.<name>.local` | 是 | 无 | 配置在 `link` 上的单播 IPv4/IPv6 源地址 |
+| `devices.<name>.remote` | 是 | 无 | 与 `local` 地址族相同的静态单播 VTEP 地址 |
+| `devices.<name>.addresses` | 否 | `[]` | 配置在 VXLAN 接口上的 IPv4/IPv6 地址 |
+| `devices.<name>.dst_port` | 否 | `4789` | UDP 目的端口，范围 `1..65535` |
+| `devices.<name>.learning` | 否 | `true` | 是否开启源 MAC 学习 |
+| `devices.<name>.mtu` | 否 | 自动 | 上限为 underlay MTU 减封装开销 |
+
+underlay `link` 必须是 linked interface，并包含完全相同的 `local` 地址。自动 MTU 在
+IPv4 下减 50 字节，在 IPv6 下减 70 字节。独立 VXLAN 不设置 bridge master，因此可以
+作为 `routes[].dev`，示例见 `examples/vxlan/nslab.yaml`。
 
 ###### `type: bond`
 
@@ -274,16 +296,50 @@ Bridge 节点在自己的 namespace 中创建一台 Linux bridge。它可以使�
 
 | 节点字段 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- |
+| `devices` | 否 | `{}` | 挂到此 bridge 的静态 VXLAN 设备 |
 | `bridge` | 是 | 无 | Linux bridge 设备及端口配置对象 |
 
 ```yaml
 sw1:
   kind: bridge
+  interfaces:
+    underlay0:
+      addresses: [192.0.2.1/30]
+  devices:
+    vxlan100:
+      type: vxlan
+      vni: 100
+      link: underlay0
+      local: 192.0.2.1
+      remote: 192.0.2.2
   bridge:
     name: br0
     stp: true
     vlan_filtering: false
 ```
+
+##### `devices.<name>`：`type: vxlan`
+
+Bridge 节点中的 VXLAN 设备创建静态单播二层隧道，并自动加入 `bridge.name`。它的 lower `link` 必须是
+同一节点的 linked interface，且 `local` 地址必须准确配置在该接口的 `interfaces` 中；
+这个 underlay 接口不会加入 bridge。
+
+| 字段 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `type` | 是 | 无 | 必须为 `vxlan` |
+| `vni` | 是 | 无 | VXLAN Network Identifier，范围 `1..16777215`，同一节点内唯一 |
+| `link` | 是 | 无 | 同一 bridge 节点中的 linked underlay interface |
+| `local` | 是 | 无 | 配置在 `link` 上的单播 IPv4/IPv6 源地址 |
+| `remote` | 是 | 无 | 静态单播远端 VTEP 地址，地址族必须与 `local` 相同 |
+| `dst_port` | 否 | `4789` | UDP 目的端口，范围 `1..65535` |
+| `learning` | 否 | `true` | 是否在 VXLAN 接口上开启源 MAC 学习 |
+| `mtu` | 否 | 自动 | VXLAN MTU，范围 `576..9216`，上限为 underlay MTU 减封装开销 |
+
+自动 MTU 在 IPv4 underlay 上减 50 字节，在 IPv6 underlay 上减 70 字节。自定义值不能
+超过该上限。`local` 和 `remote` 不能相同，也不能是 unspecified 或 multicast 地址。
+内核会为静态 remote 安装永久的全零 MAC FDB 条目。`bridge.ports` 可以引用 VXLAN
+设备来配置 STP 或 VLAN，但不能引用 VXLAN underlay interface。Bridge 节点的 VXLAN
+设备不能声明 `addresses`；三层 VXLAN 请使用 Linux 节点。
 
 ##### `bridge`
 
@@ -293,7 +349,7 @@ sw1:
 | `stp` | 是 | 无 | 是否开启 Linux bridge STP |
 | `vlan_filtering` | 是 | 无 | 是否开启 VLAN-aware filtering |
 | `priority` | 否 | `null` | Bridge priority，范围 `0..65535` |
-| `ports` | 否 | `{}` | 链接端口名到 STP/VLAN 配置的映射 |
+| `ports` | 否 | `{}` | Linked access 或 VXLAN 端口名到 STP/VLAN 配置的映射 |
 
 `bridge.name` 不能与链接 endpoint 使用同名接口。若要给 bridge 本身配置 IP，可在节点
 `interfaces` 中使用相同的 `bridge.name`。
@@ -306,7 +362,8 @@ sw1:
 | `priority` | 否 | `null` | Linux STP port priority，范围 `0..63`，要求 `stp: true` |
 | `vlans` | 否 | `[]` | 端口 VLAN 列表，要求 `vlan_filtering: true` |
 
-端口配置至少要包含一个 STP 或 VLAN 设置；端口名必须在 `links` 中连接。
+端口配置至少要包含一个 STP 或 VLAN 设置；端口必须是 linked access interface 或已声明
+的 VXLAN 设备。
 
 每个 `vlans[]` 项：
 

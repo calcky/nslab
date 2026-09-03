@@ -1,8 +1,38 @@
 version: 1
-name: router-on-a-stick
+name: vlan
 
 topology:
   nodes:
+    h1:
+      kind: linux
+      interfaces:
+        eth0: {}
+      devices:
+        vlan10:
+          type: vlan
+          link: eth0
+          id: 10
+          addresses: [192.168.10.3/24]
+      routes:
+        - dst: default
+          via: 192.168.10.1
+          dev: vlan10
+
+    h2:
+      kind: linux
+      interfaces:
+        eth0: {}
+      devices:
+        vlan10:
+          type: vlan
+          link: eth0
+          id: 10
+          addresses: [192.168.10.4/24]
+      routes:
+        - dst: default
+          via: 192.168.10.1
+          dev: vlan10
+
     h10:
       kind: linux
       interfaces:
@@ -20,6 +50,12 @@ topology:
         stp: false
         vlan_filtering: true
         ports:
+          trunk1:
+            vlans:
+              - vid: 10
+          trunk2:
+            vlans:
+              - vid: 10
           access10:
             vlans:
               - vid: 10
@@ -64,6 +100,8 @@ topology:
           dev: eth0
 
   links:
+    - endpoints: [h1:eth0, sw1:trunk1]
+    - endpoints: [h2:eth0, sw1:trunk2]
     - endpoints: [h10:eth0, sw1:access10]
     - endpoints: [sw1:router, r1:eth0]
     - endpoints: [sw1:access20, h20:eth0]
