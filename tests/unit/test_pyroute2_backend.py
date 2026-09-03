@@ -3504,11 +3504,11 @@ def test_inventory_accepts_verified_kernel_connected_preferred_source(
             _route_message(
                 "192.0.2.0",
                 24,
-                None,
-                extra_attrs=(("RTA_MULTIPATH", ({"oif": 10}, {"oif": 11})),),
+                10,
+                extra_attrs=(("RTA_MP_ALGO", b"unsupported"),),
             ),
-            "multipath",
-            id="multipath",
+            "multipath_algorithm",
+            id="multipath-algorithm",
         ),
         pytest.param(
             _route_message(

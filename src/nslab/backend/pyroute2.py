@@ -58,6 +58,7 @@ from nslab.planner import (
     NodePlan,
     PolicyRulePlan,
     QdiscPlan,
+    RouteNextHopPlan,
     RoutePlan,
     TbfPlan,
     TopologyPlan,
@@ -188,6 +189,7 @@ _ALLOWED_ROUTE_ATTRIBUTES = frozenset(
         "RTA_DST",
         "RTA_OIF",
         "RTA_GATEWAY",
+        "RTA_MULTIPATH",
         "RTA_PREFSRC",
         "RTA_CACHEINFO",
         "RTA_PAD",
@@ -442,6 +444,65 @@ def _unsupported_inventory_route(namespace: str, reason: str) -> NslabError:
             "reason": reason,
         },
     )
+
+
+def _decode_multipath_nexthops(
+    value: object,
+    names_by_index: Mapping[int, str],
+    namespace: str,
+    family: int,
+) -> tuple[RouteNextHopPlan, ...]:
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, (str, bytes, bytearray))
+        or len(value) < 2
+    ):
+        raise _unsupported_inventory_route(namespace, "multipath")
+
+    nexthops: list[RouteNextHopPlan] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            raise _unsupported_inventory_route(namespace, "multipath_nexthop")
+        if not _attribute_names(item) <= {"RTA_GATEWAY"}:
+            raise _unsupported_inventory_route(namespace, "multipath_nexthop_attribute")
+        try:
+            flags = int(_value(item, "flags", 0))
+            hops = int(_value(item, "hops", 0))
+            output_index = int(_value(item, "oif"))
+        except (TypeError, ValueError):
+            raise _unsupported_inventory_route(namespace, "multipath_nexthop") from None
+        if flags != 0:
+            raise _unsupported_inventory_route(namespace, "multipath_nexthop_flags")
+        if not 0 <= hops <= 255:
+            raise _unsupported_inventory_route(namespace, "multipath_nexthop_weight")
+        interface = names_by_index.get(output_index)
+        if interface is None:
+            raise _unsupported_inventory_route(namespace, "unknown_ifindex")
+        gateway_value = _attribute(item, "RTA_GATEWAY")
+        try:
+            gateway = (
+                None
+                if gateway_value is None
+                else (
+                    IPv6Address(str(gateway_value))
+                    if family == socket.AF_INET6
+                    else IPv4Address(str(gateway_value))
+                )
+            )
+        except (TypeError, ValueError):
+            raise _unsupported_inventory_route(namespace, "invalid_gateway") from None
+        nexthops.append(
+            RouteNextHopPlan(
+                via=gateway,
+                dev=interface,
+                weight=hops + 1,
+            )
+        )
+
+    identities = tuple((nexthop.via, nexthop.dev) for nexthop in nexthops)
+    if len(set(identities)) != len(identities):
+        raise _unsupported_inventory_route(namespace, "multipath_nexthop")
+    return tuple(nexthops)
 
 
 def _unsupported_inventory_rule(namespace: str, reason: str) -> NslabError:
@@ -1642,20 +1703,41 @@ class Pyroute2Backend:
                     namespace.link("set", index=index, state="up")
 
                 for route in node.routes:
-                    route_index = indexes.get(route.dev)
-                    if route_index is None:
-                        route_index = _required_index(
-                            namespace,
-                            route.dev,
-                            "configure_node",
-                            f"{node.namespace}:{route.dev}",
-                        )
-                    route_arguments: dict[str, object] = {
-                        "dst": str(route.dst),
-                        "oif": route_index,
-                    }
-                    if route.via is not None:
-                        route_arguments["gateway"] = str(route.via)
+                    route_arguments: dict[str, object] = {"dst": str(route.dst)}
+                    if route.nexthops:
+                        multipath: list[dict[str, object]] = []
+                        for nexthop in route.nexthops:
+                            route_index = indexes.get(nexthop.dev)
+                            if route_index is None:
+                                route_index = _required_index(
+                                    namespace,
+                                    nexthop.dev,
+                                    "configure_node",
+                                    f"{node.namespace}:{nexthop.dev}",
+                                )
+                                indexes[nexthop.dev] = route_index
+                            item: dict[str, object] = {
+                                "oif": route_index,
+                                "hops": nexthop.weight - 1,
+                            }
+                            if nexthop.via is not None:
+                                item["gateway"] = str(nexthop.via)
+                            multipath.append(item)
+                        route_arguments["multipath"] = multipath
+                    else:
+                        assert route.dev is not None
+                        route_index = indexes.get(route.dev)
+                        if route_index is None:
+                            route_index = _required_index(
+                                namespace,
+                                route.dev,
+                                "configure_node",
+                                f"{node.namespace}:{route.dev}",
+                            )
+                            indexes[route.dev] = route_index
+                        route_arguments["oif"] = route_index
+                        if route.via is not None:
+                            route_arguments["gateway"] = str(route.via)
                     if route.dst.version == 6:
                         route_arguments["family"] = socket.AF_INET6
                     if route.table != _RT_TABLE_MAIN:
@@ -2627,13 +2709,10 @@ class Pyroute2Backend:
                 else:
                     raise _unsupported_inventory_route(namespace, "priority")
 
-            if (
-                "RTA_MULTIPATH" in semantic_attribute_names
-                or "RTA_MP_ALGO" in semantic_attribute_names
-            ):
+            if "RTA_MP_ALGO" in semantic_attribute_names:
                 if dynamic_route:
                     continue
-                raise _unsupported_inventory_route(namespace, "multipath")
+                raise _unsupported_inventory_route(namespace, "multipath_algorithm")
             if "RTA_NH_ID" in semantic_attribute_names:
                 if dynamic_route:
                     continue
@@ -2705,6 +2784,59 @@ class Pyroute2Backend:
                     if dynamic_route:
                         continue
                     raise _unsupported_inventory_route(namespace, "preferred_source")
+
+            if "RTA_MULTIPATH" in semantic_attribute_names:
+                if (
+                    has_preferred_source
+                    or "RTA_OIF" in semantic_attribute_names
+                    or "RTA_GATEWAY" in semantic_attribute_names
+                ):
+                    if dynamic_route:
+                        continue
+                    raise _unsupported_inventory_route(namespace, "multipath")
+                try:
+                    nexthops = _decode_multipath_nexthops(
+                        _attribute(message, "RTA_MULTIPATH"),
+                        names_by_index,
+                        namespace,
+                        family,
+                    )
+                    prefixlen = int(_value(message, "dst_len", 0))
+                except NslabError:
+                    if dynamic_route:
+                        continue
+                    raise
+                except (TypeError, ValueError):
+                    if dynamic_route:
+                        continue
+                    raise _unsupported_inventory_route(namespace, "invalid_destination") from None
+                destination = _attribute(message, "RTA_DST")
+                if destination is None:
+                    if prefixlen != 0:
+                        if dynamic_route:
+                            continue
+                        raise _unsupported_inventory_route(namespace, "missing_destination")
+                    destination = "::" if family == socket.AF_INET6 else "0.0.0.0"
+                try:
+                    network = (
+                        IPv6Network(f"{destination}/{prefixlen}", strict=False)
+                        if family == socket.AF_INET6
+                        else IPv4Network(f"{destination}/{prefixlen}", strict=False)
+                    )
+                except (TypeError, ValueError):
+                    if dynamic_route:
+                        continue
+                    raise _unsupported_inventory_route(namespace, "invalid_destination") from None
+                route = RoutePlan(
+                    dst=network,
+                    via=None,
+                    dev=None,
+                    table=table,
+                    nexthops=nexthops,
+                )
+                if route not in routes:
+                    routes.append(route)
+                continue
 
             output_value = _attribute(message, "RTA_OIF")
             if output_value is None:

@@ -465,12 +465,36 @@ type BridgeDeviceConfig = Annotated[
 ]
 
 
+RouteNextHopWeight = Annotated[StrictInt, Field(ge=1, le=256)]
+
+
+class RouteNextHopConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    via: IPv4Address | IPv6Address | None = None
+    dev: str
+    weight: RouteNextHopWeight = 1
+
+    @field_validator("via", mode="before")
+    @classmethod
+    def validate_gateway_input(cls, value: object) -> object:
+        if value is not None and not isinstance(value, (str, IPv4Address, IPv6Address)):
+            raise ValueError("route nexthop gateway must be an IPv4 or IPv6 string")
+        return value
+
+    @field_validator("dev")
+    @classmethod
+    def validate_device_name(cls, value: str) -> str:
+        return _require_interface_name(value, "route nexthop interface name")
+
+
 class RouteConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     dst: IPv4Network | IPv6Network
     via: IPv4Address | IPv6Address | None = None
-    dev: str
+    dev: str | None = None
+    nexthops: tuple[RouteNextHopConfig, ...] = ()
     table: RouteTableId | None = None
 
     @field_validator("dst", mode="before")
@@ -491,7 +515,9 @@ class RouteConfig(BaseModel):
 
     @field_validator("dev")
     @classmethod
-    def validate_device_name(cls, value: str) -> str:
+    def validate_device_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         return _require_interface_name(value, "route interface name")
 
     @field_validator("table")
@@ -503,9 +529,45 @@ class RouteConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_address_family(self) -> Self:
+        if self.nexthops:
+            if self.via is not None or self.dev is not None:
+                raise ValueError("route cannot combine via/dev with nexthops")
+            if len(self.nexthops) < 2:
+                raise ValueError("multipath route requires at least two nexthops")
+            identities = tuple((nexthop.via, nexthop.dev) for nexthop in self.nexthops)
+            if len(set(identities)) != len(identities):
+                raise ValueError("multipath route nexthops must be unique")
+            if any(
+                nexthop.via is not None and nexthop.via.version != self.dst.version
+                for nexthop in self.nexthops
+            ):
+                raise ValueError(
+                    "route destination and nexthop gateways must use the same address family"
+                )
+            return self
+        if self.dev is None:
+            raise ValueError("route requires dev or nexthops")
         if self.via is not None and self.dst.version != self.via.version:
             raise ValueError("route destination and gateway must use the same address family")
         return self
+
+
+def _route_devices(route: RouteConfig) -> tuple[str, ...]:
+    if route.nexthops:
+        return tuple(nexthop.dev for nexthop in route.nexthops)
+    assert route.dev is not None
+    return (route.dev,)
+
+
+def _route_table(route: RouteConfig, tables_by_interface: dict[str, int]) -> int:
+    if route.table is not None:
+        return route.table
+    tables = {
+        tables_by_interface.get(interface, MAIN_ROUTE_TABLE) for interface in _route_devices(route)
+    }
+    if len(tables) != 1:
+        raise ValueError(f"multipath route spans routing tables: {str(route.dst)!r}")
+    return tables.pop()
 
 
 PolicyRulePriority = Annotated[StrictInt, Field(ge=1, le=4_294_967_295)]
@@ -815,11 +877,7 @@ def _validate_routes_by_table(
 ) -> None:
     seen_destinations: set[tuple[int, IPNetwork]] = set()
     for route in routes:
-        table = (
-            route.table
-            if route.table is not None
-            else tables_by_interface.get(route.dev, MAIN_ROUTE_TABLE)
-        )
+        table = _route_table(route, tables_by_interface)
         identity = (table, route.dst)
         if identity in seen_destinations:
             raise ValueError(f"duplicate route destination: {str(route.dst)!r}")
@@ -1036,12 +1094,14 @@ class LinuxNode(_NodeBase):
             raise ValueError("policy rule priority 1000 is reserved when VRF devices are present")
 
         for route in self.routes:
-            vrf_table = tables_by_interface.get(route.dev)
-            if vrf_table is not None and route.table is not None and route.table != vrf_table:
-                raise ValueError(
-                    f"route table conflicts with VRF member interface {route.dev!r}: "
-                    f"expected {vrf_table}, got {route.table}"
-                )
+            for interface in _route_devices(route):
+                vrf_table = tables_by_interface.get(interface)
+                if vrf_table is not None and route.table is not None and route.table != vrf_table:
+                    raise ValueError(
+                        f"route table conflicts with VRF member interface {interface!r}: "
+                        f"expected {vrf_table}, got {route.table}"
+                    )
+            _route_table(route, tables_by_interface)
 
         connected_networks = {
             (tables_by_interface.get(interface, MAIN_ROUTE_TABLE), address.network)
@@ -1624,10 +1684,11 @@ class Topology(BaseModel):
                         f"configured interface is not linked: {node_name}:{interface_name}"
                     )
             for route in node.routes:
-                if route.dev not in available:
-                    raise ValueError(
-                        f"route device is not linked on node {node_name!r}: {route.dev!r}"
-                    )
+                for route_device in _route_devices(route):
+                    if route_device not in available:
+                        raise ValueError(
+                            f"route device is not linked on node {node_name!r}: {route_device!r}"
+                        )
 
             routing = node.routing
             if routing is None:
@@ -1765,13 +1826,17 @@ def normalized_manifest(manifest: Manifest) -> dict[str, object]:
     nodes = topology["nodes"]
     assert isinstance(nodes, dict)
     for node_name, node in manifest.topology.nodes.items():
+        node_document = nodes[node_name]
+        assert isinstance(node_document, dict)
+        routes_document = node_document.get("routes")
+        if isinstance(routes_document, list):
+            for route, route_document in zip(node.routes, routes_document, strict=True):
+                assert isinstance(route_document, dict)
+                if not route.nexthops:
+                    route_document.pop("nexthops", None)
         if isinstance(node, (LinuxNode, BridgeNode)) and not node.devices:
-            node_document = nodes[node_name]
-            assert isinstance(node_document, dict)
             node_document.pop("devices", None)
         if isinstance(node, LinuxNode):
-            node_document = nodes[node_name]
-            assert isinstance(node_document, dict)
             devices_document = node_document.get("devices")
             if isinstance(devices_document, dict):
                 for device_name, device in node.devices.items():

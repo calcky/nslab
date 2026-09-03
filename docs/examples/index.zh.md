@@ -51,6 +51,7 @@ sudo nslab destroy
 | --- | --- |
 | [IPv4 转发](ipv4-forward.md) | IPv4 静态路由和 Linux 转发路径 |
 | [IPv6 转发](ipv6-forward.md) | IPv6 默认路由、DAD 和 Linux 转发路径 |
+| [ECMP](ecmp.md) | 静态等价下一跳、权重与逐流哈希 |
 
 ## 路由域隔离
 

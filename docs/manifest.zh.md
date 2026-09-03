@@ -10,7 +10,7 @@ topology
 ├─ nodes
 │  └─ <node-name>
 │     ├─ kind: linux
-│     │  ├─ interfaces / devices / routes / rules / sysctls
+│     │  ├─ interfaces / devices / routes → nexthops / rules / sysctls
 │     │  ├─ devices → <device-name> → type: vlan | vrf | bond | gre | ipip | vxlan | dummy | geneve | macvlan | ipvlan
 │     │  └─ routing
 │     └─ kind: bridge
@@ -82,13 +82,41 @@ Namespace 内部的 VLAN、VRF、bond、GRE、IPIP、VXLAN、Geneve、dummy、ma
 | 字段 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `dst` | 是 | 无 | IPv4/IPv6 目标前缀；`default` 等价于 `0.0.0.0/0` |
-| `via` | 否 | `null` | 下一跳地址，地址族必须与 `dst` 一致 |
-| `dev` | 是 | 无 | 可用出接口名，可以是 linked、namespace 内部设备或该节点的 bridge 设备 |
+| `via` | 否 | `null` | 单路径下一跳地址，地址族必须与 `dst` 一致；不能与 `nexthops` 同时使用 |
+| `dev` | 条件必填 | `null` | 单路径出接口；未配置 `nexthops` 时必填 |
+| `nexthops` | 条件必填 | `[]` | 两个或更多 ECMP 下一跳；不能与顶层 `via`、`dev` 同时使用 |
 | `table` | 否 | 自动 | 路由表 ID，范围 `1..4294967295`，不能使用 local table `255` |
 
 同一路由表中不能重复声明目标前缀，也不能把该表的直连网段再次声明为静态路由。
 省略 `table` 时使用 main table 254，VRF 成员接口则自动使用对应 VRF table。若对 VRF
 成员路由显式指定 `table`，其值必须与该 VRF 的 table 相同。
+
+Multipath route 使用 `nexthops` 取代顶层 `via` 和 `dev`：
+
+```yaml
+routes:
+  - dst: 192.0.2.0/24
+    nexthops:
+      - via: 10.0.12.2
+        dev: eth1
+        weight: 1
+      - via: 10.0.13.2
+        dev: eth2
+        weight: 1
+```
+
+每个 `nexthops[]` 项包含：
+
+| 字段 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `via` | 否 | `null` | 与目标地址族相同的 gateway；直连下一跳可省略 |
+| `dev` | 是 | 无 | 可用出接口 |
+| `weight` | 否 | `1` | 相对权重，范围 `1..256` |
+
+一条 multipath route 至少需要两个唯一的 `via + dev` 组合。省略 `table` 时，所有下一跳
+接口必须归属于同一路由表；因此可以在一个 VRF 内使用 ECMP，但会拒绝意外跨越路由域的
+配置。相同权重是 ECMP，不同权重是加权多路径；分流按多个 flow 统计接近权重，而不是
+逐包轮询。
 
 ##### `sysctls`
 

@@ -51,6 +51,7 @@ sudo nslab destroy
 | --- | --- |
 | [IPv4 forwarding](ipv4-forward.md) | IPv4 static routes and the Linux forwarding path |
 | [IPv6 forwarding](ipv6-forward.md) | IPv6 default routes, DAD, and the Linux forwarding path |
+| [ECMP](ecmp.md) | Static equal-cost next hops, weights, and per-flow hashing |
 
 ## Routing isolation
 

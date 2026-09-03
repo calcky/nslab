@@ -18,6 +18,7 @@ from nslab.planner import (
     BridgeVlanPlan,
     FqCodelPlan,
     NetemPlan,
+    RouteNextHopPlan,
     RoutePlan,
     TbfPlan,
     compile_plan,
@@ -236,6 +237,21 @@ def test_ipv6_forward_example_compiles_router_and_default_routes() -> None:
             via=IPv6Address("2001:db8:2::1"),
             dev="eth0",
         ),
+    )
+
+
+def test_ecmp_example_compiles_bidirectional_equal_cost_routes() -> None:
+    plan = compile_plan(load_manifest(_EXAMPLES / "ecmp" / "nslab.yaml"))
+
+    assert tuple(plan.nodes) == ("h1", "r1", "r2", "r3", "r4", "h2")
+    assert len(plan.links) == 6
+    assert plan.nodes["r1"].routes[0].nexthops == (
+        RouteNextHopPlan(IPv4Address("10.0.12.2"), "eth1", 1),
+        RouteNextHopPlan(IPv4Address("10.0.13.2"), "eth2", 1),
+    )
+    assert plan.nodes["r4"].routes[0].nexthops == (
+        RouteNextHopPlan(IPv4Address("10.0.24.1"), "eth0", 1),
+        RouteNextHopPlan(IPv4Address("10.0.34.1"), "eth1", 1),
     )
 
 

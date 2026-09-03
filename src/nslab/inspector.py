@@ -31,6 +31,7 @@ from nslab.planner import (
     NodePlan,
     PolicyRulePlan,
     QdiscPlan,
+    RouteNextHopPlan,
     RoutePlan,
     TbfPlan,
     TopologyPlan,
@@ -168,14 +169,33 @@ class InterfaceView:
 
 
 @dataclass(frozen=True, slots=True)
+class RouteNextHopView:
+    via: str | None
+    dev: str
+    weight: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {"via": self.via, "dev": self.dev, "weight": self.weight}
+
+
+@dataclass(frozen=True, slots=True)
 class RouteView:
     dst: str
     via: str | None
-    dev: str
+    dev: str | None
     table: int
+    nexthops: tuple[RouteNextHopView, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "nexthops", tuple(self.nexthops))
 
     def to_dict(self) -> dict[str, object]:
-        return {"dst": self.dst, "via": self.via, "dev": self.dev, "table": self.table}
+        document: dict[str, object] = {"dst": self.dst, "table": self.table}
+        if self.nexthops:
+            document["nexthops"] = [nexthop.to_dict() for nexthop in self.nexthops]
+        else:
+            document.update(via=self.via, dev=self.dev)
+        return document
 
 
 @dataclass(frozen=True, slots=True)
@@ -477,15 +497,21 @@ def _qdisc_string(qdisc: QdiscPlan | None) -> str | None:
     )
 
 
-def _route_key(route: RoutePlan) -> tuple[int, int, int, int, int, str]:
-    gateway = -1 if route.via is None else int(route.via)
+def _nexthop_string(nexthop: RouteNextHopPlan) -> str:
+    gateway = "-" if nexthop.via is None else str(nexthop.via)
+    return f"{gateway}@{nexthop.dev}*{nexthop.weight}"
+
+
+def _route_key(route: RoutePlan) -> tuple[int, int, int, int, str, str, str]:
+    gateway = "" if route.via is None else str(route.via)
     return (
         route.table,
         route.dst.version,
         int(route.dst.network_address),
         route.dst.prefixlen,
         gateway,
-        route.dev,
+        "" if route.dev is None else route.dev,
+        ",".join(_nexthop_string(nexthop) for nexthop in route.nexthops),
     )
 
 
@@ -495,10 +521,21 @@ def _route_view(route: RoutePlan) -> RouteView:
         via=None if route.via is None else str(route.via),
         dev=route.dev,
         table=route.table,
+        nexthops=tuple(
+            RouteNextHopView(
+                via=None if nexthop.via is None else str(nexthop.via),
+                dev=nexthop.dev,
+                weight=nexthop.weight,
+            )
+            for nexthop in route.nexthops
+        ),
     )
 
 
 def _route_string(route: RoutePlan) -> str:
+    if route.nexthops:
+        nexthops = ",".join(_nexthop_string(nexthop) for nexthop in route.nexthops)
+        return f"{route.table}|{route.dst}|ecmp|{nexthops}"
     gateway = "-" if route.via is None else str(route.via)
     return f"{route.table}|{route.dst}|{gateway}|{route.dev}"
 

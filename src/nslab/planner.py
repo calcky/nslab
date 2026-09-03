@@ -52,11 +52,29 @@ type IPNetwork = IPv4Network | IPv6Network
 
 
 @dataclass(frozen=True, slots=True)
+class RouteNextHopPlan:
+    via: IPAddress | None
+    dev: str
+    weight: int = 1
+
+
+@dataclass(frozen=True, slots=True)
 class RoutePlan:
     dst: IPNetwork
     via: IPAddress | None
-    dev: str
+    dev: str | None
     table: int = MAIN_ROUTE_TABLE
+    nexthops: tuple[RouteNextHopPlan, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "nexthops", tuple(self.nexthops))
+
+
+def route_interfaces(route: RoutePlan) -> tuple[str, ...]:
+    if route.nexthops:
+        return tuple(nexthop.dev for nexthop in route.nexthops)
+    assert route.dev is not None
+    return (route.dev,)
 
 
 @dataclass(frozen=True, slots=True)
@@ -666,19 +684,35 @@ def _compile_node(deployment: str, name: str, manifest_node: NodeConfig) -> Node
         if isinstance(device, VrfDevicePlan)
         for interface in device.interfaces
     }
-    routes = tuple(
-        RoutePlan(
-            dst=ip_network(str(route.dst)),
-            via=ip_address(str(route.via)) if route.via is not None else None,
-            dev=route.dev,
-            table=(
-                route.table
-                if route.table is not None
-                else tables_by_interface.get(route.dev, MAIN_ROUTE_TABLE)
-            ),
+    compiled_routes: list[RoutePlan] = []
+    for route in manifest_node.routes:
+        nexthops = tuple(
+            RouteNextHopPlan(
+                via=ip_address(str(nexthop.via)) if nexthop.via is not None else None,
+                dev=nexthop.dev,
+                weight=nexthop.weight,
+            )
+            for nexthop in route.nexthops
         )
-        for route in manifest_node.routes
-    )
+        if nexthops:
+            route_devices = tuple(nexthop.dev for nexthop in route.nexthops)
+        else:
+            assert route.dev is not None
+            route_devices = (route.dev,)
+        inferred_tables = {
+            tables_by_interface.get(interface, MAIN_ROUTE_TABLE) for interface in route_devices
+        }
+        assert len(inferred_tables) == 1
+        compiled_routes.append(
+            RoutePlan(
+                dst=ip_network(str(route.dst)),
+                via=ip_address(str(route.via)) if route.via is not None else None,
+                dev=route.dev,
+                table=route.table if route.table is not None else inferred_tables.pop(),
+                nexthops=nexthops,
+            )
+        )
+    routes = tuple(compiled_routes)
     rules = (
         tuple(
             PolicyRulePlan(

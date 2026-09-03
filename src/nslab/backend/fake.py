@@ -41,6 +41,7 @@ from nslab.planner import (
     ipvlan_device_mtu,
     macvlan_device_mtu,
     node_interface_master,
+    route_interfaces,
     vxlan_device_mtu,
 )
 
@@ -175,7 +176,7 @@ class FakeNetworkBackend:
             if peer_state is not None:
                 peer_state.interfaces.pop(peer[1], None)
                 peer_state.routes = tuple(
-                    route for route in peer_state.routes if route.dev != peer[1]
+                    route for route in peer_state.routes if peer[1] not in route_interfaces(route)
                 )
 
         self.namespaces.pop(namespace, None)

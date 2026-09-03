@@ -10,7 +10,7 @@ topology
 ├─ nodes
 │  └─ <node-name>
 │     ├─ kind: linux
-│     │  ├─ interfaces / devices / routes / rules / sysctls
+│     │  ├─ interfaces / devices / routes → nexthops / rules / sysctls
 │     │  ├─ devices → <device-name> → type: vlan | vrf | bond | gre | ipip | vxlan | dummy | geneve | macvlan | ipvlan
 │     │  └─ routing
 │     └─ kind: bridge
@@ -83,14 +83,42 @@ An interface may contain multiple addresses or no address. Duplicate addresses a
 | Field | Required | Default | Description |
 | --- | --- | --- | --- |
 | `dst` | Yes | None | IPv4/IPv6 destination prefix; `default` means `0.0.0.0/0` |
-| `via` | No | `null` | Next-hop address in the same address family as `dst` |
-| `dev` | Yes | None | Available egress interface: linked, namespace-local, or the node's bridge device |
+| `via` | No | `null` | Single next-hop address in the same address family as `dst`; incompatible with `nexthops` |
+| `dev` | Conditional | `null` | Single-path egress interface; required without `nexthops` |
+| `nexthops` | Conditional | `[]` | Two or more ECMP next hops; incompatible with top-level `via` and `dev` |
 | `table` | No | Automatic | Routing table ID in `1..4294967295`, excluding local table `255` |
 
 A node cannot repeat a destination within one routing table or declare one of that table's
 connected networks as a static route. An omitted `table` uses main table 254, except that VRF
 member interfaces select their VRF table automatically. An explicit table on a VRF member route
 must equal that VRF's table.
+
+A multipath route replaces top-level `via` and `dev` with `nexthops`:
+
+```yaml
+routes:
+  - dst: 192.0.2.0/24
+    nexthops:
+      - via: 10.0.12.2
+        dev: eth1
+        weight: 1
+      - via: 10.0.13.2
+        dev: eth2
+        weight: 1
+```
+
+Each `nexthops[]` item contains:
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `via` | No | `null` | Gateway in the destination address family; omit for a directly attached next hop |
+| `dev` | Yes | None | Available egress interface |
+| `weight` | No | `1` | Relative next-hop weight in `1..256` |
+
+At least two unique `via + dev` combinations are required. When `table` is omitted, all next-hop
+interfaces must resolve to the same routing table; this permits ECMP inside one VRF but rejects a
+route that accidentally spans routing domains. Equal weights provide ECMP. Unequal values provide
+weighted multipath distribution, which is statistical across flows rather than packet-by-packet.
 
 ##### `sysctls`
 

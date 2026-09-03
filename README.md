@@ -111,6 +111,7 @@ sudo nslab destroy
 | [bond-8023ad](examples/bond-8023ad/README.md) | LACP 聚合与多流哈希 |
 | [ipv4-forward](examples/ipv4-forward/README.md) | Linux IPv4 转发 |
 | [ipv6-forward](examples/ipv6-forward/README.md) | Linux IPv6 转发 |
+| [ecmp](examples/ecmp/README.md) | 静态等价多路径与逐流哈希 |
 | [vrf](examples/vrf/README.md) | VRF 路由域与重叠地址空间 |
 | [policy-routing](examples/policy-routing/README.md) | RPDB rule、多路由表和 fwmark 选路 |
 | [netem](examples/netem/README.md) | 延迟、抖动、丢包与 egress 限速 |

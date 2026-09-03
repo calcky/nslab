@@ -1,0 +1,108 @@
+version: 1
+name: ecmp
+
+topology:
+  nodes:
+    h1:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [192.0.1.2/24]
+      routes:
+        - dst: 192.0.2.0/24
+          via: 192.0.1.1
+          dev: eth0
+
+    r1:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [192.0.1.1/24]
+        eth1:
+          addresses: [10.0.12.1/30]
+        eth2:
+          addresses: [10.0.13.1/30]
+      routes:
+        - dst: 192.0.2.0/24
+          nexthops:
+            - via: 10.0.12.2
+              dev: eth1
+              weight: 1
+            - via: 10.0.13.2
+              dev: eth2
+              weight: 1
+      sysctls:
+        net.ipv4.ip_forward: 1
+
+    r2:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.0.12.2/30]
+        eth1:
+          addresses: [10.0.24.1/30]
+      routes:
+        - dst: 192.0.1.0/24
+          via: 10.0.12.1
+          dev: eth0
+        - dst: 192.0.2.0/24
+          via: 10.0.24.2
+          dev: eth1
+      sysctls:
+        net.ipv4.ip_forward: 1
+
+    r3:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.0.13.2/30]
+        eth1:
+          addresses: [10.0.34.1/30]
+      routes:
+        - dst: 192.0.1.0/24
+          via: 10.0.13.1
+          dev: eth0
+        - dst: 192.0.2.0/24
+          via: 10.0.34.2
+          dev: eth1
+      sysctls:
+        net.ipv4.ip_forward: 1
+
+    r4:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.0.24.2/30]
+        eth1:
+          addresses: [10.0.34.2/30]
+        eth2:
+          addresses: [192.0.2.1/24]
+      routes:
+        - dst: 192.0.1.0/24
+          nexthops:
+            - via: 10.0.24.1
+              dev: eth0
+              weight: 1
+            - via: 10.0.34.1
+              dev: eth1
+              weight: 1
+      sysctls:
+        net.ipv4.ip_forward: 1
+
+    h2:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [192.0.2.2/24]
+      routes:
+        - dst: 192.0.1.0/24
+          via: 192.0.2.1
+          dev: eth0
+
+  links:
+    - endpoints: [h1:eth0, r1:eth0]
+    - endpoints: [r1:eth1, r2:eth0]
+    - endpoints: [r1:eth2, r3:eth0]
+    - endpoints: [r2:eth1, r4:eth0]
+    - endpoints: [r3:eth1, r4:eth1]
+    - endpoints: [r4:eth2, h2:eth0]
