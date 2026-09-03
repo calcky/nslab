@@ -654,6 +654,59 @@ def test_loads_link_netem_settings(manifest_data: ManifestData) -> None:
 
 
 @pytest.mark.parametrize(
+    ("settings", "expected"),
+    [
+        (
+            {"rate": "1000kbit"},
+            {"delay_ms": 0, "jitter_ms": 0, "loss_percent": 0, "rate": "1mbit"},
+        ),
+        (
+            {"rate": "10mbit", "delay_ms": 20, "jitter_ms": 5, "loss_percent": 1},
+            {"rate": "10mbit", "delay_ms": 20, "jitter_ms": 5, "loss_percent": 1},
+        ),
+    ],
+)
+def test_loads_and_normalizes_netem_rate(
+    manifest_data: ManifestData,
+    settings: dict[str, object],
+    expected: dict[str, object],
+) -> None:
+    manifest_data["topology"]["links"][0]["netem"] = settings
+
+    manifest = Manifest.model_validate(manifest_data)
+
+    assert manifest.topology.links[0].netem is not None
+    assert normalized_manifest(manifest)["topology"]["links"][0]["netem"] == expected
+
+
+@pytest.mark.parametrize(
+    "qdisc",
+    [
+        {"kind": "tbf", "rate": "10mbit", "burst": "32kb", "latency_ms": 400},
+        {"kind": "fq_codel", "target_ms": 5, "interval_ms": 100, "limit": 10240},
+    ],
+)
+def test_loads_link_qdisc_settings(manifest_data: ManifestData, qdisc: dict[str, object]) -> None:
+    manifest_data["topology"]["links"][0]["qdisc"] = qdisc
+
+    manifest = Manifest.model_validate(manifest_data)
+
+    assert manifest.topology.links[0].qdisc is not None
+    assert normalized_manifest(manifest)["topology"]["links"][0]["qdisc"]["kind"] == qdisc["kind"]
+
+
+def test_rejects_netem_and_qdisc_on_one_link(tmp_path: Path, manifest_data: ManifestData) -> None:
+    manifest_data["topology"]["links"][0].update(
+        {
+            "netem": {"rate": "10mbit"},
+            "qdisc": {"kind": "fq_codel"},
+        }
+    )
+
+    _assert_invalid(tmp_path, manifest_data)
+
+
+@pytest.mark.parametrize(
     "netem",
     [
         {},

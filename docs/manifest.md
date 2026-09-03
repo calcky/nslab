@@ -18,7 +18,7 @@ topology
 │        ├─ devices → <device-name> → type: vxlan
 │        └─ bridge → ports → vlans
 └─ links
-   └─ endpoints / mtu / netem
+   └─ endpoints / mtu / netem | qdisc
 ```
 
 ## Top-level fields
@@ -391,7 +391,8 @@ topology. Node and interface references must be valid and cannot use `lo`.
 | `kind` | No | `veth` | Link kind; currently only `veth` |
 | `endpoints` | Yes | None | Exactly two `node:interface` strings |
 | `mtu` | No | `1500` | MTU on both ends in `576..9216` |
-| `netem` | No | `null` | Link conditions applied to egress at both ends |
+| `netem` | No | `null` | Netem conditions applied to egress at both ends; mutually exclusive with `qdisc` |
+| `qdisc` | No | `null` | Root traffic-control qdisc applied to egress at both ends; currently `tbf` or `fq_codel` |
 
 ```yaml
 links:
@@ -406,9 +407,50 @@ links:
 | `delay_ms` | No | `0` | Per-end egress delay in `0..60000` ms |
 | `jitter_ms` | No | `0` | Delay jitter in `0..60000` ms; requires `delay_ms > 0` |
 | `loss_percent` | No | `0` | Random packet loss as an integer percentage in `0..100` |
+| `rate` | No | `null` | Optional egress rate such as `10mbit`, `500kbit`, or `1gbit` |
 
-The three values cannot all be zero. netem is installed on both veth ends, so a bidirectional
+All four values cannot be zero. netem is installed on both veth ends, so a bidirectional
 ping experiences one egress condition on the request and another on the reply.
+
+```yaml
+netem:
+  rate: 10mbit
+  delay_ms: 20
+  jitter_ms: 5
+  loss_percent: 1
+```
+
+#### `links[].qdisc`
+
+`qdisc` selects one root egress queue discipline. It cannot be combined with `netem` on the
+same link, and is installed on both veth ends.
+
+For a token-bucket shaper (`tbf`):
+
+```yaml
+qdisc:
+  kind: tbf
+  rate: 10mbit
+  burst: 32kb
+  latency_ms: 400
+```
+
+`burst` is a positive byte count (or a `kb`/`mb`/`gb` value). `latency_ms` is the maximum
+queueing latency used to derive the TBF byte limit.
+
+For fair queueing with controlled delay (`fq_codel`):
+
+```yaml
+qdisc:
+  kind: fq_codel
+  target_ms: 5
+  interval_ms: 100
+  limit: 10240
+  ecn: true
+```
+
+`target_ms` and `interval_ms` are queue-delay parameters, `limit` is the packet limit, and
+`ecn` enables ECN marking.
 
 ## Manifest boundary
 

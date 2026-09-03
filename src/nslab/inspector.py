@@ -17,13 +17,16 @@ from nslab.errors import NslabError
 from nslab.planner import (
     BondDevicePlan,
     BridgeVlanPlan,
+    FqCodelPlan,
     IPInterface,
     LinkPlan,
     NetemPlan,
     NodeKind,
     NodePlan,
     PolicyRulePlan,
+    QdiscPlan,
     RoutePlan,
+    TbfPlan,
     TopologyPlan,
     VlanDevicePlan,
     VrfDevicePlan,
@@ -63,6 +66,7 @@ class InterfaceView:
     port_priority: int | None = None
     bridge_vlans: tuple[str, ...] = ()
     netem: str | None = None
+    qdisc: str | None = None
     ifindex: int | None = None
     link_id: str | None = None
     parent: str | None = None
@@ -100,6 +104,7 @@ class InterfaceView:
             "port_priority": self.port_priority,
             "bridge_vlans": list(self.bridge_vlans),
             "netem": self.netem,
+            "qdisc": self.qdisc,
             "ifindex": self.ifindex,
             "link_id": self.link_id,
             "parent": self.parent,
@@ -407,6 +412,8 @@ def _netem_string(netem: NetemPlan | None) -> str | None:
     if netem is None:
         return None
     values = []
+    if netem.rate:
+        values.append(f"rate {netem.rate}")
     if netem.delay_ms:
         values.append(f"delay {netem.delay_ms}ms")
     if netem.jitter_ms:
@@ -414,6 +421,18 @@ def _netem_string(netem: NetemPlan | None) -> str | None:
     if netem.loss_percent:
         values.append(f"loss {netem.loss_percent}%")
     return " ".join(values)
+
+
+def _qdisc_string(qdisc: QdiscPlan | None) -> str | None:
+    if qdisc is None:
+        return None
+    if isinstance(qdisc, TbfPlan):
+        return f"tbf rate {qdisc.rate} burst {qdisc.burst_bytes}B latency {qdisc.latency_ms}ms"
+    assert isinstance(qdisc, FqCodelPlan)
+    return (
+        f"fq_codel target {qdisc.target_ms}ms interval {qdisc.interval_ms}ms "
+        f"limit {qdisc.limit} ecn {'on' if qdisc.ecn else 'off'}"
+    )
 
 
 def _route_key(route: RoutePlan) -> tuple[int, int, int, int, int, str]:
@@ -551,6 +570,7 @@ def _desired_interfaces(node: NodePlan, plan: TopologyPlan) -> tuple[InterfaceVi
                         expected_bridge_port_vlans(node, endpoint.interface)
                     ),
                     netem=_netem_string(link.netem),
+                    qdisc=_qdisc_string(link.qdisc),
                 )
             )
     for device in node.devices.values():
@@ -637,6 +657,7 @@ def _interface_view(interface: InterfaceInventory) -> InterfaceView:
         port_priority=interface.port_priority,
         bridge_vlans=_bridge_vlan_strings(interface.bridge_vlans),
         netem=_netem_string(interface.netem),
+        qdisc=_qdisc_string(interface.qdisc),
         ifindex=interface.ifindex,
         link_id=interface.link_id,
         parent=interface.parent,
@@ -1031,6 +1052,7 @@ def _compare_interface(
         compare("port_priority", desired.port_priority, actual.port_priority)
     compare("bridge_vlans", desired.bridge_vlans, _bridge_vlan_strings(actual.bridge_vlans))
     compare("netem", desired.netem, _netem_string(actual.netem))
+    compare("qdisc", desired.qdisc, _qdisc_string(actual.qdisc))
     compare("parent", desired.parent, actual.parent)
     compare("vlan_id", desired.vlan_id, actual.vlan_id)
     compare("vrf_table", desired.vrf_table, actual.vrf_table)

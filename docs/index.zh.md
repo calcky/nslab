@@ -1,7 +1,7 @@
 # nslab
 
 `nslab` 是一个面向 Linux network namespace 实验的声明式 CLI。用一份严格校验的
-`nslab.yaml` 描述节点、veth、Linux bridge、地址、路由、sysctl、STP、VLAN、bond 和 netem，
+`nslab.yaml` 描述节点、veth、Linux bridge、地址、路由、sysctl、STP、VLAN、bond、netem 和根 qdisc，
 然后用同一组命令反复部署、检查、执行和销毁拓扑。
 
 它适合学习 Linux 内核网络路径，也适合把一次实验保存成可以再次运行的笔记。拓扑
@@ -35,7 +35,7 @@ no-op；保留 `nslab.yaml` 时，重复 `destroy` 也会成功。
 | [快速开始](getting-started.md) | 安装、权限、生命周期和故障恢复 |
 | [Manifest](manifest.md) | `nslab.yaml` 的字段、约束和完整片段 |
 | [CLI 参考](cli.md) | 命令、选项、输出格式和补全 |
-| [实验示例](examples/index.md) | bridge、VLAN、bond、VRF、策略路由、转发、netem、XDP、OSPF、BGP |
+| [实验示例](examples/index.md) | bridge、VLAN、bond、VRF、策略路由、转发、netem、qdisc、XDP、OSPF、BGP |
 
 ## 设计边界
 

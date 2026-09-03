@@ -29,7 +29,9 @@ from pyroute2 import (
     netns,
 )
 from pyroute2 import config as pyroute2_config
+from pyroute2.iproute.linux import get_arguments_processor
 from pyroute2.netlink.exceptions import NetlinkError
+from pyroute2.netlink.rtnl import TC_H_ROOT
 from pyroute2.netlink.rtnl.tcmsg.common import percent2u32, time2tick
 
 from nslab.backend.base import (
@@ -43,12 +45,15 @@ from nslab.planner import (
     BondDevicePlan,
     BridgeVlanPlan,
     EndpointPlan,
+    FqCodelPlan,
     IPInterface,
     LinkPlan,
     NetemPlan,
     NodePlan,
     PolicyRulePlan,
+    QdiscPlan,
     RoutePlan,
+    TbfPlan,
     TopologyPlan,
     VlanDevicePlan,
     VrfDevicePlan,
@@ -60,6 +65,7 @@ from nslab.planner import (
     vxlan_device_mtu,
 )
 from nslab.routing import FrrRuntime
+from nslab.tc import format_rate
 
 _BRIDGE_VLAN_INFO_PVID = 2
 _BRIDGE_VLAN_INFO_UNTAGGED = 4
@@ -429,6 +435,75 @@ def _unsupported_inventory_qdisc(namespace: str, reason: str) -> NslabError:
             "reason": reason,
         },
     )
+
+
+def _is_root_qdisc(message: Any) -> bool:
+    parent = _value(message, "parent")
+    if parent is None:
+        return True
+    try:
+        return bool(int(parent) == TC_H_ROOT)
+    except (TypeError, ValueError):
+        return False
+
+
+def _qdisc_option(options: Any, name: str, default: object = None) -> Any:
+    value = _attribute(options, name)
+    if value is not None:
+        return value
+    return _value(options, name, default)
+
+
+def _netem_request_filter(index: int, netem: NetemPlan) -> Any:
+    """Build a netem request without pyroute2's duplicate top-level rate attr.
+
+    pyroute2's netem plugin correctly puts ``rate`` inside ``TCA_NETEM_RATE``
+    but also leaves the input keyword in the generic ``TCA_RATE`` attribute.
+    Recent kernels reject that combination with ``ERANGE``.  Reusing the
+    library's request processor and removing only the generic keyword keeps
+    the plugin's version-specific encoding (including clock conversion) while
+    producing the request accepted by the kernel.
+    """
+
+    arguments: dict[str, object] = {
+        "kind": "netem",
+        "index": index,
+        "handle": "1:",
+        "delay": netem.delay_ms * 1000,
+        "jitter": netem.jitter_ms * 1000,
+        "loss": netem.loss_percent,
+        "rate": netem.rate,
+    }
+    request_filter = get_arguments_processor("tc", "add", arguments)
+    request_filter.pop("rate", None)
+    return request_filter
+
+
+def _decode_milliseconds(raw_value: int, namespace: str, field: str) -> int:
+    """Decode a kernel microsecond value, allowing one-microsecond rounding."""
+
+    if raw_value <= 0:
+        raise _unsupported_inventory_qdisc(namespace, "parameters")
+    milliseconds = round(raw_value / 1000)
+    if milliseconds <= 0 or abs(raw_value - milliseconds * 1000) > 1:
+        raise _unsupported_inventory_qdisc(namespace, f"{field}_precision")
+    return milliseconds
+
+
+def _decode_tbf_burst(raw_buffer: int, raw_rate: int, namespace: str) -> int:
+    ticks_per_us = float(time2tick(1))
+    if ticks_per_us <= 0:
+        raise _unsupported_inventory_qdisc(namespace, "clock")
+    burst = round(raw_buffer * raw_rate / (ticks_per_us * 1_000_000))
+    if burst <= 0:
+        raise _unsupported_inventory_qdisc(namespace, "buffer")
+    return burst
+
+
+def _decode_tbf_latency(raw_limit: int, burst: int, raw_rate: int, namespace: str) -> int:
+    if raw_limit < burst or raw_rate <= 0:
+        raise _unsupported_inventory_qdisc(namespace, "parameters")
+    return round((raw_limit - burst) * 1000 / raw_rate)
 
 
 def _is_missing_error(error_number: int) -> bool:
@@ -831,6 +906,7 @@ class Pyroute2Backend:
                 link.left,
                 link.mtu,
                 link.netem,
+                link.qdisc,
                 resource,
                 renamed_endpoints,
                 ownership_token,
@@ -839,6 +915,7 @@ class Pyroute2Backend:
                 link.right,
                 link.mtu,
                 link.netem,
+                link.qdisc,
                 resource,
                 renamed_endpoints,
                 ownership_token,
@@ -917,6 +994,7 @@ class Pyroute2Backend:
         endpoint: EndpointPlan,
         mtu: int,
         netem: NetemPlan | None,
+        qdisc: QdiscPlan | None,
         resource: str,
         renamed_endpoints: set[EndpointPlan],
         ownership_token: str,
@@ -965,15 +1043,48 @@ class Pyroute2Backend:
                     namespace.link("set", index=index, state="up")
                     if netem is not None:
                         phase = "namespace-set-netem"
-                        namespace.tc(
-                            "add",
-                            "netem",
-                            index,
-                            "1:",
-                            delay=netem.delay_ms * 1000,
-                            jitter=netem.jitter_ms * 1000,
-                            loss=netem.loss_percent,
-                        )
+                        if netem.rate is not None:
+                            namespace.tc(
+                                "add",
+                                "netem",
+                                index,
+                                "1:",
+                                request_filter=_netem_request_filter(index, netem),
+                            )
+                        else:
+                            namespace.tc(
+                                "add",
+                                "netem",
+                                index,
+                                "1:",
+                                delay=netem.delay_ms * 1000,
+                                jitter=netem.jitter_ms * 1000,
+                                loss=netem.loss_percent,
+                            )
+                    elif qdisc is not None:
+                        phase = "namespace-set-qdisc"
+                        if isinstance(qdisc, TbfPlan):
+                            namespace.tc(
+                                "add",
+                                "tbf",
+                                index,
+                                "1:",
+                                rate=qdisc.rate,
+                                burst=qdisc.burst_bytes,
+                                latency=f"{qdisc.latency_ms}ms",
+                            )
+                        else:
+                            assert isinstance(qdisc, FqCodelPlan)
+                            namespace.tc(
+                                "add",
+                                "fq_codel",
+                                index,
+                                "1:",
+                                fqc_limit=qdisc.limit,
+                                fqc_target=f"{qdisc.target_ms}ms",
+                                fqc_interval=f"{qdisc.interval_ms}ms",
+                                fqc_ecn=int(qdisc.ecn),
+                            )
                 return
             except (Exception, KeyboardInterrupt) as error:
                 if not _is_transient_veth_error(error):
@@ -1411,7 +1522,9 @@ class Pyroute2Backend:
 
     def inventory(self, plan: TopologyPlan) -> LiveInventory:
         root_interfaces = self._inventory_root_interfaces(plan)
-        inspect_netem = any(link.netem is not None for link in plan.links)
+        inspect_qdiscs = any(
+            link.netem is not None or link.qdisc is not None for link in plan.links
+        )
         namespaces: dict[str, NamespaceInventory] = {}
         for node in plan.nodes.values():
             try:
@@ -1440,8 +1553,9 @@ class Pyroute2Backend:
                 try:
                     observed = self._inventory_namespace(
                         node,
+                        plan,
                         namespace,
-                        inspect_netem=inspect_netem,
+                        inspect_qdiscs=inspect_qdiscs,
                     )
                 except NetlinkError as error:
                     raise _translate_netlink_error(
@@ -1516,9 +1630,10 @@ class Pyroute2Backend:
     def _inventory_namespace(
         self,
         node: NodePlan,
+        plan: TopologyPlan,
         namespace: Any,
         *,
-        inspect_netem: bool,
+        inspect_qdiscs: bool,
     ) -> NamespaceInventory:
         with _managed_handle(namespace) as handle:
             link_messages = tuple(handle.get_links())
@@ -1529,7 +1644,7 @@ class Pyroute2Backend:
             vlan_messages = (
                 tuple(handle.get_vlans()) if node.kind == "bridge" and node.vlan_filtering else ()
             )
-            qdisc_messages = tuple(handle.get_qdiscs()) if inspect_netem else ()
+            qdisc_messages = tuple(handle.get_qdiscs()) if inspect_qdiscs else ()
             route_messages = tuple(
                 (
                     family,
@@ -1559,6 +1674,20 @@ class Pyroute2Backend:
             qdisc_messages,
             namespace=node.namespace,
             declared_addresses=node_interface_addresses(node),
+            declared_netem_interfaces={
+                endpoint.interface
+                for link in plan.links
+                if link.netem is not None
+                for endpoint in (link.left, link.right)
+                if endpoint.namespace == node.namespace
+            },
+            declared_qdiscs={
+                endpoint.interface: link.qdisc
+                for link in plan.links
+                if link.qdisc is not None
+                for endpoint in (link.left, link.right)
+                if endpoint.namespace == node.namespace
+            },
         )
         observed_routes = tuple(
             route
@@ -1643,6 +1772,8 @@ class Pyroute2Backend:
         *,
         namespace: str = "network namespace",
         declared_addresses: Mapping[str, Sequence[IPInterface]] | None = None,
+        declared_netem_interfaces: set[str] | None = None,
+        declared_qdiscs: Mapping[str, QdiscPlan | None] | None = None,
     ) -> tuple[dict[str, InterfaceInventory], dict[int, str]]:
         names_by_index: dict[int, str] = {}
         for message in link_messages:
@@ -1698,63 +1829,157 @@ class Pyroute2Backend:
                     entries.append(vlan)
 
         netem_by_index: dict[int, NetemPlan] = {}
+        qdisc_by_index: dict[int, QdiscPlan] = {}
+        declared_names: set[str] | None = None
+        if declared_netem_interfaces is not None or declared_qdiscs is not None:
+            declared_names = set(declared_netem_interfaces or ()) | set(declared_qdiscs or ())
+
         for message in qdisc_messages:
-            if _attribute(message, "TCA_KIND") != "netem":
+            if not _is_root_qdisc(message):
                 continue
             index = int(_value(message, "index"))
-            if index in netem_by_index:
-                raise _unsupported_inventory_qdisc(namespace, "multiple_netem_qdiscs")
+            interface_name = names_by_index.get(index)
+            if declared_names is not None and interface_name not in declared_names:
+                continue
+            kind = _attribute(message, "TCA_KIND")
+            if kind not in {"netem", "tbf", "fq_codel"}:
+                continue
             options = _attribute(message, "TCA_OPTIONS")
             if options is None:
                 raise _unsupported_inventory_qdisc(namespace, "missing_options")
-            try:
-                limit = int(_value(options, "limit", 0))
-                gap = int(_value(options, "gap", 0))
-                duplicate = int(_value(options, "duplicate", 0))
-                raw_delay = int(_value(options, "delay", 0))
-                raw_jitter = int(_value(options, "jitter", 0))
-                raw_loss = int(_value(options, "loss", 0))
-            except (TypeError, ValueError):
-                raise _unsupported_inventory_qdisc(namespace, "invalid_options") from None
-            if limit != 1000:
-                raise _unsupported_inventory_qdisc(namespace, "limit")
-            if gap != 0:
-                raise _unsupported_inventory_qdisc(namespace, "gap")
-            if duplicate != 0:
-                raise _unsupported_inventory_qdisc(namespace, "duplicate")
 
-            ticks_per_ms = float(time2tick(1000))
-            if ticks_per_ms <= 0:
-                raise _unsupported_inventory_qdisc(namespace, "clock")
-            delay_ms = round(raw_delay / ticks_per_ms)
-            jitter_ms = round(raw_jitter / ticks_per_ms)
-            if int(time2tick(delay_ms * 1000)) != raw_delay:
-                raise _unsupported_inventory_qdisc(namespace, "delay_precision")
-            if int(time2tick(jitter_ms * 1000)) != raw_jitter:
-                raise _unsupported_inventory_qdisc(namespace, "jitter_precision")
-            loss_percent = round(raw_loss * 100 / (2**32 - 1))
-            if percent2u32(loss_percent) != raw_loss:
-                raise _unsupported_inventory_qdisc(namespace, "loss_precision")
+            if kind == "netem":
+                if index in netem_by_index or index in qdisc_by_index:
+                    raise _unsupported_inventory_qdisc(namespace, "multiple_root_qdiscs")
+                try:
+                    limit = int(_qdisc_option(options, "limit", 0))
+                    gap = int(_qdisc_option(options, "gap", 0))
+                    duplicate = int(_qdisc_option(options, "duplicate", 0))
+                    raw_delay = int(_qdisc_option(options, "delay", 0))
+                    raw_jitter = int(_qdisc_option(options, "jitter", 0))
+                    raw_loss = int(_qdisc_option(options, "loss", 0))
+                except (TypeError, ValueError):
+                    raise _unsupported_inventory_qdisc(namespace, "invalid_options") from None
+                if limit != 1000:
+                    raise _unsupported_inventory_qdisc(namespace, "limit")
+                if gap != 0:
+                    raise _unsupported_inventory_qdisc(namespace, "gap")
+                if duplicate != 0:
+                    raise _unsupported_inventory_qdisc(namespace, "duplicate")
 
-            nested_options = (
-                ("TCA_NETEM_CORR", ("delay_corr", "loss_corr", "dup_corr")),
-                ("TCA_NETEM_REORDER", ("prob_reorder", "corr_reorder")),
-                ("TCA_NETEM_CORRUPT", ("prob_corrupt", "corr_corrupt")),
-                (
-                    "TCA_NETEM_RATE",
-                    ("rate", "packet_overhead", "cell_size", "cell_overhead"),
-                ),
-            )
-            for attribute_name, field_names in nested_options:
-                nested = _attribute(options, attribute_name)
-                if nested is not None and any(
-                    int(_value(nested, field_name, 0)) != 0 for field_name in field_names
+                ticks_per_ms = float(time2tick(1000))
+                if ticks_per_ms <= 0:
+                    raise _unsupported_inventory_qdisc(namespace, "clock")
+                delay_ms = round(raw_delay / ticks_per_ms)
+                jitter_ms = round(raw_jitter / ticks_per_ms)
+                if int(time2tick(delay_ms * 1000)) != raw_delay:
+                    raise _unsupported_inventory_qdisc(namespace, "delay_precision")
+                if int(time2tick(jitter_ms * 1000)) != raw_jitter:
+                    raise _unsupported_inventory_qdisc(namespace, "jitter_precision")
+                loss_percent = round(raw_loss * 100 / (2**32 - 1))
+                if percent2u32(loss_percent) != raw_loss:
+                    raise _unsupported_inventory_qdisc(namespace, "loss_precision")
+
+                rate = None
+                nested_rate = _attribute(options, "TCA_NETEM_RATE")
+                if nested_rate is not None:
+                    raw_rate = int(_qdisc_option(nested_rate, "rate", 0))
+                    packet_overhead = int(_qdisc_option(nested_rate, "packet_overhead", 0))
+                    cell_size = int(_qdisc_option(nested_rate, "cell_size", 0))
+                    cell_overhead = int(_qdisc_option(nested_rate, "cell_overhead", 0))
+                    if packet_overhead or cell_size or cell_overhead:
+                        raise _unsupported_inventory_qdisc(namespace, "extended_options")
+                    if raw_rate:
+                        try:
+                            rate = format_rate(raw_rate)
+                        except ValueError:
+                            raise _unsupported_inventory_qdisc(namespace, "rate") from None
+                for attribute_name, field_names in (
+                    ("TCA_NETEM_CORR", ("delay_corr", "loss_corr", "dup_corr")),
+                    ("TCA_NETEM_REORDER", ("prob_reorder", "corr_reorder")),
+                    ("TCA_NETEM_CORRUPT", ("prob_corrupt", "corr_corrupt")),
                 ):
-                    raise _unsupported_inventory_qdisc(namespace, "extended_options")
-            netem_by_index[index] = NetemPlan(
-                delay_ms=delay_ms,
-                jitter_ms=jitter_ms,
-                loss_percent=loss_percent,
+                    nested = _attribute(options, attribute_name)
+                    if nested is not None and any(
+                        int(_value(nested, field_name, 0)) != 0 for field_name in field_names
+                    ):
+                        raise _unsupported_inventory_qdisc(namespace, "extended_options")
+                netem_by_index[index] = NetemPlan(
+                    delay_ms=delay_ms,
+                    jitter_ms=jitter_ms,
+                    loss_percent=loss_percent,
+                    rate=rate,
+                )
+                continue
+
+            if index in netem_by_index or index in qdisc_by_index:
+                raise _unsupported_inventory_qdisc(namespace, "multiple_root_qdiscs")
+            if kind == "tbf":
+                parameters = _attribute(options, "TCA_TBF_PARMS")
+                if parameters is None and _qdisc_option(options, "rate") is not None:
+                    parameters = options
+                if parameters is None:
+                    raise _unsupported_inventory_qdisc(namespace, "missing_parameters")
+                try:
+                    raw_rate = int(_qdisc_option(parameters, "rate", 0))
+                    raw_buffer = int(_qdisc_option(parameters, "buffer", 0))
+                    raw_limit = int(_qdisc_option(parameters, "limit", 0))
+                except (TypeError, ValueError):
+                    raise _unsupported_inventory_qdisc(namespace, "invalid_parameters") from None
+                if raw_rate <= 0 or raw_buffer <= 0 or raw_limit <= 0:
+                    raise _unsupported_inventory_qdisc(namespace, "parameters")
+                try:
+                    rate = format_rate(raw_rate)
+                except ValueError:
+                    raise _unsupported_inventory_qdisc(namespace, "rate") from None
+                burst = _decode_tbf_burst(raw_buffer, raw_rate, namespace)
+                latency_ms = _decode_tbf_latency(raw_limit, burst, raw_rate, namespace)
+                qdisc_by_index[index] = TbfPlan(
+                    rate=rate,
+                    burst_bytes=burst,
+                    latency_ms=latency_ms,
+                )
+                continue
+
+            # fq_codel stores time values in microseconds. The kernel rounds
+            # the values to its internal clock, so a requested 5ms commonly
+            # comes back as 4999us (and 100ms as 99999us).
+            try:
+                raw_target = int(float(_qdisc_option(options, "TCA_FQ_CODEL_TARGET", 5_000)))
+                raw_interval = int(float(_qdisc_option(options, "TCA_FQ_CODEL_INTERVAL", 100_000)))
+                limit = int(_qdisc_option(options, "TCA_FQ_CODEL_LIMIT", 10_240))
+                ecn = bool(int(_qdisc_option(options, "TCA_FQ_CODEL_ECN", 1)))
+            except (TypeError, ValueError):
+                raise _unsupported_inventory_qdisc(namespace, "invalid_parameters") from None
+            target_ms = _decode_milliseconds(raw_target, namespace, "target")
+            interval_ms = _decode_milliseconds(raw_interval, namespace, "interval")
+            if limit <= 0:
+                raise _unsupported_inventory_qdisc(namespace, "parameters")
+
+            # These options are intentionally not part of the manifest. Keep
+            # inventory honest if an operator changes them outside nslab.
+            unsupported_defaults = (
+                ("TCA_FQ_CODEL_FLOWS", 1024),
+                ("TCA_FQ_CODEL_QUANTUM", None),
+                ("TCA_FQ_CODEL_CE_THRESHOLD", 0),
+                ("TCA_FQ_CODEL_DROP_BATCH_SIZE", 64),
+                ("TCA_FQ_CODEL_MEMORY_LIMIT", 32 * 1024 * 1024),
+            )
+            for option_name, default in unsupported_defaults:
+                option_value = _qdisc_option(options, option_name)
+                if option_value is None:
+                    continue
+                try:
+                    option_value_int = int(option_value)
+                except (TypeError, ValueError):
+                    raise _unsupported_inventory_qdisc(namespace, "invalid_parameters") from None
+                if default is not None and option_value_int != default:
+                    raise _unsupported_inventory_qdisc(namespace, "unsupported_options")
+            qdisc_by_index[index] = FqCodelPlan(
+                target_ms=target_ms,
+                interval_ms=interval_ms,
+                limit=limit,
+                ecn=ecn,
             )
 
         interfaces: dict[str, InterfaceInventory] = {}
@@ -1899,6 +2124,7 @@ class Pyroute2Backend:
                     else ()
                 ),
                 netem=netem_by_index.get(index),
+                qdisc=qdisc_by_index.get(index),
                 link_id=(str(link_id_value) if link_id_value is not None else None),
                 parent=parent,
                 vlan_id=vlan_id,

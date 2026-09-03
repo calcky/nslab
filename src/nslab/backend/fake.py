@@ -21,6 +21,7 @@ from nslab.planner import (
     NodeKind,
     NodePlan,
     PolicyRulePlan,
+    QdiscPlan,
     RoutePlan,
     TopologyPlan,
     VlanDevicePlan,
@@ -208,8 +209,8 @@ class FakeNetworkBackend:
 
         link_id = f"fake-link-{self._next_link_id}"
         self._next_link_id += 1
-        self._insert_veth_endpoint(link.left, link.mtu, link.netem, link_id)
-        self._insert_veth_endpoint(link.right, link.mtu, link.netem, link_id)
+        self._insert_veth_endpoint(link.left, link.mtu, link.netem, link.qdisc, link_id)
+        self._insert_veth_endpoint(link.right, link.mtu, link.netem, link.qdisc, link_id)
         left_key = (link.left.namespace, link.left.interface)
         right_key = (link.right.namespace, link.right.interface)
         self._veth_peers[left_key] = right_key
@@ -220,6 +221,7 @@ class FakeNetworkBackend:
         endpoint: EndpointPlan,
         mtu: int,
         netem: NetemPlan | None,
+        qdisc: QdiscPlan | None,
         link_id: str,
     ) -> None:
         self._insert_interface(
@@ -232,6 +234,7 @@ class FakeNetworkBackend:
                 mtu=mtu,
                 up=False,
                 netem=netem,
+                qdisc=qdisc,
                 link_id=link_id,
             ),
         )
@@ -409,6 +412,7 @@ class FakeNetworkBackend:
                     port_priority=None if port is None else port.priority,
                     bridge_vlans=expected_bridge_port_vlans(node, endpoint.interface),
                     netem=link.netem,
+                    qdisc=link.qdisc,
                 )
 
         state.interfaces = interfaces

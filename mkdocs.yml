@@ -128,6 +128,7 @@ nav:
           - Policy routing: examples/policy-routing.md
       - Link conditions:
           - netem: examples/netem.md
+          - qdisc: examples/qdisc.md
       - Packet processing:
           - XDP receive and transmit: examples/xdp.md
       - Dynamic routing:

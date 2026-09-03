@@ -18,10 +18,12 @@ from nslab.naming import namespace_name, temporary_veth_names
 from nslab.planner import (
     BridgePortPlan,
     EndpointPlan,
+    FqCodelPlan,
     LinkPlan,
     NetemPlan,
     NodePlan,
     RoutePlan,
+    TbfPlan,
     TopologyPlan,
     compile_plan,
 )
@@ -150,6 +152,30 @@ def test_compile_plan_preserves_link_netem(bridge_manifest: Manifest) -> None:
         loss_percent=5,
     )
     assert plan.links[1].netem is None
+
+
+@pytest.mark.parametrize(
+    ("qdisc", "expected"),
+    [
+        (
+            {"kind": "tbf", "rate": "10mbit", "burst": "32kb", "latency_ms": 400},
+            TbfPlan(rate="10mbit", burst_bytes=32 * 1024, latency_ms=400),
+        ),
+        (
+            {"kind": "fq_codel", "target_ms": 5, "interval_ms": 100},
+            FqCodelPlan(target_ms=5, interval_ms=100, limit=10240, ecn=True),
+        ),
+    ],
+)
+def test_compile_plan_preserves_link_qdisc(
+    bridge_manifest: Manifest, qdisc: dict[str, object], expected: object
+) -> None:
+    document = bridge_manifest.model_dump(mode="json")
+    document["topology"]["links"][0]["qdisc"] = qdisc
+
+    plan = compile_plan(Manifest.model_validate(document))
+
+    assert plan.links[0].qdisc == expected
 
 
 def test_compile_plan_preserves_immutable_bridge_stp_settings(

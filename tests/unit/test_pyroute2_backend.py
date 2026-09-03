@@ -33,10 +33,12 @@ from nslab.errors import NslabError, OperationCancelled
 from nslab.planner import (
     BridgePortPlan,
     EndpointPlan,
+    FqCodelPlan,
     LinkPlan,
     NetemPlan,
     NodePlan,
     RoutePlan,
+    TbfPlan,
     TopologyPlan,
 )
 
@@ -1054,7 +1056,7 @@ def test_create_veth_visibility_timeout_identifies_namespace_phase(
 
 
 def test_create_veth_adds_same_netem_qdisc_to_both_endpoints(veth_link: LinkPlan) -> None:
-    netem = NetemPlan(delay_ms=100, jitter_ms=10, loss_percent=5)
+    netem = NetemPlan(delay_ms=100, jitter_ms=10, loss_percent=5, rate="10mbit")
     link = replace(veth_link, netem=netem)
     root = Mock()
     lookup_count: dict[str, int] = {}
@@ -1083,24 +1085,84 @@ def test_create_veth_adds_same_netem_qdisc_to_both_endpoints(veth_link: LinkPlan
 
     backend.create_veth(link)
 
-    left.tc.assert_called_once_with(
-        "add",
-        "netem",
-        201,
-        "1:",
-        delay=100_000,
-        jitter=10_000,
-        loss=5,
+    for handle, index in ((left, 201), (right, 301)):
+        handle.tc.assert_called_once()
+        call_args = handle.tc.call_args
+        assert call_args.args == ("add", "netem", index, "1:")
+        request_filter = call_args.kwargs["request_filter"]
+        assert "rate" not in request_filter
+        assert request_filter["delay"] == 100_000
+        assert request_filter["jitter"] == 10_000
+        assert request_filter["loss"] == 5
+        options = request_filter["options"]
+        rate_attributes = [value for name, value in options["attrs"] if name == "TCA_NETEM_RATE"]
+        assert rate_attributes == [
+            {
+                "rate": 1_250_000.0,
+                "packet_overhead": 0,
+                "cell_size": 0,
+                "cell_overhead": 0,
+            }
+        ]
+
+
+@pytest.mark.parametrize(
+    ("qdisc", "kind", "expected"),
+    [
+        (
+            TbfPlan(rate="10mbit", burst_bytes=32 * 1024, latency_ms=400),
+            "tbf",
+            {
+                "rate": "10mbit",
+                "burst": 32 * 1024,
+                "latency": "400ms",
+            },
+        ),
+        (
+            FqCodelPlan(target_ms=5, interval_ms=100, limit=10240, ecn=True),
+            "fq_codel",
+            {
+                "fqc_limit": 10240,
+                "fqc_target": "5ms",
+                "fqc_interval": "100ms",
+                "fqc_ecn": 1,
+            },
+        ),
+    ],
+)
+def test_create_veth_adds_declared_qdisc_to_both_endpoints(
+    veth_link: LinkPlan,
+    qdisc: TbfPlan | FqCodelPlan,
+    kind: str,
+    expected: dict[str, object],
+) -> None:
+    link = replace(veth_link, qdisc=qdisc)
+    root = Mock()
+    lookup_count: dict[str, int] = {}
+
+    def root_lookup(*, ifname: str) -> list[int]:
+        occurrence = lookup_count.get(ifname, 0)
+        lookup_count[ifname] = occurrence + 1
+        if occurrence == 0:
+            return []
+        return [101 if ifname == link.left.temporary_name else 102]
+
+    root.link_lookup.side_effect = root_lookup
+    left = Mock()
+    left.link_lookup.return_value = [201]
+    right = Mock()
+    right.link_lookup.return_value = [301]
+    handles = {link.left.namespace: left, link.right.namespace: right}
+    backend = Pyroute2Backend(
+        iproute_factory=Mock(return_value=root),
+        netns_factory=Mock(side_effect=lambda namespace: handles[namespace]),
+        ownership_token_factory=Mock(return_value=_OWNERSHIP_TOKEN),
     )
-    right.tc.assert_called_once_with(
-        "add",
-        "netem",
-        301,
-        "1:",
-        delay=100_000,
-        jitter=10_000,
-        loss=5,
-    )
+
+    backend.create_veth(link)
+
+    left.tc.assert_called_once_with("add", kind, 201, "1:", **expected)
+    right.tc.assert_called_once_with("add", kind, 301, "1:", **expected)
 
 
 def test_veth_cleanup_skips_same_location_name_reused_by_foreign_interface(
@@ -3933,6 +3995,123 @@ def test_inventory_decodes_netem_qdisc_into_semantic_values() -> None:
         delay_ms=100,
         jitter_ms=10,
         loss_percent=5,
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "options", "expected"),
+    [
+        (
+            "netem",
+            {
+                "delay": 0,
+                "limit": 1000,
+                "loss": 0,
+                "gap": 0,
+                "duplicate": 0,
+                "jitter": 0,
+                "attrs": [
+                    (
+                        "TCA_NETEM_RATE",
+                        {
+                            "rate": 1_250_000,
+                            "packet_overhead": 0,
+                            "cell_size": 0,
+                            "cell_overhead": 0,
+                        },
+                    )
+                ],
+            },
+            NetemPlan(delay_ms=0, jitter_ms=0, loss_percent=0, rate="10mbit"),
+        ),
+        (
+            "tbf",
+            {
+                "attrs": [
+                    (
+                        "TCA_TBF_PARMS",
+                        {"rate": 1_250_000, "buffer": 409_593, "limit": 532_768},
+                    )
+                ]
+            },
+            TbfPlan(rate="10mbit", burst_bytes=32_767, latency_ms=400),
+        ),
+        (
+            "fq_codel",
+            {
+                "attrs": [
+                    ("TCA_FQ_CODEL_TARGET", 5_000),
+                    ("TCA_FQ_CODEL_INTERVAL", 100_000),
+                    ("TCA_FQ_CODEL_LIMIT", 10_240),
+                    ("TCA_FQ_CODEL_ECN", 1),
+                ]
+            },
+            FqCodelPlan(target_ms=5, interval_ms=100, limit=10_240, ecn=True),
+        ),
+    ],
+)
+def test_inventory_decodes_supported_qdiscs(
+    kind: str, options: dict[str, object], expected: NetemPlan | TbfPlan | FqCodelPlan
+) -> None:
+    qdisc = {
+        "index": 10,
+        "parent": 0xFFFFFFFF,
+        "attrs": [("TCA_KIND", kind), ("TCA_OPTIONS", options)],
+    }
+    interfaces, _ = Pyroute2Backend._inventory_interfaces(
+        [_link_message(10, "eth0", "veth", 1500)],
+        [],
+        (),
+        [qdisc],
+        namespace="nslab-qdisc-h1",
+        declared_netem_interfaces={"eth0"} if kind == "netem" else set(),
+        declared_qdiscs={"eth0": None} if kind != "netem" else {},
+    )
+
+    if kind == "netem":
+        assert interfaces["eth0"].netem == expected
+    else:
+        assert interfaces["eth0"].qdisc == expected
+
+
+def test_inventory_accepts_kernel_quantization_for_fq_codel_times() -> None:
+    qdisc = {
+        "index": 10,
+        "parent": 0xFFFFFFFF,
+        "attrs": [
+            ("TCA_KIND", "fq_codel"),
+            (
+                "TCA_OPTIONS",
+                {
+                    "attrs": [
+                        ("TCA_FQ_CODEL_TARGET", 4_999),
+                        ("TCA_FQ_CODEL_LIMIT", 10_240),
+                        ("TCA_FQ_CODEL_INTERVAL", 99_999),
+                        ("TCA_FQ_CODEL_ECN", 1),
+                        ("TCA_FQ_CODEL_FLOWS", 1024),
+                        ("TCA_FQ_CODEL_QUANTUM", 1514),
+                        ("TCA_FQ_CODEL_DROP_BATCH_SIZE", 64),
+                        ("TCA_FQ_CODEL_MEMORY_LIMIT", 32 * 1024 * 1024),
+                    ]
+                },
+            ),
+        ],
+    }
+
+    interfaces, _ = Pyroute2Backend._inventory_interfaces(
+        [_link_message(10, "eth0", "veth", 1500)],
+        [],
+        (),
+        [qdisc],
+        namespace="nslab-fq-codel-h1",
+        declared_qdiscs={"eth0": None},
+    )
+
+    assert interfaces["eth0"].qdisc == FqCodelPlan(
+        target_ms=5,
+        interval_ms=100,
+        limit=10_240,
+        ecn=True,
     )
 
 

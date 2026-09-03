@@ -18,7 +18,7 @@ topology
 │        ├─ devices → <device-name> → type: vxlan
 │        └─ bridge → ports → vlans
 └─ links
-   └─ endpoints / mtu / netem
+   └─ endpoints / mtu / netem | qdisc
 ```
 
 ## 顶层字段
@@ -383,7 +383,8 @@ Bridge 节点中的 VXLAN 设备创建静态单播二层隧道，并自动加入
 | `kind` | 否 | `veth` | 链路类型，目前只能是 `veth` |
 | `endpoints` | 是 | 无 | 恰好两个 `node:interface` 字符串 |
 | `mtu` | 否 | `1500` | 两端 MTU，范围 `576..9216` |
-| `netem` | 否 | `null` | 同时应用到两端 egress 的链路条件 |
+| `netem` | 否 | `null` | 同时应用到两端 egress 的 netem 条件；不能与 `qdisc` 同时使用 |
+| `qdisc` | 否 | `null` | 同时应用到两端 egress 的根 qdisc，目前支持 `tbf` 和 `fq_codel` |
 
 ```yaml
 links:
@@ -398,9 +399,50 @@ links:
 | `delay_ms` | 否 | `0` | 单端 egress 延迟，范围 `0..60000` ms |
 | `jitter_ms` | 否 | `0` | 延迟抖动，范围 `0..60000` ms；要求 `delay_ms > 0` |
 | `loss_percent` | 否 | `0` | 随机丢包率，范围 `0..100` 的整数百分比 |
+| `rate` | 否 | `null` | 可选 egress 速率，例如 `10mbit`、`500kbit` 或 `1gbit` |
 
-三个值不能同时为零。netem 同时安装在 veth 两端，因此双向 ping 会在 request 和 reply
+四个值不能同时为零。netem 同时安装在 veth 两端，因此双向 ping 会在 request 和 reply
 方向各经历一次 egress 条件。
+
+```yaml
+netem:
+  rate: 10mbit
+  delay_ms: 20
+  jitter_ms: 5
+  loss_percent: 1
+```
+
+#### `links[].qdisc`
+
+`qdisc` 选择一个根 egress 队列规则。它不能与同一链路的 `netem` 同时使用，并会安装
+在 veth 两端。
+
+令牌桶限速 (`tbf`)：
+
+```yaml
+qdisc:
+  kind: tbf
+  rate: 10mbit
+  burst: 32kb
+  latency_ms: 400
+```
+
+`burst` 是正的字节数，也可以使用 `kb`、`mb` 或 `gb` 后缀。`latency_ms` 用于推导 TBF
+队列字节上限。
+
+公平队列和受控延迟 (`fq_codel`)：
+
+```yaml
+qdisc:
+  kind: fq_codel
+  target_ms: 5
+  interval_ms: 100
+  limit: 10240
+  ecn: true
+```
+
+`target_ms` 和 `interval_ms` 是队列延迟参数，`limit` 是报文数上限，`ecn` 控制是否启用
+ECN 标记。
 
 ## Manifest 边界
 

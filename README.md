@@ -11,7 +11,7 @@
 `nslab.yaml` 描述拓扑，然后通过统一的命令重复部署、检查、执行和销毁实验。
 
 支持 Linux namespace、veth、bridge、STP、VLAN 子接口、VXLAN、bond、VRF、IPv4/IPv6、
-静态路由、策略路由、netem，以及基于 FRRouting 的 OSPFv2/eBGP 和 XDP 实验。
+静态路由、策略路由、netem、TBF、fq_codel，以及基于 FRRouting 的 OSPFv2/eBGP 和 XDP 实验。
 网络资源通过 pyroute2 管理，不依赖生命周期 shell hook。
 
 ## 安装
@@ -109,7 +109,8 @@ sudo nslab destroy
 | [ipv6-forward](examples/ipv6-forward/README.md) | Linux IPv6 转发 |
 | [vrf](examples/vrf/README.md) | VRF 路由域与重叠地址空间 |
 | [policy-routing](examples/policy-routing/README.md) | RPDB rule、多路由表和 fwmark 选路 |
-| [netem](examples/netem/README.md) | 延迟、抖动与丢包 |
+| [netem](examples/netem/README.md) | 延迟、抖动、丢包与 egress 限速 |
+| [qdisc](examples/qdisc/README.md) | netem rate、TBF 和 fq_codel 根 qdisc |
 | [xdp](examples/xdp/README.md) | `XDP_PASS`、`XDP_DROP`、`XDP_TX` 与 `XDP_REDIRECT` |
 | [ospf](examples/ospf/README.md) | OSPFv2 邻居与故障收敛 |
 | [bgp](examples/bgp/README.md) | eBGP 与 AS_PATH 传播 |

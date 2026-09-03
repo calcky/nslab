@@ -2,8 +2,8 @@
 
 ## Goal
 
-Install an egress netem qdisc at both ends of a veth to observe link delay, jitter, random loss,
-and qdisc statistics independently. This lab does not use IP forwarding.
+Install an egress netem qdisc at both ends of a veth to observe link rate, delay, jitter, random
+loss, and qdisc statistics independently. This lab does not use IP forwarding.
 
 ## Graph
 
@@ -18,8 +18,8 @@ flowchart LR
     n0 -- "eth0 <-> eth0" --- n1
 ```
 
-Both directions use `100ms` delay, `10ms` jitter, and `5%` loss. Statistics below vary with
-random loss and generated traffic.
+Both directions use a `10mbit` rate, `100ms` delay, `10ms` jitter, and `5%` loss. Statistics
+below vary with random loss and generated traffic.
 
 ## Run
 
@@ -44,11 +44,11 @@ h2    linux  matching  nslab-netem-h2-...
 
 ```console
 $ sudo nslab exec --node h1 -- tc -s qdisc show dev eth0
-qdisc netem ... root ... limit 1000 delay 100ms 10ms loss 5%
+qdisc netem ... root ... limit 1000 delay 100ms 10ms loss 5% rate 10Mbit
  Sent ... bytes ... pkt (dropped ..., overlimits ... requeues 0)
 
 $ sudo nslab exec --node h2 -- tc -s qdisc show dev eth0
-qdisc netem ... root ... limit 1000 delay 100ms 10ms loss 5%
+qdisc netem ... root ... limit 1000 delay 100ms 10ms loss 5% rate 10Mbit
  Sent ... bytes ... pkt (dropped ..., overlimits ... requeues 0)
 ```
 
@@ -71,7 +71,7 @@ so RTT is centered around `200ms`.
 
 ## Change parameters
 
-Change `delay_ms`, `jitter_ms`, or `loss_percent`, then rebuild the topology:
+Change `rate`, `delay_ms`, `jitter_ms`, or `loss_percent`, then rebuild the topology:
 
 ```console
 $ sudo nslab redeploy
@@ -86,6 +86,32 @@ $ sudo nslab exec --node h1 -- ping -c 20 10.30.0.2
 ...
 20 packets transmitted, <received> received, <loss>% packet loss
 ```
+
+## Other root qdiscs
+
+`netem` and `qdisc` are mutually exclusive. To use token-bucket shaping or fq_codel instead,
+replace the link's `netem` block with one of these configurations:
+
+```yaml
+qdisc:
+  kind: tbf
+  rate: 10mbit
+  burst: 32kb
+  latency_ms: 400
+```
+
+```yaml
+qdisc:
+  kind: fq_codel
+  target_ms: 5
+  interval_ms: 100
+  limit: 10240
+  ecn: true
+```
+
+Run `sudo nslab redeploy` after editing, then inspect the result with `sudo nslab exec --node h1
+-- tc -s qdisc show dev eth0`. The [qdisc example](qdisc.md) runs all three configurations in
+parallel.
 
 ## Clean up
 

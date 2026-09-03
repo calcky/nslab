@@ -27,6 +27,7 @@ from pydantic import (
 )
 
 from nslab.errors import NslabError
+from nslab.tc import normalize_rate, parse_size
 
 NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 IFNAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
@@ -919,14 +920,60 @@ class NetemConfig(BaseModel):
     delay_ms: NetemDelayMs = 0
     jitter_ms: NetemDelayMs = 0
     loss_percent: NetemLossPercent = 0
+    rate: str | None = None
+
+    @field_validator("rate", mode="before")
+    @classmethod
+    def validate_rate(cls, value: object) -> object:
+        if value is None:
+            return None
+        return normalize_rate(value)
 
     @model_validator(mode="after")
     def validate_effects(self) -> Self:
         if self.jitter_ms and not self.delay_ms:
             raise ValueError("netem jitter_ms requires delay_ms")
-        if not (self.delay_ms or self.jitter_ms or self.loss_percent):
-            raise ValueError("netem must declare a non-zero delay, jitter, or loss")
+        if not (self.delay_ms or self.jitter_ms or self.loss_percent or self.rate):
+            raise ValueError("netem must declare a non-zero delay, jitter, loss, or rate")
         return self
+
+
+class TbfConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["tbf"]
+    rate: str
+    burst: StrictInt = 32 * 1024
+    latency_ms: Annotated[StrictInt, Field(ge=1, le=60_000)] = 400
+
+    @field_validator("rate", mode="before")
+    @classmethod
+    def validate_rate(cls, value: object) -> object:
+        return normalize_rate(value)
+
+    @field_validator("burst", mode="before")
+    @classmethod
+    def validate_burst(cls, value: object) -> object:
+        return parse_size(value)
+
+
+class FqCodelConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["fq_codel"]
+    target_ms: Annotated[StrictInt, Field(ge=1, le=60_000)] = 5
+    interval_ms: Annotated[StrictInt, Field(ge=1, le=60_000)] = 100
+    limit: Annotated[StrictInt, Field(ge=1, le=1_000_000)] = 10_240
+    ecn: StrictBool = True
+
+    @model_validator(mode="after")
+    def validate_timing(self) -> Self:
+        if self.target_ms > self.interval_ms:
+            raise ValueError("fq_codel target_ms cannot exceed interval_ms")
+        return self
+
+
+type QdiscConfig = Annotated[TbfConfig | FqCodelConfig, Field(discriminator="kind")]
 
 
 class LinkConfig(BaseModel):
@@ -936,6 +983,13 @@ class LinkConfig(BaseModel):
     endpoints: tuple[str, str]
     mtu: Annotated[StrictInt, Field(ge=576, le=9216)] = 1500
     netem: NetemConfig | None = None
+    qdisc: QdiscConfig | None = None
+
+    @model_validator(mode="after")
+    def validate_qdisc(self) -> Self:
+        if self.netem is not None and self.qdisc is not None:
+            raise ValueError("link netem and qdisc are mutually exclusive")
+        return self
 
 
 class Topology(BaseModel):

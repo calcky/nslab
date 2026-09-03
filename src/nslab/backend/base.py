@@ -16,7 +16,9 @@ from nslab.planner import (
     NodeKind,
     NodePlan,
     PolicyRulePlan,
+    QdiscPlan,
     RoutePlan,
+    TbfPlan,
     TopologyPlan,
     VlanDevicePlan,
     VrfDevicePlan,
@@ -47,6 +49,7 @@ class InterfaceInventory:
     port_priority: int | None = None
     bridge_vlans: tuple[BridgeVlanPlan, ...] = ()
     netem: NetemPlan | None = None
+    qdisc: QdiscPlan | None = None
     link_id: str | None = None
     parent: str | None = None
     vlan_id: int | None = None
@@ -171,6 +174,7 @@ class _ExpectedInterface:
     port_priority: int | None = None
     bridge_vlans: tuple[BridgeVlanPlan, ...] = ()
     netem: NetemPlan | None = None
+    qdisc: QdiscPlan | None = None
     parent: str | None = None
     vlan_id: int | None = None
     vrf_table: int | None = None
@@ -270,6 +274,7 @@ def _expected_interfaces(node: NodePlan, plan: TopologyPlan) -> dict[str, _Expec
                 port_priority=None if port is None else port.priority,
                 bridge_vlans=expected_bridge_port_vlans(node, endpoint.interface),
                 netem=link.netem,
+                qdisc=link.qdisc,
             )
 
     for device in node.devices.values():
@@ -367,6 +372,8 @@ def _interfaces_match(
             return False
         if observed.netem != desired.netem:
             return False
+        if not _qdisc_matches(desired.qdisc, observed.qdisc):
+            return False
         if observed.parent != desired.parent:
             return False
         if observed.vlan_id != desired.vlan_id:
@@ -399,6 +406,24 @@ def _interfaces_match(
             return False
 
     return True
+
+
+def _qdisc_matches(desired: QdiscPlan | None, observed: QdiscPlan | None) -> bool:
+    """Compare qdisc state while allowing TBF's kernel tick quantization."""
+
+    if desired is None or observed is None:
+        return desired is observed
+    if type(desired) is not type(observed):
+        return False
+    if isinstance(desired, TbfPlan):
+        assert isinstance(observed, TbfPlan)
+        burst_tolerance = max(2, desired.burst_bytes // 1000)
+        return (
+            desired.rate == observed.rate
+            and abs(desired.burst_bytes - observed.burst_bytes) <= burst_tolerance
+            and abs(desired.latency_ms - observed.latency_ms) <= 1
+        )
+    return desired == observed
 
 
 def _routes_match(

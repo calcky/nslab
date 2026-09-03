@@ -23,11 +23,14 @@ from nslab.manifest import (
     BgpConfig,
     BondDeviceConfig,
     BridgeNode,
+    FqCodelConfig,
     LinuxNode,
     Manifest,
     NodeConfig,
     OspfConfig,
+    QdiscConfig,
     RoutingConfig,
+    TbfConfig,
     VlanDeviceConfig,
     VrfDeviceConfig,
     VxlanDeviceConfig,
@@ -202,6 +205,25 @@ class NetemPlan:
     delay_ms: int
     jitter_ms: int
     loss_percent: int
+    rate: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TbfPlan:
+    rate: str
+    burst_bytes: int
+    latency_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class FqCodelPlan:
+    target_ms: int
+    interval_ms: int
+    limit: int
+    ecn: bool
+
+
+type QdiscPlan = TbfPlan | FqCodelPlan
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,6 +234,7 @@ class LinkPlan:
     right: EndpointPlan
     mtu: int
     netem: NetemPlan | None = None
+    qdisc: QdiscPlan | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -590,6 +613,22 @@ def _compile_endpoint(
     )
 
 
+def _compile_qdisc(config: QdiscConfig) -> QdiscPlan:
+    if isinstance(config, TbfConfig):
+        return TbfPlan(
+            rate=config.rate,
+            burst_bytes=config.burst,
+            latency_ms=config.latency_ms,
+        )
+    assert isinstance(config, FqCodelConfig)
+    return FqCodelPlan(
+        target_ms=config.target_ms,
+        interval_ms=config.interval_ms,
+        limit=config.limit,
+        ecn=config.ecn,
+    )
+
+
 def compile_plan(manifest: Manifest, name_override: str | None = None) -> TopologyPlan:
     deployment = _effective_deployment_name(manifest, name_override)
     mutable_nodes = {
@@ -615,8 +654,10 @@ def compile_plan(manifest: Manifest, name_override: str | None = None) -> Topolo
                         delay_ms=link.netem.delay_ms,
                         jitter_ms=link.netem.jitter_ms,
                         loss_percent=link.netem.loss_percent,
+                        rate=link.netem.rate,
                     )
                 ),
+                qdisc=None if link.qdisc is None else _compile_qdisc(link.qdisc),
             )
         )
 

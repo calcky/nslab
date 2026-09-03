@@ -51,6 +51,7 @@ sudo nslab destroy
 | 示例 | 学习内容 |
 | --- | --- |
 | [netem](netem.md) | 双向延迟、抖动、随机丢包和 qdisc 统计 |
+| [qdisc](qdisc.md) | netem 速率、令牌桶整形和 fq_codel |
 
 ## 数据包处理
 

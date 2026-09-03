@@ -14,7 +14,14 @@ import pytest
 
 from nslab.graph import render_graph
 from nslab.manifest import load_manifest
-from nslab.planner import BridgeVlanPlan, NetemPlan, RoutePlan, compile_plan
+from nslab.planner import (
+    BridgeVlanPlan,
+    FqCodelPlan,
+    NetemPlan,
+    RoutePlan,
+    TbfPlan,
+    compile_plan,
+)
 
 _EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
 _DOCS = Path(__file__).resolve().parents[2] / "docs"
@@ -242,6 +249,30 @@ def test_netem_example_compiles_bidirectional_link_impairment() -> None:
         delay_ms=100,
         jitter_ms=10,
         loss_percent=5,
+        rate="10mbit",
+    )
+
+
+def test_qdisc_example_compiles_all_supported_link_qdiscs() -> None:
+    plan = compile_plan(load_manifest(_EXAMPLES / "qdisc" / "nslab.yaml"))
+
+    assert plan.name == "qdisc"
+    assert plan.links[0].netem == NetemPlan(
+        delay_ms=20,
+        jitter_ms=5,
+        loss_percent=1,
+        rate="10mbit",
+    )
+    assert plan.links[1].qdisc == TbfPlan(
+        rate="5mbit",
+        burst_bytes=32 * 1024,
+        latency_ms=400,
+    )
+    assert plan.links[2].qdisc == FqCodelPlan(
+        target_ms=5,
+        interval_ms=100,
+        limit=10_240,
+        ecn=True,
     )
 
 

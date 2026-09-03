@@ -213,6 +213,43 @@ def test_terminal_graph_renders_netem_only_with_detail_and_json_keeps_structure(
     assert "netem" not in graph_json["links"][1]
 
 
+@pytest.mark.parametrize(
+    ("qdisc", "expected_text", "expected_json"),
+    [
+        (
+            {"kind": "tbf", "rate": "10mbit", "burst": "32kb", "latency_ms": 400},
+            "qdisc tbf rate 10mbit",
+            {"kind": "tbf", "rate": "10mbit", "burst": 32768, "latency_ms": 400},
+        ),
+        (
+            {"kind": "fq_codel", "target_ms": 5, "interval_ms": 100},
+            "qdisc fq_codel target 5ms",
+            {
+                "kind": "fq_codel",
+                "target_ms": 5,
+                "interval_ms": 100,
+                "limit": 10240,
+                "ecn": True,
+            },
+        ),
+    ],
+)
+def test_terminal_graph_renders_link_qdisc(
+    qdisc: dict[str, object], expected_text: str, expected_json: dict[str, object]
+) -> None:
+    document = _bridge_manifest().model_dump(mode="json")
+    document["topology"]["links"][0]["qdisc"] = qdisc
+    plan = compile_plan(Manifest.model_validate(document))
+
+    compact = render_graph(plan, "tree")
+    detailed = render_graph(plan, "tree", detail=True)
+    graph_json = json.loads(render_graph(plan, "json"))
+
+    assert "qdisc" not in compact
+    assert expected_text in detailed
+    assert graph_json["links"][0]["qdisc"] == expected_json
+
+
 def test_tree_renders_cycle_cross_link_and_isolated_component() -> None:
     output = render_graph(compile_plan(_cycle_and_isolated_manifest()), "tree")
 

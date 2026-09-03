@@ -420,6 +420,28 @@ def test_interface_differences_are_complete_and_deterministically_sorted(
     }
 
 
+def test_inspection_exposes_link_qdisc_and_netem_rate(
+    plan: TopologyPlan,
+    manifest: Manifest,
+    deployed_inventory: LiveInventory,
+) -> None:
+    document = manifest.model_dump(mode="json")
+    document["topology"]["links"][0]["netem"] = {"rate": "10mbit"}
+    rate_plan = compile_plan(Manifest.model_validate(document))
+    inventory = FakeNetworkBackend()
+    _create_topology(inventory, rate_plan)
+    rate_report = inspect_topology(rate_plan, None, inventory.inventory(rate_plan))
+    assert rate_report.nodes[0].desired.interfaces[1].netem == "rate 10mbit"
+
+    qdisc_document = manifest.model_dump(mode="json")
+    qdisc_document["topology"]["links"][0]["qdisc"] = {"kind": "fq_codel"}
+    qdisc_plan = compile_plan(Manifest.model_validate(qdisc_document))
+    qdisc_backend = FakeNetworkBackend()
+    _create_topology(qdisc_backend, qdisc_plan)
+    qdisc_report = inspect_topology(qdisc_plan, None, qdisc_backend.inventory(qdisc_plan))
+    assert "fq_codel target 5ms" in qdisc_report.nodes[0].desired.interfaces[1].qdisc
+
+
 def test_inspection_reports_explicit_stp_tuning_drift(
     plan: TopologyPlan,
     manifest: Manifest,

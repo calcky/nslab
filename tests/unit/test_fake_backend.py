@@ -19,7 +19,15 @@ from nslab.backend.base import (
 from nslab.backend.fake import FakeNetworkBackend
 from nslab.errors import NslabError
 from nslab.manifest import Manifest
-from nslab.planner import NetemPlan, RoutePlan, TopologyPlan, compile_plan
+from nslab.planner import (
+    FqCodelPlan,
+    NetemPlan,
+    QdiscPlan,
+    RoutePlan,
+    TbfPlan,
+    TopologyPlan,
+    compile_plan,
+)
 
 
 @pytest.fixture
@@ -374,6 +382,38 @@ def test_fake_backend_applies_link_netem_to_both_endpoints_and_detects_drift(
         first_link.right.namespace,
         first_link.right.interface,
         netem=NetemPlan(delay_ms=50, jitter_ms=0, loss_percent=0),
+    )
+    assert not inventory_matches_plan(plan, changed)
+
+
+@pytest.mark.parametrize(
+    "qdisc",
+    [
+        TbfPlan(rate="10mbit", burst_bytes=32 * 1024, latency_ms=400),
+        FqCodelPlan(target_ms=5, interval_ms=100, limit=10240, ecn=True),
+    ],
+)
+def test_fake_backend_applies_link_qdisc_to_both_endpoints_and_detects_drift(
+    bridge_plan: TopologyPlan, qdisc: QdiscPlan
+) -> None:
+    first_link = replace(bridge_plan.links[0], qdisc=qdisc)
+    plan = replace(bridge_plan, links=(first_link, bridge_plan.links[1]))
+    backend = FakeNetworkBackend()
+    _create_topology(backend, plan)
+
+    inventory = backend.inventory(plan)
+
+    left = inventory.namespaces[first_link.left.namespace].interfaces[first_link.left.interface]
+    right = inventory.namespaces[first_link.right.namespace].interfaces[first_link.right.interface]
+    assert left.qdisc == qdisc
+    assert right.qdisc == qdisc
+    assert inventory_matches_plan(plan, inventory)
+
+    changed = _replace_interface(
+        inventory,
+        first_link.right.namespace,
+        first_link.right.interface,
+        qdisc=FqCodelPlan(target_ms=10, interval_ms=100, limit=10240, ecn=True),
     )
     assert not inventory_matches_plan(plan, changed)
 

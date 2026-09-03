@@ -51,6 +51,7 @@ sudo nslab destroy
 | Example | Focus |
 | --- | --- |
 | [netem](netem.md) | Bidirectional delay, jitter, random loss, and qdisc statistics |
+| [qdisc](qdisc.md) | netem rate, token-bucket shaping, and fq_codel |
 
 ## Packet processing
 

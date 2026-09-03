@@ -2,7 +2,7 @@
 
 ## 实验目标
 
-在 veth 两端安装 netem egress qdisc，独立观察链路延迟、抖动、随机丢包和 qdisc
+在 veth 两端安装 netem egress qdisc，独立观察链路速率、延迟、抖动、随机丢包和 qdisc
 统计。这个示例属于链路条件实验，不依赖 IP 转发。
 
 ## 拓扑图
@@ -18,8 +18,8 @@ flowchart LR
     n0 -- "eth0 <-> eth0" --- n1
 ```
 
-该链路双向配置 `100ms` delay、`10ms` jitter 和 `5%` loss。以下统计输出会随随机
-丢包和流量变化。
+该链路双向配置 `10mbit` rate、`100ms` delay、`10ms` jitter 和 `5%` loss。以下统计输出
+会随随机丢包和流量变化。
 
 ## 运行
 
@@ -44,11 +44,11 @@ h2    linux  matching  nslab-netem-h2-...
 
 ```console
 $ sudo nslab exec --node h1 -- tc -s qdisc show dev eth0
-qdisc netem ... root ... limit 1000 delay 100ms 10ms loss 5%
+qdisc netem ... root ... limit 1000 delay 100ms 10ms loss 5% rate 10Mbit
  Sent ... bytes ... pkt (dropped ..., overlimits ... requeues 0)
 
 $ sudo nslab exec --node h2 -- tc -s qdisc show dev eth0
-qdisc netem ... root ... limit 1000 delay 100ms 10ms loss 5%
+qdisc netem ... root ... limit 1000 delay 100ms 10ms loss 5% rate 10Mbit
  Sent ... bytes ... pkt (dropped ..., overlimits ... requeues 0)
 ```
 
@@ -71,7 +71,7 @@ echo request 在 `h1` 经历一次 egress delay，reply 在 `h2` 再经历一次
 
 ## 修改参数
 
-修改 `delay_ms`、`jitter_ms` 或 `loss_percent` 后重建拓扑：
+修改 `rate`、`delay_ms`、`jitter_ms` 或 `loss_percent` 后重建拓扑：
 
 ```console
 $ sudo nslab redeploy
@@ -86,6 +86,31 @@ $ sudo nslab exec --node h1 -- ping -c 20 10.30.0.2
 ...
 20 packets transmitted, <received> received, <loss>% packet loss
 ```
+
+## 其他根 qdisc
+
+`netem` 与 `qdisc` 互斥；如果只想做令牌桶整形或 fq_codel，把链路上的 `netem` 替换为
+下面其中一种配置：
+
+```yaml
+qdisc:
+  kind: tbf
+  rate: 10mbit
+  burst: 32kb
+  latency_ms: 400
+```
+
+```yaml
+qdisc:
+  kind: fq_codel
+  target_ms: 5
+  interval_ms: 100
+  limit: 10240
+  ecn: true
+```
+
+修改后运行 `sudo nslab redeploy`，再用 `sudo nslab exec --node h1 -- tc -s qdisc show dev eth0`
+查看参数。三种配置的完整并行实验见 [qdisc 示例](qdisc.md)。
 
 ## 清理
 

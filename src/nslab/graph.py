@@ -10,9 +10,12 @@ from nslab.errors import NslabError
 from nslab.planner import (
     BondDevicePlan,
     DevicePlan,
+    FqCodelPlan,
     LinkPlan,
     NetemPlan,
     NodePlan,
+    QdiscPlan,
+    TbfPlan,
     TopologyPlan,
     VlanDevicePlan,
     VrfDevicePlan,
@@ -130,6 +133,8 @@ def _node_summary(node: NodePlan, *, detail: bool) -> str:
 
 def _netem_text(netem: NetemPlan) -> str:
     values = []
+    if netem.rate:
+        values.append(f"rate {netem.rate}")
     if netem.delay_ms:
         values.append(f"delay {netem.delay_ms}ms")
     if netem.jitter_ms:
@@ -137,6 +142,16 @@ def _netem_text(netem: NetemPlan) -> str:
     if netem.loss_percent:
         values.append(f"loss {netem.loss_percent}%")
     return " · ".join(values)
+
+
+def _qdisc_text(qdisc: QdiscPlan) -> str:
+    if isinstance(qdisc, TbfPlan):
+        return f"tbf rate {qdisc.rate} · burst {qdisc.burst_bytes}B · latency {qdisc.latency_ms}ms"
+    assert isinstance(qdisc, FqCodelPlan)
+    return (
+        f"fq_codel target {qdisc.target_ms}ms · interval {qdisc.interval_ms}ms"
+        f" · limit {qdisc.limit} · ecn {'on' if qdisc.ecn else 'off'}"
+    )
 
 
 def _device_text(
@@ -215,13 +230,15 @@ def _node_details(node: NodePlan, plan: TopologyPlan, *, detail: bool) -> tuple[
             if sections:
                 sections_by_interface[interface] = sections
         for link in plan.links:
-            if link.netem is None:
+            if link.netem is None and link.qdisc is None:
                 continue
             for endpoint in (link.left, link.right):
                 if endpoint.node == node.name:
-                    sections_by_interface.setdefault(endpoint.interface, []).append(
-                        f"netem {_netem_text(link.netem)}"
-                    )
+                    sections = sections_by_interface.setdefault(endpoint.interface, [])
+                    if link.netem is not None:
+                        sections.append(f"netem {_netem_text(link.netem)}")
+                    if link.qdisc is not None:
+                        sections.append(f"qdisc {_qdisc_text(link.qdisc)}")
         lines.extend(
             f"{interface}: {' · '.join(sections)}"
             for interface, sections in sections_by_interface.items()
@@ -731,11 +748,31 @@ def _link_document(link: LinkPlan) -> dict[str, object]:
         "mtu": link.mtu,
     }
     if link.netem is not None:
-        document["netem"] = {
+        netem_document: dict[str, object] = {
             "delay_ms": link.netem.delay_ms,
             "jitter_ms": link.netem.jitter_ms,
             "loss_percent": link.netem.loss_percent,
         }
+        if link.netem.rate is not None:
+            netem_document["rate"] = link.netem.rate
+        document["netem"] = netem_document
+    if link.qdisc is not None:
+        if isinstance(link.qdisc, TbfPlan):
+            document["qdisc"] = {
+                "burst": link.qdisc.burst_bytes,
+                "kind": "tbf",
+                "latency_ms": link.qdisc.latency_ms,
+                "rate": link.qdisc.rate,
+            }
+        else:
+            assert isinstance(link.qdisc, FqCodelPlan)
+            document["qdisc"] = {
+                "ecn": link.qdisc.ecn,
+                "interval_ms": link.qdisc.interval_ms,
+                "kind": "fq_codel",
+                "limit": link.qdisc.limit,
+                "target_ms": link.qdisc.target_ms,
+            }
     return document
 
 
