@@ -64,7 +64,7 @@ and `bridge`.
 | `routes` | No | `[]` | Static IPv4/IPv6 routes |
 | `neighbors` | No | `[]` | Static IPv4 ARP, IPv6 NDP, and proxy neighbor entries |
 | `sysctls` | No | `{}` | Network sysctls that nslab permits |
-| `routing` | No | `null` | OSPF/BGP configuration, allowed only on `linux` nodes |
+| `routing` | No | `null` | OSPF/BGP/PIM configuration, allowed only on `linux` nodes |
 
 Interface names contain 1 to 15 letters, digits, `_`, `.`, or `-`. Except for a bridge device
 name, every interface declared in `interfaces` must appear in a `links[].endpoints` entry.
@@ -436,7 +436,7 @@ A VRF is a layer-3 master that assigns its member interfaces to a dedicated Linu
 
 Table IDs are unique within a node, and an interface may belong to only one VRF. Connected and
 declared static routes for a member automatically use the VRF table, so the same destination may
-appear once in each routing domain. Dynamic OSPF/BGP configuration cannot currently be combined
+appear once in each routing domain. Dynamic OSPF/BGP/PIM configuration cannot currently be combined
 with VRF devices; run routing daemons explicitly through `nslab exec` for advanced VRF labs.
 
 ##### `routing`
@@ -445,8 +445,9 @@ with VRF devices; run routing daemons explicitly through `nslab exec` for advanc
 | --- | --- | --- | --- |
 | `routing.ospf` | Conditional | `null` | OSPFv2 configuration |
 | `routing.bgp` | Conditional | `null` | IPv4 eBGP configuration |
+| `routing.pim` | Conditional | `null` | IPv4 PIM-SM and IGMP configuration |
 
-At least one protocol is required when `routing` is present; both may be enabled together. The
+At least one protocol is required when `routing` is present; protocols may be enabled together. The
 node must set `net.ipv4.ip_forward: 1`. nslab starts independent FRRouting daemons and a distinct
 pathspace for every configured node.
 
@@ -480,6 +481,23 @@ Each `neighbors[]` item contains:
 
 Neighbor addresses and network prefixes cannot repeat. BGP router IDs must be unique within a
 manifest.
+
+###### `routing.pim`
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `rp_address` | Yes | None | Static unicast IPv4 rendezvous point address |
+| `interfaces` | Yes | None | Non-empty list of interfaces on which to enable PIM-SM |
+| `igmp_interfaces` | No | `[]` | PIM interfaces on which to also enable IGMP |
+
+Every listed interface must exist on the node and have an IPv4 address. Interface names are unique,
+and every IGMP interface must also appear in `interfaces`. All PIM nodes in one topology must use
+the same RP address; nslab maps it to the ASM range `224.0.0.0/4`. The RP address itself must be
+reachable through the unicast routing table, normally through OSPF or BGP. On the RP node, enable
+PIM on the loopback or dummy interface that owns the RP address.
+
+FRRouting and the kernel create an internal `pimreg` interface while `pimd` is active. nslab treats
+it as a runtime-managed interface during drift checks, and reserves that name on PIM nodes.
 
 #### `kind: bridge`
 

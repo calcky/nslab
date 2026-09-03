@@ -63,7 +63,7 @@ topology:
 | `routes` | 否 | `[]` | 静态 IPv4/IPv6 路由列表 |
 | `neighbors` | 否 | `[]` | 静态 IPv4 ARP、IPv6 NDP 和代理邻居条目 |
 | `sysctls` | 否 | `{}` | nslab 允许修改的网络 sysctl |
-| `routing` | 否 | `null` | OSPF/BGP 配置，仅允许用于 `linux` 节点 |
+| `routing` | 否 | `null` | OSPF/BGP/PIM 配置，仅允许用于 `linux` 节点 |
 
 接口名必须为 1 到 15 个字符，可包含字母、数字、`_`、`.` 和 `-`。除 bridge 设备名外，
 `interfaces` 中声明的接口必须在 `links[].endpoints` 中出现。
@@ -423,7 +423,7 @@ VRF 是三层 master，将成员接口放进独立的 Linux 路由表：
 
 同一节点中的 table ID 不能重复，一个接口也只能属于一个 VRF。成员接口的直连路由和
 声明式静态路由会自动进入对应 VRF table，因此相同目的前缀可在每个路由域中各出现一次。
-当前 VRF 设备不能与声明式 OSPF/BGP 同时使用；高级 VRF 动态路由实验可通过
+当前 VRF 设备不能与声明式 OSPF/BGP/PIM 同时使用；高级 VRF 动态路由实验可通过
 `nslab exec` 显式运行 daemon。
 
 ##### `routing`
@@ -432,8 +432,9 @@ VRF 是三层 master，将成员接口放进独立的 Linux 路由表：
 | --- | --- | --- | --- |
 | `routing.ospf` | 条件必填 | `null` | OSPFv2 配置 |
 | `routing.bgp` | 条件必填 | `null` | IPv4 eBGP 配置 |
+| `routing.pim` | 条件必填 | `null` | IPv4 PIM-SM 与 IGMP 配置 |
 
-声明 `routing` 时至少启用一个协议，可以同时启用两者。节点必须设置
+声明 `routing` 时至少启用一个协议，多个协议可以同时启用。节点必须设置
 `net.ipv4.ip_forward: 1`。nslab 会为每个节点启动独立 FRRouting daemon 和 pathspace。
 
 ###### `routing.ospf`
@@ -465,6 +466,22 @@ VRF 是三层 master，将成员接口放进独立的 Linux 路由表：
 | `remote_as` | 是 | 对端 ASN，范围 `1..4294967295` |
 
 邻居地址和 `networks` 前缀不能重复；BGP `router_id` 在同一 manifest 内不能重复。
+
+###### `routing.pim`
+
+| 字段 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `rp_address` | 是 | 无 | 静态 RP 的单播 IPv4 地址 |
+| `interfaces` | 是 | 无 | 启用 PIM-SM 的非空接口列表 |
+| `igmp_interfaces` | 否 | `[]` | 同时启用 IGMP 的 PIM 接口列表 |
+
+列表中的接口必须存在并配置 IPv4 地址，接口名不能重复；每个 IGMP 接口也必须出现在
+`interfaces` 中。同一拓扑中的所有 PIM 节点必须使用相同 RP，nslab 会把它映射到 ASM
+范围 `224.0.0.0/4`。RP 地址必须能通过单播路由表到达，通常由 OSPF 或 BGP 提供路由。
+在 RP 节点上，还应当对承载 RP 地址的 loopback 或 dummy 接口启用 PIM。
+
+`pimd` 运行时，FRRouting 和内核会自动创建内部接口 `pimreg`。nslab 在 drift 检查中把它
+视为运行时资源，并在 PIM 节点上保留该名称。
 
 #### `kind: bridge`
 

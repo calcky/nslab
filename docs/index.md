@@ -39,14 +39,14 @@ succeeds.
 | [Getting started](getting-started.md) | Installation, privileges, lifecycle, and recovery |
 | [Manifest](manifest.md) | `nslab.yaml` fields, constraints, and complete snippets |
 | [CLI reference](cli.md) | Commands, options, output formats, and completion |
-| [Examples](examples/index.md) | Bridge, VLAN, bond, VRF, policy routing, forwarding, netem, qdisc, XDP, OSPF, and BGP labs |
+| [Examples](examples/index.md) | Bridge, VLAN, bond, VRF, forwarding, XDP, OSPF, BGP, and PIM labs |
 
 ## Scope
 
 - Supports x86_64 Linux; Ubuntu 22.04 or newer is recommended.
 - Manages network resources through pyroute2 without `ip`, `bridge`, or lifecycle shell hooks.
 - Currently supports `linux` and `bridge` node kinds and `veth` links.
-- Runs OSPFv2 and eBGP through system-installed FRRouting daemons; FRR is not bundled.
+- Runs OSPFv2, eBGP, and IPv4 PIM-SM through system-installed FRRouting daemons; FRR is not bundled.
 - Generates Bash and Zsh completion scripts without modifying shell configuration files.
 
 Source code and issue tracking are available on [GitHub](https://github.com/calcky/nslab).

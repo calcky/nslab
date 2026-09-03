@@ -27,7 +27,7 @@ from nslab.planner import (
     node_interface_addresses,
 )
 
-_FRR_DAEMONS = ("zebra", "ospfd", "bgpd")
+_FRR_DAEMONS = ("zebra", "ospfd", "bgpd", "pimd")
 _ROUTING_RUNTIME_VERSION = 1
 _DEFAULT_STARTUP_TIMEOUT = 5.0
 _DEFAULT_STOP_TIMEOUT = 3.0
@@ -97,7 +97,7 @@ def _ospf_point_to_point_interfaces(
 
 
 def render_frr_config(node: NodePlan, plan: TopologyPlan | None = None) -> str:
-    """Render the supported OSPFv2/eBGP subset as an FRR integrated config."""
+    """Render the supported OSPFv2, eBGP, and PIM-SM FRR config."""
 
     routing = node.routing
     if routing is None:
@@ -151,6 +151,17 @@ def render_frr_config(node: NodePlan, plan: TopologyPlan | None = None) -> str:
             lines.append(f"  neighbor {neighbor.address} activate")
         lines.extend([" exit-address-family", "!", ""])
 
+    if routing.pim is not None:
+        pim = routing.pim
+        lines.extend([f"ip pim rp {pim.rp_address} 224.0.0.0/4", "!"])
+        igmp_interfaces = frozenset(pim.igmp_interfaces)
+        for interface in pim.interfaces:
+            lines.extend([f"interface {interface}", " ip pim"])
+            if interface in igmp_interfaces:
+                lines.append(" ip igmp")
+            lines.append("!")
+        lines.append("")
+
     lines.extend(["line vty", ""])
     return "\n".join(lines)
 
@@ -163,6 +174,8 @@ def routing_protocols(routing: RoutingPlan | None) -> tuple[str, ...]:
         protocols.append("ospf")
     if routing.bgp is not None:
         protocols.append("bgp")
+    if routing.pim is not None:
+        protocols.append("pim")
     return tuple(protocols)
 
 
@@ -176,6 +189,8 @@ def routing_daemons(routing: RoutingPlan | None) -> tuple[str, ...]:
         daemons.append("ospfd")
     if routing.bgp is not None:
         daemons.append("bgpd")
+    if routing.pim is not None:
+        daemons.append("pimd")
     return tuple(daemons)
 
 

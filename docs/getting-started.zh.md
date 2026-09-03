@@ -9,7 +9,7 @@ sudo apt update
 sudo apt install -y iproute2 iputils-ping
 ```
 
-运行 `ospf` 或 `bgp` 示例时，再安装 FRRouting：
+运行 `ospf`、`bgp` 或 `pim` 示例时，再安装 FRRouting：
 
 ```bash
 sudo apt install -y frr frr-pythontools

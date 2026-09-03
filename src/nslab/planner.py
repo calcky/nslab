@@ -35,6 +35,7 @@ from nslab.manifest import (
     Manifest,
     NodeConfig,
     OspfConfig,
+    PimConfig,
     QdiscConfig,
     RoutingConfig,
     TbfConfig,
@@ -149,9 +150,17 @@ class BgpPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class PimPlan:
+    rp_address: IPv4Address
+    interfaces: tuple[str, ...]
+    igmp_interfaces: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class RoutingPlan:
     ospf: OspfPlan | None = None
     bgp: BgpPlan | None = None
+    pim: PimPlan | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -910,12 +919,21 @@ def _compile_bgp(config: BgpConfig) -> BgpPlan:
     )
 
 
+def _compile_pim(config: PimConfig) -> PimPlan:
+    return PimPlan(
+        rp_address=config.rp_address,
+        interfaces=tuple(config.interfaces),
+        igmp_interfaces=tuple(config.igmp_interfaces),
+    )
+
+
 def _compile_routing(config: RoutingConfig | None) -> RoutingPlan | None:
     if config is None:
         return None
     return RoutingPlan(
         ospf=None if config.ospf is None else _compile_ospf(config.ospf),
         bgp=None if config.bgp is None else _compile_bgp(config.bgp),
+        pim=None if config.pim is None else _compile_pim(config.pim),
     )
 
 

@@ -13,6 +13,7 @@ from nslab.backend.base import (
     inventory_matches_plan,
     neighbors_match,
     recorded_link_ids_match_inventory,
+    runtime_managed_interface_names,
 )
 from nslab.errors import NslabError
 from nslab.planner import (
@@ -1242,7 +1243,10 @@ def _actual_node_view(
     actual_neighbors: tuple[NeighborPlan, ...] = ()
     actual_sysctls: Mapping[str, int] = {}
     if observed_namespace is not None:
-        expected_names = {interface.name for interface in expected_interfaces}
+        expected_names = {
+            *(interface.name for interface in expected_interfaces),
+            *runtime_managed_interface_names(node),
+        }
         for desired in expected_interfaces:
             observed = observed_namespace.interfaces.get(desired.name)
             if observed is not None:
@@ -1512,7 +1516,11 @@ def _live_differences(
             interface.name: interface for interface in _desired_interfaces(node, plan)
         }
         missing = set(desired_interfaces) - set(observed.interfaces)
-        unexpected = set(observed.interfaces) - set(desired_interfaces)
+        unexpected = (
+            set(observed.interfaces)
+            - set(desired_interfaces)
+            - runtime_managed_interface_names(node)
+        )
         for name in sorted(missing):
             differences.append(
                 _difference(

@@ -81,9 +81,10 @@ sudo nslab destroy
 | --- | --- |
 | [OSPFv2](ospf.md) | Adjacencies, link-state routes, and failure convergence |
 | [eBGP](bgp.md) | Peer establishment, AS_PATH propagation, and edge routing |
+| [PIM-SM and IGMP](pim.md) | Static RP, multicast RPF, IGMP membership, and packet replication |
 
 !!! note "Privileges and dependencies"
 
     `graph` does not require root. Creating namespaces, bridges, veth pairs, or qdiscs does.
-    The OSPF and BGP pages also require the system `frr` and `frr-pythontools` packages. The XDP
+    The OSPF, BGP, and PIM pages also require the system `frr` and `frr-pythontools` packages. The XDP
     page requires Clang, libbpf headers, and bpftool.

@@ -6,6 +6,7 @@ from ipaddress import IPv4Interface, IPv4Network
 from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
+from nslab.manifest import PIM_REGISTER_INTERFACE_NAME
 from nslab.planner import (
     BondDevicePlan,
     BridgeVlanPlan,
@@ -604,6 +605,14 @@ def _interfaces_match(
     return True
 
 
+def runtime_managed_interface_names(node: NodePlan) -> frozenset[str]:
+    """Return kernel interfaces created as a side effect of managed runtimes."""
+
+    if node.routing is not None and node.routing.pim is not None:
+        return frozenset({PIM_REGISTER_INTERFACE_NAME})
+    return frozenset()
+
+
 def _qdisc_matches(desired: QdiscPlan | None, observed: QdiscPlan | None) -> bool:
     """Compare qdisc state while allowing TBF's kernel tick quantization."""
 
@@ -630,7 +639,7 @@ def _routes_match(
     actual_routes = frozenset(actual)
     desired_routes = frozenset(desired)
     if node.routing is not None:
-        # OSPF/BGP legitimately add and withdraw routes asynchronously. Static
+        # Routing daemons legitimately add and withdraw routes asynchronously. Static
         # routes remain managed by nslab; learned routes are intentionally extra.
         return desired_routes <= actual_routes
     return actual_routes == desired_routes
@@ -774,7 +783,13 @@ def inventory_matches_plan(plan: TopologyPlan, inventory: LiveInventory) -> bool
             return False
         if observed.namespace != node.namespace:
             return False
-        if not _interfaces_match(_expected_interfaces(node, plan), observed.interfaces):
+        ignored_interfaces = runtime_managed_interface_names(node)
+        observed_interfaces = {
+            name: interface
+            for name, interface in observed.interfaces.items()
+            if name not in ignored_interfaces
+        }
+        if not _interfaces_match(_expected_interfaces(node, plan), observed_interfaces):
             return False
         if not _routes_match(
             node,

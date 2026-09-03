@@ -81,9 +81,10 @@ sudo nslab destroy
 | --- | --- |
 | [OSPFv2](ospf.md) | 邻居建立、链路状态路由和故障收敛 |
 | [eBGP](bgp.md) | 邻居建立、AS_PATH 传播和边界路由 |
+| [PIM-SM 与 IGMP](pim.md) | 静态 RP、组播 RPF、IGMP membership 和数据复制 |
 
 !!! note "权限和依赖"
 
-    `graph` 不需要 root。创建 namespace、bridge、veth 或 qdisc 需要 root。OSPF/BGP
+    `graph` 不需要 root。创建 namespace、bridge、veth 或 qdisc 需要 root。OSPF/BGP/PIM
     页面还需要系统安装 `frr` 和 `frr-pythontools`。XDP 页面需要 Clang、libbpf
     头文件和 bpftool。

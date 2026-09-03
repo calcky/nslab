@@ -63,6 +63,7 @@ plugins:
             Link conditions: 链路条件
             Packet processing: 数据包处理
             Dynamic routing: 动态路由
+            PIM-SM and IGMP: PIM-SM 与 IGMP
             Bridge port controls: Bridge 端口控制
             IPv4 forwarding: IPv4 转发
             IPv6 forwarding: IPv6 转发
@@ -150,5 +151,6 @@ nav:
       - Dynamic routing:
           - OSPF: examples/ospf.md
           - BGP: examples/bgp.md
+          - PIM-SM and IGMP: examples/pim.md
 
 strict: true

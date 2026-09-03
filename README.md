@@ -13,13 +13,13 @@
 支持 Linux namespace、veth、bridge、bridge 端口隔离/学习/泛洪、STP、VLAN 子接口、VXLAN、Geneve、GRE、IPIP、bond、VRF、
 dummy、macvlan、ipvlan、IPv4/IPv6、
 固定 MAC、静态 ARP/NDP、Proxy ARP/NDP、静态路由、策略路由、netem、TBF、fq_codel，
-以及基于 FRRouting 的 OSPFv2/eBGP 和 XDP 实验。
+以及基于 FRRouting 的 OSPFv2/eBGP/PIM-SM 和 XDP 实验。
 网络资源通过 pyroute2 管理，不依赖生命周期 shell hook。
 
 ## 安装
 
 运行环境为 x86_64 Linux，推荐 Ubuntu 22.04 或更高版本。网络拓扑操作需要 root；
-OSPF/BGP 示例还需要 `frr` 与 `frr-pythontools`；XDP 示例需要 Clang、libbpf 和
+OSPF/BGP/PIM 示例还需要 `frr` 与 `frr-pythontools`；XDP 示例需要 Clang、libbpf 和
 bpftool。
 
 从源码运行：
@@ -122,6 +122,7 @@ sudo nslab destroy
 | [xdp](examples/xdp/README.md) | `XDP_PASS`、`XDP_DROP`、`XDP_TX` 与 `XDP_REDIRECT` |
 | [ospf](examples/ospf/README.md) | OSPFv2 邻居与故障收敛 |
 | [bgp](examples/bgp/README.md) | eBGP 与 AS_PATH 传播 |
+| [pim](examples/pim/README.md) | PIM-SM、静态 RP 与 IGMP 组播转发 |
 
 每个目录的 README 包含该实验的完整运行、观察和清理步骤。
 

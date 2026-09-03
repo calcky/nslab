@@ -33,6 +33,7 @@ NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 IFNAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
 MAC_PATTERN = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 KERNEL_TUNNEL_FALLBACK_NAMES = frozenset({"gre0", "gretap0", "erspan0", "tunl0"})
+PIM_REGISTER_INTERFACE_NAME = "pimreg"
 ALLOWED_SYSCTLS = frozenset(
     {
         "net.ipv4.ip_forward",
@@ -890,16 +891,65 @@ class BgpConfig(BaseModel):
         return neighbors
 
 
+class PimConfig(BaseModel):
+    """The deterministic IPv4 PIM-SM subset emitted to FRRouting."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    rp_address: IPv4Address
+    interfaces: tuple[str, ...]
+    igmp_interfaces: tuple[str, ...] = ()
+
+    @field_validator("rp_address", mode="before")
+    @classmethod
+    def validate_rp_address_input(cls, value: object) -> object:
+        if not isinstance(value, (str, IPv4Address)):
+            raise ValueError("PIM rp_address must be an IPv4 string")
+        return value
+
+    @field_validator("rp_address")
+    @classmethod
+    def validate_rp_address(cls, value: IPv4Address) -> IPv4Address:
+        if value.is_unspecified or value.is_multicast or value == IPv4Address("255.255.255.255"):
+            raise ValueError("PIM rp_address must be a unicast IPv4 address")
+        return value
+
+    @field_validator("interfaces", "igmp_interfaces", mode="before")
+    @classmethod
+    def validate_interface_inputs(cls, value: object) -> object:
+        return _validate_sequence(value, "PIM interfaces")
+
+    @field_validator("interfaces", "igmp_interfaces")
+    @classmethod
+    def validate_interfaces(cls, interfaces: tuple[str, ...]) -> tuple[str, ...]:
+        for interface in interfaces:
+            _require_interface_name(interface, "PIM interface name")
+        if len(set(interfaces)) != len(interfaces):
+            raise ValueError("PIM interfaces must be unique")
+        return interfaces
+
+    @model_validator(mode="after")
+    def validate_interface_roles(self) -> Self:
+        if not self.interfaces:
+            raise ValueError("PIM interfaces must not be empty")
+        missing = set(self.igmp_interfaces) - set(self.interfaces)
+        if missing:
+            interface = sorted(missing)[0]
+            raise ValueError(f"PIM IGMP interface must also enable PIM: {interface!r}")
+        return self
+
+
 class RoutingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     ospf: OspfConfig | None = None
     bgp: BgpConfig | None = None
+    pim: PimConfig | None = None
 
     @model_validator(mode="after")
     def validate_protocols(self) -> Self:
-        if self.ospf is None and self.bgp is None:
-            raise ValueError("routing must enable OSPF or BGP")
+        if self.ospf is None and self.bgp is None and self.pim is None:
+            raise ValueError("routing must enable OSPF, BGP, or PIM")
         return self
 
 
@@ -1497,6 +1547,7 @@ class Topology(BaseModel):
         used_endpoints: set[str] = set()
         ospf_router_ids: dict[IPv4Address, str] = {}
         bgp_router_ids: dict[IPv4Address, str] = {}
+        pim_rp_address: IPv4Address | None = None
 
         for link in self.links:
             for endpoint in link.endpoints:
@@ -1862,6 +1913,41 @@ class Topology(BaseModel):
                         raise ValueError(
                             f"BGP neighbor {bgp_neighbor.address} is not directly connected on "
                             f"node {node_name!r}"
+                        )
+
+            if routing.pim is not None:
+                if PIM_REGISTER_INTERFACE_NAME in available:
+                    raise ValueError(
+                        f"PIM runtime interface name is reserved on node {node_name!r}: "
+                        f"{PIM_REGISTER_INTERFACE_NAME!r}"
+                    )
+                if pim_rp_address is None:
+                    pim_rp_address = routing.pim.rp_address
+                elif routing.pim.rp_address != pim_rp_address:
+                    raise ValueError(
+                        "all PIM nodes must use the same rp_address: "
+                        f"expected {pim_rp_address}, got {routing.pim.rp_address} "
+                        f"on node {node_name!r}"
+                    )
+                for interface in routing.pim.interfaces:
+                    if interface not in available:
+                        raise ValueError(
+                            f"PIM interface is not available on node {node_name!r}: {interface!r}"
+                        )
+                    interface_config = node.interfaces.get(interface)
+                    if interface_config is not None:
+                        addresses = interface_config.addresses
+                    else:
+                        device_config = node.devices.get(interface)
+                        addresses = (
+                            device_config.addresses
+                            if isinstance(device_config, InterfaceConfig)
+                            else ()
+                        )
+                    if not any(address.version == 4 for address in addresses):
+                        raise ValueError(
+                            f"PIM interface requires an IPv4 address on node "
+                            f"{node_name!r}: {interface!r}"
                         )
 
         return self

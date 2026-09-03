@@ -35,14 +35,14 @@ no-op；保留 `nslab.yaml` 时，重复 `destroy` 也会成功。
 | [快速开始](getting-started.md) | 安装、权限、生命周期和故障恢复 |
 | [Manifest](manifest.md) | `nslab.yaml` 的字段、约束和完整片段 |
 | [CLI 参考](cli.md) | 命令、选项、输出格式和补全 |
-| [实验示例](examples/index.md) | bridge、VLAN、bond、VRF、策略路由、转发、netem、qdisc、XDP、OSPF、BGP |
+| [实验示例](examples/index.md) | bridge、VLAN、bond、VRF、转发、XDP、OSPF、BGP、PIM |
 
 ## 设计边界
 
 - 支持 Linux x86_64，推荐 Ubuntu 22.04 或更高版本。
 - 网络资源由 pyroute2 管理，不依赖 `ip`、`bridge` 或生命周期 shell hook。
 - 当前 node 类型是 `linux` 和 `bridge`；链路类型是 `veth`。
-- OSPFv2 与 eBGP 通过系统安装的 FRRouting daemon 运行，发布包不内置 FRR。
+- OSPFv2、eBGP 与 IPv4 PIM-SM 通过系统安装的 FRRouting daemon 运行，发布包不内置 FRR。
 - Bash、Zsh 补全只输出脚本，不修改 shell 配置文件。
 
 源码和问题追踪位于 [GitHub](https://github.com/calcky/nslab)。

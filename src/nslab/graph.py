@@ -128,6 +128,8 @@ def _node_kind_text(node: NodePlan, *, detail: bool) -> str:
             protocols.append("ospf")
         if node.routing.bgp is not None:
             protocols.append(f"bgp as {node.routing.bgp.local_as}")
+        if node.routing.pim is not None:
+            protocols.append(f"pim rp {node.routing.pim.rp_address}")
         if protocols:
             summary += " · " + " · ".join(protocols)
     return summary
