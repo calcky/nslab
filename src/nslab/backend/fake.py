@@ -18,6 +18,8 @@ from nslab.planner import (
     DummyDevicePlan,
     EndpointPlan,
     GeneveDevicePlan,
+    GreDevicePlan,
+    IpipDevicePlan,
     IpvlanDevicePlan,
     LinkPlan,
     MacvlanDevicePlan,
@@ -34,6 +36,8 @@ from nslab.planner import (
     bond_device_mtu,
     dummy_device_mtu,
     geneve_device_mtu,
+    gre_device_mtu,
+    ipip_device_mtu,
     ipvlan_device_mtu,
     macvlan_device_mtu,
     node_interface_master,
@@ -330,6 +334,65 @@ class FakeNetworkBackend:
                 mtu=dummy_device_mtu(node, plan, device),
                 up=True,
                 addresses=device.addresses,
+            )
+
+        for device in node.devices.values():
+            if not isinstance(device, GreDevicePlan):
+                continue
+            if device.link not in interfaces:
+                raise _resource_error(
+                    "RESOURCE_MISSING",
+                    "configure_node",
+                    f"{resource}:{device.link}",
+                )
+            if device.name in interfaces:
+                raise _resource_error(
+                    "RESOURCE_EXISTS",
+                    "configure_node",
+                    f"{resource}:{device.name}",
+                )
+            interfaces[device.name] = InterfaceInventory(
+                name=device.name,
+                kind="gre",
+                ifindex=self._allocate_ifindex(resource),
+                master=node_interface_master(node, device.name),
+                mtu=gre_device_mtu(node, plan, device),
+                up=True,
+                addresses=device.addresses,
+                gre_link=device.link,
+                gre_local=device.local,
+                gre_remote=device.remote,
+                gre_key=device.key,
+                gre_ttl=device.ttl,
+            )
+
+        for device in node.devices.values():
+            if not isinstance(device, IpipDevicePlan):
+                continue
+            if device.link not in interfaces:
+                raise _resource_error(
+                    "RESOURCE_MISSING",
+                    "configure_node",
+                    f"{resource}:{device.link}",
+                )
+            if device.name in interfaces:
+                raise _resource_error(
+                    "RESOURCE_EXISTS",
+                    "configure_node",
+                    f"{resource}:{device.name}",
+                )
+            interfaces[device.name] = InterfaceInventory(
+                name=device.name,
+                kind="ipip",
+                ifindex=self._allocate_ifindex(resource),
+                master=node_interface_master(node, device.name),
+                mtu=ipip_device_mtu(node, plan, device),
+                up=True,
+                addresses=device.addresses,
+                ipip_link=device.link,
+                ipip_local=device.local,
+                ipip_remote=device.remote,
+                ipip_ttl=device.ttl,
             )
 
         for device in node.devices.values():

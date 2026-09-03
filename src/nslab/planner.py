@@ -26,6 +26,8 @@ from nslab.manifest import (
     DummyDeviceConfig,
     FqCodelConfig,
     GeneveDeviceConfig,
+    GreDeviceConfig,
+    IpipDeviceConfig,
     IpvlanDeviceConfig,
     LinuxNode,
     MacvlanDeviceConfig,
@@ -155,6 +157,32 @@ class BondDevicePlan:
 
 
 @dataclass(frozen=True, slots=True)
+class GreDevicePlan:
+    name: str
+    link: str
+    local: IPv4Address
+    remote: IPv4Address
+    key: int | None = None
+    ttl: int = 64
+    mtu: int | None = None
+    addresses: tuple[IPInterface, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class IpipDevicePlan:
+    name: str
+    link: str
+    local: IPv4Address
+    remote: IPv4Address
+    ttl: int = 64
+    mtu: int | None = None
+    addresses: tuple[IPInterface, ...] = ()
+
+
+IPIPDevicePlan = IpipDevicePlan
+
+
+@dataclass(frozen=True, slots=True)
 class VxlanDevicePlan:
     name: str
     vni: int
@@ -207,6 +235,8 @@ type DevicePlan = (
     VlanDevicePlan
     | VrfDevicePlan
     | BondDevicePlan
+    | GreDevicePlan
+    | IpipDevicePlan
     | VxlanDevicePlan
     | DummyDevicePlan
     | GeneveDevicePlan
@@ -358,6 +388,23 @@ def geneve_device_mtu(node: NodePlan, plan: TopologyPlan, device: GeneveDevicePl
     return underlay_mtu - (50 if device.remote.version == 4 else 70)
 
 
+def gre_device_mtu(node: NodePlan, plan: TopologyPlan, device: GreDevicePlan) -> int:
+    """Return an explicit GRE MTU or derive one from its IPv4 underlay."""
+
+    if device.mtu is not None:
+        return device.mtu
+    overhead = 24 + (4 if device.key is not None else 0)
+    return parent_device_mtu(node, plan, device.link) - overhead
+
+
+def ipip_device_mtu(node: NodePlan, plan: TopologyPlan, device: IpipDevicePlan) -> int:
+    """Return an explicit IPIP MTU or derive one from its IPv4 underlay."""
+
+    if device.mtu is not None:
+        return device.mtu
+    return parent_device_mtu(node, plan, device.link) - 20
+
+
 def macvlan_device_mtu(node: NodePlan, plan: TopologyPlan, device: MacvlanDevicePlan) -> int:
     return parent_device_mtu(node, plan, device.link) if device.mtu is None else device.mtu
 
@@ -383,6 +430,8 @@ def node_interface_addresses(node: NodePlan) -> Mapping[str, tuple[IPInterface, 
                         VxlanDevicePlan,
                         DummyDevicePlan,
                         GeneveDevicePlan,
+                        GreDevicePlan,
+                        IpipDevicePlan,
                         MacvlanDevicePlan,
                         IpvlanDevicePlan,
                     ),
@@ -519,6 +568,27 @@ def _compile_node(deployment: str, name: str, manifest_node: NodeConfig) -> Node
             elif isinstance(config, DummyDeviceConfig):
                 compiled_devices[device_name] = DummyDevicePlan(
                     name=device_name,
+                    mtu=config.mtu,
+                    addresses=tuple(ip_interface(str(address)) for address in config.addresses),
+                )
+            elif isinstance(config, GreDeviceConfig):
+                compiled_devices[device_name] = GreDevicePlan(
+                    name=device_name,
+                    link=config.link,
+                    local=config.local,
+                    remote=config.remote,
+                    key=config.key,
+                    ttl=config.ttl,
+                    mtu=config.mtu,
+                    addresses=tuple(ip_interface(str(address)) for address in config.addresses),
+                )
+            elif isinstance(config, IpipDeviceConfig):
+                compiled_devices[device_name] = IpipDevicePlan(
+                    name=device_name,
+                    link=config.link,
+                    local=config.local,
+                    remote=config.remote,
+                    ttl=config.ttl,
                     mtu=config.mtu,
                     addresses=tuple(ip_interface(str(address)) for address in config.addresses),
                 )

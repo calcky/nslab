@@ -48,7 +48,9 @@ from nslab.planner import (
     EndpointPlan,
     FqCodelPlan,
     GeneveDevicePlan,
+    GreDevicePlan,
     IPInterface,
+    IpipDevicePlan,
     IpvlanDevicePlan,
     LinkPlan,
     MacvlanDevicePlan,
@@ -65,6 +67,8 @@ from nslab.planner import (
     bond_device_mtu,
     dummy_device_mtu,
     geneve_device_mtu,
+    gre_device_mtu,
+    ipip_device_mtu,
     ipvlan_device_mtu,
     macvlan_device_mtu,
     node_interface_addresses,
@@ -127,6 +131,15 @@ _MACVLAN_MODE_TO_NETLINK = {
 _MACVLAN_MODE_FROM_NETLINK = {value: key for key, value in _MACVLAN_MODE_TO_NETLINK.items()}
 _IPVLAN_MODE_TO_NETLINK = {"l2": 0, "l3": 1, "l3s": 2}
 _IPVLAN_MODE_FROM_NETLINK = {value: key for key, value in _IPVLAN_MODE_TO_NETLINK.items()}
+_GRE_KEY_NETLINK_FLAG = 0x2000
+_KERNEL_TUNNEL_FALLBACKS = frozenset(
+    {
+        ("gre0", "gre"),
+        ("gretap0", "gretap"),
+        ("erspan0", "erspan"),
+        ("tunl0", "ipip"),
+    }
+)
 # FRR uses the Linux-assigned protocol identifiers for protocol-originated
 # routes.  ``RTPROT_ZEBRA`` is included for FRR releases that use the generic
 # Zebra identifier for an imported/redistributed route.
@@ -1352,6 +1365,83 @@ class Pyroute2Backend:
                     )
 
                 for device in node.devices.values():
+                    if not isinstance(device, GreDevicePlan):
+                        continue
+                    underlay_index = indexes.get(device.link)
+                    if underlay_index is None:
+                        underlay_index = _required_index(
+                            namespace,
+                            device.link,
+                            "configure_node",
+                            f"{node.namespace}:{device.link}",
+                        )
+                        indexes[device.link] = underlay_index
+                    gre_arguments: dict[str, object] = {
+                        "ifname": device.name,
+                        "kind": "gre",
+                        "gre_link": underlay_index,
+                        "gre_local": str(device.local),
+                        "gre_remote": str(device.remote),
+                        "gre_ttl": device.ttl,
+                    }
+                    if device.key is not None:
+                        gre_arguments.update(
+                            gre_ikey=device.key,
+                            gre_okey=device.key,
+                            gre_iflags=_GRE_KEY_NETLINK_FLAG,
+                            gre_oflags=_GRE_KEY_NETLINK_FLAG,
+                        )
+                    namespace.link("add", **gre_arguments)
+                    gre_index = _required_index(
+                        namespace,
+                        device.name,
+                        "configure_node",
+                        f"{node.namespace}:{device.name}",
+                    )
+                    indexes[device.name] = gre_index
+                    namespace.link(
+                        "set",
+                        index=gre_index,
+                        mtu=gre_device_mtu(node, plan, device),
+                        state="up",
+                    )
+
+                for device in node.devices.values():
+                    if not isinstance(device, IpipDevicePlan):
+                        continue
+                    underlay_index = indexes.get(device.link)
+                    if underlay_index is None:
+                        underlay_index = _required_index(
+                            namespace,
+                            device.link,
+                            "configure_node",
+                            f"{node.namespace}:{device.link}",
+                        )
+                        indexes[device.link] = underlay_index
+                    namespace.link(
+                        "add",
+                        ifname=device.name,
+                        kind="ipip",
+                        ipip_link=underlay_index,
+                        ipip_local=str(device.local),
+                        ipip_remote=str(device.remote),
+                        ipip_ttl=device.ttl,
+                    )
+                    ipip_index = _required_index(
+                        namespace,
+                        device.name,
+                        "configure_node",
+                        f"{node.namespace}:{device.name}",
+                    )
+                    indexes[device.name] = ipip_index
+                    namespace.link(
+                        "set",
+                        index=ipip_index,
+                        mtu=ipip_device_mtu(node, plan, device),
+                        state="up",
+                    )
+
+                for device in node.devices.values():
                     if not isinstance(device, GeneveDevicePlan):
                         continue
                     # Geneve has no IFLA_GENEVE_LINK attribute.  The kernel
@@ -2148,6 +2238,8 @@ class Pyroute2Backend:
                     kind = "unknown"
             else:
                 kind = str(kind_value)
+            if (name, kind) in _KERNEL_TUNNEL_FALLBACKS:
+                continue
             master_value = _attribute(message, "IFLA_MASTER")
             master = names_by_index.get(int(master_value)) if master_value is not None else None
             stp: bool | None = None
@@ -2174,6 +2266,15 @@ class Pyroute2Backend:
             geneve_link: str | None = None
             geneve_remote: IPv4Address | IPv6Address | None = None
             geneve_dst_port: int | None = None
+            gre_link: str | None = None
+            gre_local: IPv4Address | None = None
+            gre_remote: IPv4Address | None = None
+            gre_key: int | None = None
+            gre_ttl: int | None = None
+            ipip_link: str | None = None
+            ipip_local: IPv4Address | None = None
+            ipip_remote: IPv4Address | None = None
+            ipip_ttl: int | None = None
             macvlan_mode: str | None = None
             ipvlan_mode: str | None = None
             if kind == "bridge":
@@ -2269,6 +2370,48 @@ class Pyroute2Backend:
                     geneve_remote = ip_address(remote_value)
                 if port_value is not None:
                     geneve_dst_port = int(port_value)
+            if kind == "gre":
+                info_data = _attribute(link_info, "IFLA_INFO_DATA")
+                link_value = _attribute(info_data, "IFLA_GRE_LINK")
+                local_value = _attribute(info_data, "IFLA_GRE_LOCAL")
+                remote_value = _attribute(info_data, "IFLA_GRE_REMOTE")
+                ttl_value = _attribute(info_data, "IFLA_GRE_TTL")
+                input_flags = _attribute(info_data, "IFLA_GRE_IFLAGS")
+                output_flags = _attribute(info_data, "IFLA_GRE_OFLAGS")
+                input_key = _attribute(info_data, "IFLA_GRE_IKEY")
+                output_key = _attribute(info_data, "IFLA_GRE_OKEY")
+                if link_value is not None:
+                    gre_link = names_by_index.get(int(link_value))
+                if local_value is not None:
+                    gre_local = IPv4Address(local_value)
+                if remote_value is not None:
+                    gre_remote = IPv4Address(remote_value)
+                if ttl_value is not None:
+                    gre_ttl = int(ttl_value)
+                key_enabled = any(
+                    value is not None and bool(int(value) & _GRE_KEY_NETLINK_FLAG)
+                    for value in (input_flags, output_flags)
+                )
+                if key_enabled:
+                    key_values = [
+                        int(value) for value in (input_key, output_key) if value is not None
+                    ]
+                    if key_values and len(set(key_values)) == 1:
+                        gre_key = key_values[0]
+            if kind == "ipip":
+                info_data = _attribute(link_info, "IFLA_INFO_DATA")
+                link_value = _attribute(info_data, "IFLA_IPIP_LINK")
+                local_value = _attribute(info_data, "IFLA_IPIP_LOCAL")
+                remote_value = _attribute(info_data, "IFLA_IPIP_REMOTE")
+                ttl_value = _attribute(info_data, "IFLA_IPIP_TTL")
+                if link_value is not None:
+                    ipip_link = names_by_index.get(int(link_value))
+                if local_value is not None:
+                    ipip_local = IPv4Address(local_value)
+                if remote_value is not None:
+                    ipip_remote = IPv4Address(remote_value)
+                if ttl_value is not None:
+                    ipip_ttl = int(ttl_value)
             if kind == "macvlan":
                 parent_value = _attribute(message, "IFLA_LINK")
                 if parent_value is not None:
@@ -2346,6 +2489,15 @@ class Pyroute2Backend:
                 geneve_link=geneve_link,
                 geneve_remote=geneve_remote,
                 geneve_dst_port=geneve_dst_port,
+                gre_link=gre_link,
+                gre_local=gre_local,
+                gre_remote=gre_remote,
+                gre_key=gre_key,
+                gre_ttl=gre_ttl,
+                ipip_link=ipip_link,
+                ipip_local=ipip_local,
+                ipip_remote=ipip_remote,
+                ipip_ttl=ipip_ttl,
                 macvlan_mode=macvlan_mode,
                 ipvlan_mode=ipvlan_mode,
             )

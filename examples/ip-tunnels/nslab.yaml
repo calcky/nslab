@@ -1,0 +1,49 @@
+version: 1
+name: ip-tunnels
+
+topology:
+  nodes:
+    r1:
+      kind: linux
+      interfaces:
+        underlay0:
+          addresses: [192.0.2.1/30]
+      devices:
+        gre1:
+          type: gre
+          link: underlay0
+          local: 192.0.2.1
+          remote: 192.0.2.2
+          key: 100
+          ttl: 64
+          addresses: [10.10.0.1/30]
+        ipip0:
+          type: ipip
+          link: underlay0
+          local: 192.0.2.1
+          remote: 192.0.2.2
+          ttl: 64
+          addresses: [10.20.0.1/30]
+    r2:
+      kind: linux
+      interfaces:
+        underlay0:
+          addresses: [192.0.2.2/30]
+      devices:
+        gre1:
+          type: gre
+          link: underlay0
+          local: 192.0.2.2
+          remote: 192.0.2.1
+          key: 100
+          ttl: 64
+          addresses: [10.10.0.2/30]
+        ipip0:
+          type: ipip
+          link: underlay0
+          local: 192.0.2.2
+          remote: 192.0.2.1
+          ttl: 64
+          addresses: [10.20.0.2/30]
+  links:
+    - endpoints: [r1:underlay0, r2:underlay0]

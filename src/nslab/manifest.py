@@ -31,6 +31,7 @@ from nslab.tc import normalize_rate, parse_size
 
 NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 IFNAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
+KERNEL_TUNNEL_FALLBACK_NAMES = frozenset({"gre0", "gretap0", "erspan0", "tunl0"})
 ALLOWED_SYSCTLS = frozenset(
     {
         "net.ipv4.ip_forward",
@@ -50,6 +51,13 @@ def _require_name(value: str, pattern: re.Pattern[str], label: str) -> str:
     if pattern.fullmatch(value) is None:
         raise ValueError(f"invalid {label}: {value!r}")
     return value
+
+
+def _require_interface_name(value: str, label: str) -> str:
+    name = _require_name(value, IFNAME_PATTERN, label)
+    if name in KERNEL_TUNNEL_FALLBACK_NAMES:
+        raise ValueError(f"{label} is reserved by the kernel: {value!r}")
+    return name
 
 
 class InterfaceConfig(BaseModel):
@@ -94,7 +102,7 @@ class VlanDeviceConfig(InterfaceConfig):
     @field_validator("link")
     @classmethod
     def validate_parent_name(cls, value: str) -> str:
-        parent = _require_name(value, IFNAME_PATTERN, "VLAN parent interface name")
+        parent = _require_interface_name(value, "VLAN parent interface name")
         if parent == "lo":
             raise ValueError("VLAN parent interface cannot be 'lo'")
         return parent
@@ -127,7 +135,7 @@ class VrfDeviceConfig(BaseModel):
     @classmethod
     def validate_interfaces(cls, interfaces: tuple[str, ...]) -> tuple[str, ...]:
         for interface in interfaces:
-            _require_name(interface, IFNAME_PATTERN, "VRF member interface name")
+            _require_interface_name(interface, "VRF member interface name")
             if interface == "lo":
                 raise ValueError("VRF member interface cannot be 'lo'")
         if len(set(interfaces)) != len(interfaces):
@@ -160,7 +168,7 @@ class BondDeviceConfig(InterfaceConfig):
     @classmethod
     def validate_interfaces(cls, interfaces: tuple[str, ...]) -> tuple[str, ...]:
         for interface in interfaces:
-            _require_name(interface, IFNAME_PATTERN, "bond member interface name")
+            _require_interface_name(interface, "bond member interface name")
             if interface == "lo":
                 raise ValueError("bond member interface cannot be 'lo'")
         if len(set(interfaces)) != len(interfaces):
@@ -172,7 +180,7 @@ class BondDeviceConfig(InterfaceConfig):
     def validate_primary_name(cls, primary: str | None) -> str | None:
         if primary is None:
             return None
-        value = _require_name(primary, IFNAME_PATTERN, "bond primary interface name")
+        value = _require_interface_name(primary, "bond primary interface name")
         if value == "lo":
             raise ValueError("bond primary interface cannot be 'lo'")
         return value
@@ -196,6 +204,108 @@ class BondDeviceConfig(InterfaceConfig):
 VxlanVni = Annotated[StrictInt, Field(ge=1, le=16_777_215)]
 VxlanPort = Annotated[StrictInt, Field(ge=1, le=65_535)]
 VxlanMtu = Annotated[StrictInt, Field(ge=576, le=9_216)]
+
+# A fixed TTL keeps lab behavior deterministic. A GRE key is a non-zero
+# 32-bit value; omitting it creates an unkeyed GRE device.
+TunnelTtl = Annotated[StrictInt, Field(ge=1, le=255)]
+TunnelKey = Annotated[StrictInt, Field(ge=1, le=4_294_967_295)]
+
+
+class GreDeviceConfig(InterfaceConfig):
+    """A static IPv4 GRE tunnel on a Linux node."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    type: Literal["gre"]
+    link: str
+    local: IPv4Address
+    remote: IPv4Address
+    key: TunnelKey | None = None
+    ttl: TunnelTtl = 64
+    mtu: DeviceMtu | None = None
+
+    @field_validator("link")
+    @classmethod
+    def validate_link_name(cls, value: str) -> str:
+        link = _require_interface_name(value, "GRE underlay interface name")
+        if link == "lo":
+            raise ValueError("GRE underlay interface cannot be 'lo'")
+        return link
+
+    @field_validator("local", "remote", mode="before")
+    @classmethod
+    def validate_endpoint_input(cls, value: object) -> object:
+        if not isinstance(value, (str, IPv4Address)):
+            raise ValueError("GRE endpoints must be IPv4 strings")
+        return value
+
+    @field_validator("local", "remote")
+    @classmethod
+    def validate_unicast_endpoint(cls, value: IPv4Address) -> IPv4Address:
+        if value.is_unspecified or value.is_multicast:
+            raise ValueError("GRE endpoints must be unicast addresses")
+        return value
+
+    @model_validator(mode="after")
+    def validate_endpoints(self) -> Self:
+        if self.local == self.remote:
+            raise ValueError("GRE local and remote addresses must be different")
+        return self
+
+
+class IpipDeviceConfig(InterfaceConfig):
+    """A static IPv4 IP-in-IP tunnel on a Linux node."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    type: Literal["ipip"]
+    link: str
+    local: IPv4Address
+    remote: IPv4Address
+    ttl: TunnelTtl = 64
+    mtu: DeviceMtu | None = None
+
+    @field_validator("link")
+    @classmethod
+    def validate_link_name(cls, value: str) -> str:
+        link = _require_interface_name(value, "IPIP underlay interface name")
+        if link == "lo":
+            raise ValueError("IPIP underlay interface cannot be 'lo'")
+        return link
+
+    @field_validator("addresses")
+    @classmethod
+    def validate_inner_addresses(
+        cls, addresses: tuple[IPInterface, ...]
+    ) -> tuple[IPInterface, ...]:
+        if any(address.version != 4 for address in addresses):
+            raise ValueError("IPIP device addresses must use IPv4")
+        return addresses
+
+    @field_validator("local", "remote", mode="before")
+    @classmethod
+    def validate_endpoint_input(cls, value: object) -> object:
+        if not isinstance(value, (str, IPv4Address)):
+            raise ValueError("IPIP endpoints must be IPv4 strings")
+        return value
+
+    @field_validator("local", "remote")
+    @classmethod
+    def validate_unicast_endpoint(cls, value: IPv4Address) -> IPv4Address:
+        if value.is_unspecified or value.is_multicast:
+            raise ValueError("IPIP endpoints must be unicast addresses")
+        return value
+
+    @model_validator(mode="after")
+    def validate_endpoints(self) -> Self:
+        if self.local == self.remote:
+            raise ValueError("IPIP local and remote addresses must be different")
+        return self
+
+
+# Upper-case aliases make the acronym spelling convenient for API users while
+# retaining the naming convention used by the other device models.
+IPIPDeviceConfig = IpipDeviceConfig
 
 
 class DummyDeviceConfig(InterfaceConfig):
@@ -232,7 +342,7 @@ class GeneveDeviceConfig(InterfaceConfig):
     @field_validator("link")
     @classmethod
     def validate_link_name(cls, value: str) -> str:
-        link = _require_name(value, IFNAME_PATTERN, "Geneve underlay interface name")
+        link = _require_interface_name(value, "Geneve underlay interface name")
         if link == "lo":
             raise ValueError("Geneve underlay interface cannot be 'lo'")
         return link
@@ -266,7 +376,7 @@ class MacvlanDeviceConfig(InterfaceConfig):
     @field_validator("link")
     @classmethod
     def validate_link_name(cls, value: str) -> str:
-        link = _require_name(value, IFNAME_PATTERN, "macvlan parent interface name")
+        link = _require_interface_name(value, "macvlan parent interface name")
         if link == "lo":
             raise ValueError("macvlan parent interface cannot be 'lo'")
         return link
@@ -286,7 +396,7 @@ class IpvlanDeviceConfig(InterfaceConfig):
     @field_validator("link")
     @classmethod
     def validate_link_name(cls, value: str) -> str:
-        link = _require_name(value, IFNAME_PATTERN, "ipvlan parent interface name")
+        link = _require_interface_name(value, "ipvlan parent interface name")
         if link == "lo":
             raise ValueError("ipvlan parent interface cannot be 'lo'")
         return link
@@ -307,7 +417,7 @@ class VxlanDeviceConfig(InterfaceConfig):
     @field_validator("link")
     @classmethod
     def validate_link_name(cls, value: str) -> str:
-        link = _require_name(value, IFNAME_PATTERN, "VXLAN underlay interface name")
+        link = _require_interface_name(value, "VXLAN underlay interface name")
         if link == "lo":
             raise ValueError("VXLAN underlay interface cannot be 'lo'")
         return link
@@ -339,6 +449,8 @@ type LinuxDeviceConfig = Annotated[
     VlanDeviceConfig
     | VrfDeviceConfig
     | BondDeviceConfig
+    | GreDeviceConfig
+    | IpipDeviceConfig
     | VxlanDeviceConfig
     | DummyDeviceConfig
     | GeneveDeviceConfig
@@ -380,7 +492,7 @@ class RouteConfig(BaseModel):
     @field_validator("dev")
     @classmethod
     def validate_device_name(cls, value: str) -> str:
-        return _require_name(value, IFNAME_PATTERN, "route interface name")
+        return _require_interface_name(value, "route interface name")
 
     @field_validator("table")
     @classmethod
@@ -498,7 +610,7 @@ class PolicyRuleConfig(BaseModel):
     def validate_interface_name(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        return _require_name(value, IFNAME_PATTERN, "policy rule interface name")
+        return _require_interface_name(value, "policy rule interface name")
 
     @property
     def ip_version(self) -> Literal[4, 6]:
@@ -598,7 +710,7 @@ class OspfConfig(BaseModel):
     @classmethod
     def validate_passive_interfaces(cls, interfaces: tuple[str, ...]) -> tuple[str, ...]:
         for interface in interfaces:
-            _require_name(interface, IFNAME_PATTERN, "OSPF interface name")
+            _require_interface_name(interface, "OSPF interface name")
         if len(set(interfaces)) != len(interfaces):
             raise ValueError("OSPF passive_interfaces must be unique")
         return interfaces
@@ -679,7 +791,7 @@ class _NodeBase(BaseModel):
         cls, interfaces: dict[str, InterfaceConfig]
     ) -> dict[str, InterfaceConfig]:
         for interface_name in interfaces:
-            _require_name(interface_name, IFNAME_PATTERN, "interface name")
+            _require_interface_name(interface_name, "interface name")
         return interfaces
 
     @field_validator("sysctls", mode="before")
@@ -731,7 +843,7 @@ class LinuxNode(_NodeBase):
         cls, devices: dict[str, LinuxDeviceConfig]
     ) -> dict[str, LinuxDeviceConfig]:
         for device_name in devices:
-            _require_name(device_name, IFNAME_PATTERN, "device name")
+            _require_interface_name(device_name, "device name")
             if device_name == "lo":
                 raise ValueError("device name cannot be 'lo'")
         return devices
@@ -783,6 +895,16 @@ class LinuxNode(_NodeBase):
             name: device
             for name, device in self.devices.items()
             if isinstance(device, BondDeviceConfig)
+        }
+        gre_devices = {
+            name: device
+            for name, device in self.devices.items()
+            if isinstance(device, GreDeviceConfig)
+        }
+        ipip_devices = {
+            name: device
+            for name, device in self.devices.items()
+            if isinstance(device, IpipDeviceConfig)
         }
         dummy_devices = {
             name: device
@@ -861,6 +983,17 @@ class LinuxNode(_NodeBase):
             if geneve.vni in seen_geneve_vnis:
                 raise ValueError(f"duplicate Geneve VNI: {geneve.vni}")
             seen_geneve_vnis.add(geneve.vni)
+
+        for protocol, tunnel_devices in (
+            ("GRE", gre_devices),
+            ("IPIP", ipip_devices),
+        ):
+            for name, tunnel in tunnel_devices.items():
+                if tunnel.link in self.devices:
+                    raise ValueError(
+                        f"{protocol} underlay interface must be a linked interface: "
+                        f"{name!r} -> {tunnel.link!r}"
+                    )
 
         for name, macvlan in macvlan_devices.items():
             if macvlan.link in self.devices:
@@ -942,6 +1075,16 @@ class LinuxNode(_NodeBase):
         )
         connected_networks.update(
             (tables_by_interface.get(name, MAIN_ROUTE_TABLE), address.network)
+            for name, device in gre_devices.items()
+            for address in device.addresses
+        )
+        connected_networks.update(
+            (tables_by_interface.get(name, MAIN_ROUTE_TABLE), address.network)
+            for name, device in ipip_devices.items()
+            for address in device.addresses
+        )
+        connected_networks.update(
+            (tables_by_interface.get(name, MAIN_ROUTE_TABLE), address.network)
             for name, device in macvlan_devices.items()
             for address in device.addresses
         )
@@ -1008,7 +1151,7 @@ class BridgeConfig(BaseModel):
     @field_validator("name")
     @classmethod
     def validate_bridge_name(cls, value: str) -> str:
-        name = _require_name(value, IFNAME_PATTERN, "bridge interface name")
+        name = _require_interface_name(value, "bridge interface name")
         if name == "lo":
             raise ValueError("bridge interface name cannot be 'lo'")
         return name
@@ -1017,7 +1160,7 @@ class BridgeConfig(BaseModel):
     @classmethod
     def validate_port_names(cls, ports: dict[str, BridgePortConfig]) -> dict[str, BridgePortConfig]:
         for port_name in ports:
-            _require_name(port_name, IFNAME_PATTERN, "bridge port interface name")
+            _require_interface_name(port_name, "bridge port interface name")
             if port_name == "lo":
                 raise ValueError("bridge port interface name cannot be 'lo'")
         return ports
@@ -1046,7 +1189,7 @@ class BridgeNode(_NodeBase):
         cls, devices: dict[str, BridgeDeviceConfig]
     ) -> dict[str, BridgeDeviceConfig]:
         for device_name in devices:
-            _require_name(device_name, IFNAME_PATTERN, "device name")
+            _require_interface_name(device_name, "device name")
             if device_name == "lo":
                 raise ValueError("device name cannot be 'lo'")
         return devices
@@ -1197,7 +1340,7 @@ class Topology(BaseModel):
                 node_name, separator, interface_name = endpoint.partition(":")
                 if not separator or not node_name or not interface_name:
                     raise ValueError(f"invalid link endpoint: {endpoint!r}")
-                _require_name(interface_name, IFNAME_PATTERN, "endpoint interface name")
+                _require_interface_name(interface_name, "endpoint interface name")
                 if interface_name == "lo":
                     raise ValueError(f"link endpoint cannot use loopback: {endpoint!r}")
                 if node_name not in self.nodes:
@@ -1242,6 +1385,16 @@ class Topology(BaseModel):
                     name: device
                     for name, device in node.devices.items()
                     if isinstance(device, GeneveDeviceConfig)
+                }
+                gre_devices = {
+                    name: device
+                    for name, device in node.devices.items()
+                    if isinstance(device, GreDeviceConfig)
+                }
+                ipip_devices = {
+                    name: device
+                    for name, device in node.devices.items()
+                    if isinstance(device, IpipDeviceConfig)
                 }
                 macvlan_devices = {
                     name: device
@@ -1329,6 +1482,40 @@ class Topology(BaseModel):
                             f"Geneve MTU exceeds encapsulation limit on node "
                             f"{node_name!r}: {device_name!r} maximum is {maximum_mtu}"
                         )
+                for protocol, tunnel_devices in (
+                    ("GRE", gre_devices),
+                    ("IPIP", ipip_devices),
+                ):
+                    for device_name, tunnel in tunnel_devices.items():
+                        if tunnel.link not in linked:
+                            raise ValueError(
+                                f"{protocol} underlay interface is not linked on node "
+                                f"{node_name!r}: {device_name!r} -> {tunnel.link!r}"
+                            )
+                        configured_addresses = node.interfaces.get(tunnel.link)
+                        if configured_addresses is None or tunnel.local not in {
+                            address.ip for address in configured_addresses.addresses
+                        }:
+                            raise ValueError(
+                                f"{protocol} local address is not configured on underlay "
+                                f"interface {node_name!r}: {device_name!r} -> {tunnel.link!r}"
+                            )
+                        overhead = (
+                            20
+                            if isinstance(tunnel, IpipDeviceConfig)
+                            else 24 + (4 if tunnel.key is not None else 0)
+                        )
+                        maximum_mtu = linked_mtus[node_name][tunnel.link] - overhead
+                        if maximum_mtu < 576:
+                            raise ValueError(
+                                f"{protocol} underlay MTU is too small on node "
+                                f"{node_name!r}: {device_name!r}"
+                            )
+                        if tunnel.mtu is not None and tunnel.mtu > maximum_mtu:
+                            raise ValueError(
+                                f"{protocol} MTU exceeds encapsulation limit on node "
+                                f"{node_name!r}: {device_name!r} maximum is {maximum_mtu}"
+                            )
                 for device_type, devices in (
                     ("macvlan", macvlan_devices),
                     ("ipvlan", ipvlan_devices),
@@ -1346,6 +1533,8 @@ class Topology(BaseModel):
                                 f"{node_name!r}: {device_name!r} maximum is {parent_mtu}"
                             )
                 available.update(geneve_devices)
+                available.update(gre_devices)
+                available.update(ipip_devices)
                 available.update(macvlan_devices)
                 available.update(ipvlan_devices)
                 available.update(dummy_devices)
@@ -1488,6 +1677,8 @@ class Topology(BaseModel):
                                     VxlanDeviceConfig,
                                     DummyDeviceConfig,
                                     GeneveDeviceConfig,
+                                    GreDeviceConfig,
+                                    IpipDeviceConfig,
                                     MacvlanDeviceConfig,
                                     IpvlanDeviceConfig,
                                 ),

@@ -20,7 +20,9 @@ from nslab.planner import (
     DummyDevicePlan,
     FqCodelPlan,
     GeneveDevicePlan,
+    GreDevicePlan,
     IPInterface,
+    IpipDevicePlan,
     IpvlanDevicePlan,
     LinkPlan,
     MacvlanDevicePlan,
@@ -38,6 +40,8 @@ from nslab.planner import (
     bond_device_mtu,
     dummy_device_mtu,
     geneve_device_mtu,
+    gre_device_mtu,
+    ipip_device_mtu,
     ipvlan_device_mtu,
     macvlan_device_mtu,
     node_interface_master,
@@ -96,6 +100,15 @@ class InterfaceView:
     geneve_link: str | None = None
     geneve_remote: str | None = None
     geneve_dst_port: int | None = None
+    gre_link: str | None = None
+    gre_local: str | None = None
+    gre_remote: str | None = None
+    gre_key: int | None = None
+    gre_ttl: int | None = None
+    ipip_link: str | None = None
+    ipip_local: str | None = None
+    ipip_remote: str | None = None
+    ipip_ttl: int | None = None
     macvlan_mode: str | None = None
     ipvlan_mode: str | None = None
 
@@ -140,6 +153,15 @@ class InterfaceView:
             "geneve_link": self.geneve_link,
             "geneve_remote": self.geneve_remote,
             "geneve_dst_port": self.geneve_dst_port,
+            "gre_link": self.gre_link,
+            "gre_local": self.gre_local,
+            "gre_remote": self.gre_remote,
+            "gre_key": self.gre_key,
+            "gre_ttl": self.gre_ttl,
+            "ipip_link": self.ipip_link,
+            "ipip_local": self.ipip_local,
+            "ipip_remote": self.ipip_remote,
+            "ipip_ttl": self.ipip_ttl,
             "macvlan_mode": self.macvlan_mode,
             "ipvlan_mode": self.ipvlan_mode,
         }
@@ -646,6 +668,37 @@ def _desired_interfaces(node: NodePlan, plan: TopologyPlan) -> tuple[InterfaceVi
                     addresses=_address_strings(device.addresses),
                 )
             )
+        elif isinstance(device, GreDevicePlan):
+            interfaces.append(
+                InterfaceView(
+                    name=device.name,
+                    kind="gre",
+                    master=node_interface_master(node, device.name),
+                    mtu=gre_device_mtu(node, plan, device),
+                    up=True,
+                    addresses=_address_strings(device.addresses),
+                    gre_link=device.link,
+                    gre_local=str(device.local),
+                    gre_remote=str(device.remote),
+                    gre_key=device.key,
+                    gre_ttl=device.ttl,
+                )
+            )
+        elif isinstance(device, IpipDevicePlan):
+            interfaces.append(
+                InterfaceView(
+                    name=device.name,
+                    kind="ipip",
+                    master=node_interface_master(node, device.name),
+                    mtu=ipip_device_mtu(node, plan, device),
+                    up=True,
+                    addresses=_address_strings(device.addresses),
+                    ipip_link=device.link,
+                    ipip_local=str(device.local),
+                    ipip_remote=str(device.remote),
+                    ipip_ttl=device.ttl,
+                )
+            )
         elif isinstance(device, GeneveDevicePlan):
             port = node.bridge_ports.get(device.name)
             interfaces.append(
@@ -757,6 +810,15 @@ def _interface_view(interface: InterfaceInventory) -> InterfaceView:
         geneve_link=interface.geneve_link,
         geneve_remote=None if interface.geneve_remote is None else str(interface.geneve_remote),
         geneve_dst_port=interface.geneve_dst_port,
+        gre_link=interface.gre_link,
+        gre_local=None if interface.gre_local is None else str(interface.gre_local),
+        gre_remote=None if interface.gre_remote is None else str(interface.gre_remote),
+        gre_key=interface.gre_key,
+        gre_ttl=interface.gre_ttl,
+        ipip_link=interface.ipip_link,
+        ipip_local=None if interface.ipip_local is None else str(interface.ipip_local),
+        ipip_remote=None if interface.ipip_remote is None else str(interface.ipip_remote),
+        ipip_ttl=interface.ipip_ttl,
         macvlan_mode=interface.macvlan_mode,
         ipvlan_mode=interface.ipvlan_mode,
     )
@@ -1176,6 +1238,31 @@ def _compare_interface(
         None if actual.geneve_remote is None else str(actual.geneve_remote),
     )
     compare("geneve_dst_port", desired.geneve_dst_port, actual.geneve_dst_port)
+    compare("gre_link", desired.gre_link, actual.gre_link)
+    compare(
+        "gre_local",
+        desired.gre_local,
+        None if actual.gre_local is None else str(actual.gre_local),
+    )
+    compare(
+        "gre_remote",
+        desired.gre_remote,
+        None if actual.gre_remote is None else str(actual.gre_remote),
+    )
+    compare("gre_key", desired.gre_key, actual.gre_key)
+    compare("gre_ttl", desired.gre_ttl, actual.gre_ttl)
+    compare("ipip_link", desired.ipip_link, actual.ipip_link)
+    compare(
+        "ipip_local",
+        desired.ipip_local,
+        None if actual.ipip_local is None else str(actual.ipip_local),
+    )
+    compare(
+        "ipip_remote",
+        desired.ipip_remote,
+        None if actual.ipip_remote is None else str(actual.ipip_remote),
+    )
+    compare("ipip_ttl", desired.ipip_ttl, actual.ipip_ttl)
     compare("macvlan_mode", desired.macvlan_mode, actual.macvlan_mode)
     compare("ipvlan_mode", desired.ipvlan_mode, actual.ipvlan_mode)
     return differences

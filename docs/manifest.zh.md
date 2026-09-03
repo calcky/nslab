@@ -11,7 +11,7 @@ topology
 │  └─ <node-name>
 │     ├─ kind: linux
 │     │  ├─ interfaces / devices / routes / rules / sysctls
-│     │  ├─ devices → <device-name> → type: vlan | vrf | bond | vxlan | dummy | geneve | macvlan | ipvlan
+│     │  ├─ devices → <device-name> → type: vlan | vrf | bond | gre | ipip | vxlan | dummy | geneve | macvlan | ipvlan
 │     │  └─ routing
 │     └─ kind: bridge
 │        ├─ interfaces / devices / routes / sysctls
@@ -66,8 +66,8 @@ topology:
 
 接口名必须为 1 到 15 个字符，可包含字母、数字、`_`、`.` 和 `-`。除 bridge 设备名外，
 `interfaces` 中声明的接口必须在 `links[].endpoints` 中出现。
-Namespace 内部的 VLAN、VRF、bond、VXLAN、Geneve、dummy、macvlan 和 ipvlan 设备应声明在
-`devices`，而不是 `interfaces`。
+Namespace 内部的 VLAN、VRF、bond、GRE、IPIP、VXLAN、Geneve、dummy、macvlan 和 ipvlan
+设备应声明在 `devices`，而不是 `interfaces`。
 
 ##### `interfaces.<ifname>`
 
@@ -180,7 +180,8 @@ start 不能大于 end，两个 realm 不能同时为零。Suppress 选项只适
 
 `devices` 会在所有 veth endpoint 移入节点后，在 Linux 节点内部创建设备。设备名遵循
 接口名规则，不能是 `lo`，不能与 linked endpoint 或 `interfaces` key 冲突。必须通过
-`type` 选择 `vlan`、`vrf`、`bond`、`vxlan`、`dummy`、`geneve`、`macvlan` 或 `ipvlan`。
+`type` 选择 `vlan`、`vrf`、`bond`、`gre`、`ipip`、`vxlan`、`dummy`、`geneve`、`macvlan`
+或 `ipvlan`。
 
 ###### `type: vlan`
 
@@ -246,6 +247,43 @@ Linux 节点上的 Geneve 设备是静态单播隧道，可以直接承载地址
 underlay `link` 必须是 linked interface。IPv4 Geneve 从 underlay MTU 减 50 字节，IPv6
 Geneve 减 70 字节。`remote` 必须是单播地址。Linux 节点上的 Geneve 不设置 bridge master，
 可以用作 `routes[].dev`。
+
+###### `type: gre`
+
+GRE 设备使用静态的点到点 IPv4 外层端点，可承载 IPv4 或 IPv6 地址和路由：
+
+| 字段 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `devices.<name>.type` | 是 | 无 | 必须为 `gre` |
+| `devices.<name>.link` | 是 | 无 | 同一节点中的 linked IPv4 underlay interface |
+| `devices.<name>.local` | 是 | 无 | 配置在 `link` 上的单播 IPv4 源地址 |
+| `devices.<name>.remote` | 是 | 无 | 与 `local` 不同的静态单播 IPv4 远端地址 |
+| `devices.<name>.key` | 否 | `null` | 对称的 ingress/egress key，范围 `1..4294967295` |
+| `devices.<name>.ttl` | 否 | `64` | 外层 IPv4 TTL，范围 `1..255` |
+| `devices.<name>.addresses` | 否 | `[]` | 配置到 GRE 设备的 IPv4/IPv6 地址 |
+| `devices.<name>.mtu` | 否 | 自动 | MTU 范围 `576..9216`，上限由封装开销决定 |
+
+underlay 必须包含完全相同的 `local` 地址。自动 MTU 会为外层 IPv4 与基础 GRE header
+减去 24 字节；配置 `key` 时再减 4 字节。两端必须使用相同 key。`gre0`、`gretap0` 和
+`erspan0` 是内核 fallback 保留名称。示例见 `examples/ip-tunnels/nslab.yaml`。
+
+###### `type: ipip`
+
+IPIP 设备通过静态点到点端点承载 IPv4 over IPv4：
+
+| 字段 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `devices.<name>.type` | 是 | 无 | 必须为 `ipip` |
+| `devices.<name>.link` | 是 | 无 | 同一节点中的 linked IPv4 underlay interface |
+| `devices.<name>.local` | 是 | 无 | 配置在 `link` 上的单播 IPv4 源地址 |
+| `devices.<name>.remote` | 是 | 无 | 与 `local` 不同的静态单播 IPv4 远端地址 |
+| `devices.<name>.ttl` | 否 | `64` | 外层 IPv4 TTL，范围 `1..255` |
+| `devices.<name>.addresses` | 否 | `[]` | 配置到 IPIP 设备的 IPv4 地址 |
+| `devices.<name>.mtu` | 否 | 自动 | MTU 范围 `576..9216`，上限由封装开销决定 |
+
+自动 MTU 会减去 20 字节的外层 IPv4 header。underlay 必须包含完全相同的 `local` 地址，
+IPIP 设备地址只能使用 IPv4。`tunl0` 是内核 fallback 保留名称。示例见
+`examples/ip-tunnels/nslab.yaml`。
 
 ###### `type: macvlan`
 

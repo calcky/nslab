@@ -11,8 +11,10 @@ from nslab.planner import (
     BridgeVlanPlan,
     DummyDevicePlan,
     GeneveDevicePlan,
+    GreDevicePlan,
     IPAddress,
     IPInterface,
+    IpipDevicePlan,
     IpvlanDevicePlan,
     LinkPlan,
     MacvlanDevicePlan,
@@ -30,6 +32,8 @@ from nslab.planner import (
     bond_device_mtu,
     dummy_device_mtu,
     geneve_device_mtu,
+    gre_device_mtu,
+    ipip_device_mtu,
     ipvlan_device_mtu,
     macvlan_device_mtu,
     node_interface_addresses,
@@ -78,6 +82,15 @@ class InterfaceInventory:
     geneve_link: str | None = None
     geneve_remote: IPAddress | None = None
     geneve_dst_port: int | None = None
+    gre_link: str | None = None
+    gre_local: IPAddress | None = None
+    gre_remote: IPAddress | None = None
+    gre_key: int | None = None
+    gre_ttl: int | None = None
+    ipip_link: str | None = None
+    ipip_local: IPAddress | None = None
+    ipip_remote: IPAddress | None = None
+    ipip_ttl: int | None = None
     macvlan_mode: str | None = None
     ipvlan_mode: str | None = None
 
@@ -208,6 +221,15 @@ class _ExpectedInterface:
     geneve_link: str | None = None
     geneve_remote: IPAddress | None = None
     geneve_dst_port: int | None = None
+    gre_link: str | None = None
+    gre_local: IPAddress | None = None
+    gre_remote: IPAddress | None = None
+    gre_key: int | None = None
+    gre_ttl: int | None = None
+    ipip_link: str | None = None
+    ipip_local: IPAddress | None = None
+    ipip_remote: IPAddress | None = None
+    ipip_ttl: int | None = None
     macvlan_mode: str | None = None
     ipvlan_mode: str | None = None
 
@@ -330,6 +352,31 @@ def _expected_interfaces(node: NodePlan, plan: TopologyPlan) -> dict[str, _Expec
                 bond_lacp_rate=device.lacp_rate,
                 bond_xmit_hash_policy=device.xmit_hash_policy,
                 bond_min_links=device.min_links,
+            )
+        elif isinstance(device, GreDevicePlan):
+            expected[device.name] = _ExpectedInterface(
+                kind="gre",
+                master=node_interface_master(node, device.name),
+                mtu=gre_device_mtu(node, plan, device),
+                up=True,
+                addresses=device.addresses,
+                gre_link=device.link,
+                gre_local=device.local,
+                gre_remote=device.remote,
+                gre_key=device.key,
+                gre_ttl=device.ttl,
+            )
+        elif isinstance(device, IpipDevicePlan):
+            expected[device.name] = _ExpectedInterface(
+                kind="ipip",
+                master=node_interface_master(node, device.name),
+                mtu=ipip_device_mtu(node, plan, device),
+                up=True,
+                addresses=device.addresses,
+                ipip_link=device.link,
+                ipip_local=device.local,
+                ipip_remote=device.remote,
+                ipip_ttl=device.ttl,
             )
         else:
             if isinstance(device, DummyDevicePlan):
@@ -482,6 +529,24 @@ def _interfaces_match(
         if observed.geneve_remote != desired.geneve_remote:
             return False
         if observed.geneve_dst_port != desired.geneve_dst_port:
+            return False
+        if observed.gre_link != desired.gre_link:
+            return False
+        if observed.gre_local != desired.gre_local:
+            return False
+        if observed.gre_remote != desired.gre_remote:
+            return False
+        if observed.gre_key != desired.gre_key:
+            return False
+        if observed.gre_ttl != desired.gre_ttl:
+            return False
+        if observed.ipip_link != desired.ipip_link:
+            return False
+        if observed.ipip_local != desired.ipip_local:
+            return False
+        if observed.ipip_remote != desired.ipip_remote:
+            return False
+        if observed.ipip_ttl != desired.ipip_ttl:
             return False
         if observed.macvlan_mode != desired.macvlan_mode:
             return False

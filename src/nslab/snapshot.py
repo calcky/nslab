@@ -12,6 +12,8 @@ from nslab.planner import (
     BondDevicePlan,
     DummyDevicePlan,
     GeneveDevicePlan,
+    GreDevicePlan,
+    IpipDevicePlan,
     IpvlanDevicePlan,
     MacvlanDevicePlan,
     TopologyPlan,
@@ -100,6 +102,23 @@ def _expected_ownership(plan: TopologyPlan) -> dict[str, dict[str, object]]:
                     link=device.link,
                     remote=str(device.remote),
                     dst_port=device.dst_port,
+                )
+            elif isinstance(device, GreDevicePlan):
+                identity.update(
+                    kind="gre",
+                    link=device.link,
+                    local=str(device.local),
+                    remote=str(device.remote),
+                    key=device.key,
+                    ttl=device.ttl,
+                )
+            elif isinstance(device, IpipDevicePlan):
+                identity.update(
+                    kind="ipip",
+                    link=device.link,
+                    local=str(device.local),
+                    remote=str(device.remote),
+                    ttl=device.ttl,
                 )
             elif isinstance(device, MacvlanDevicePlan):
                 identity.update(kind="macvlan", parent=device.link, mode=device.mode)

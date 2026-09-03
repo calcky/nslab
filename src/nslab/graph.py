@@ -13,6 +13,8 @@ from nslab.planner import (
     DummyDevicePlan,
     FqCodelPlan,
     GeneveDevicePlan,
+    GreDevicePlan,
+    IpipDevicePlan,
     IpvlanDevicePlan,
     LinkPlan,
     MacvlanDevicePlan,
@@ -198,6 +200,26 @@ def _device_text(
         text = f"{device.name}: geneve {device.vni} -> {device.remote}"
         if detail:
             text += f" · via {device.link} · udp {device.dst_port}"
+            if device.mtu is not None:
+                text += f" · mtu {device.mtu}"
+        if include_addresses and device.addresses:
+            text += f" · {', '.join(str(address) for address in device.addresses)}"
+        return text
+    if isinstance(device, GreDevicePlan):
+        text = f"{device.name}: gre -> {device.remote}"
+        if detail:
+            text += f" · local {device.local} via {device.link} · ttl {device.ttl}"
+            if device.key is not None:
+                text += f" · key {device.key}"
+            if device.mtu is not None:
+                text += f" · mtu {device.mtu}"
+        if include_addresses and device.addresses:
+            text += f" · {', '.join(str(address) for address in device.addresses)}"
+        return text
+    if isinstance(device, IpipDevicePlan):
+        text = f"{device.name}: ipip -> {device.remote}"
+        if detail:
+            text += f" · local {device.local} via {device.link} · ttl {device.ttl}"
             if device.mtu is not None:
                 text += f" · mtu {device.mtu}"
         if include_addresses and device.addresses:
@@ -772,6 +794,33 @@ def _node_document(node: NodePlan) -> dict[str, object]:
                 if device.addresses:
                     geneve_document["addresses"] = [str(address) for address in device.addresses]
                 devices.append(geneve_document)
+            elif isinstance(device, GreDevicePlan):
+                gre_document: dict[str, object] = {
+                    "key": device.key,
+                    "link": device.link,
+                    "local": str(device.local),
+                    "mtu": device.mtu,
+                    "name": device.name,
+                    "remote": str(device.remote),
+                    "ttl": device.ttl,
+                    "type": "gre",
+                }
+                if device.addresses:
+                    gre_document["addresses"] = [str(address) for address in device.addresses]
+                devices.append(gre_document)
+            elif isinstance(device, IpipDevicePlan):
+                ipip_document: dict[str, object] = {
+                    "link": device.link,
+                    "local": str(device.local),
+                    "mtu": device.mtu,
+                    "name": device.name,
+                    "remote": str(device.remote),
+                    "ttl": device.ttl,
+                    "type": "ipip",
+                }
+                if device.addresses:
+                    ipip_document["addresses"] = [str(address) for address in device.addresses]
+                devices.append(ipip_document)
             elif isinstance(device, MacvlanDevicePlan):
                 macvlan_document: dict[str, object] = {
                     "link": device.link,

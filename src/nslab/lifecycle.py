@@ -20,6 +20,8 @@ from nslab.planner import (
     BondDevicePlan,
     DummyDevicePlan,
     GeneveDevicePlan,
+    GreDevicePlan,
+    IpipDevicePlan,
     IpvlanDevicePlan,
     MacvlanDevicePlan,
     TopologyPlan,
@@ -579,6 +581,23 @@ class LifecycleService:
                         link=device.link,
                         remote=str(device.remote),
                         dst_port=device.dst_port,
+                    )
+                elif isinstance(device, GreDevicePlan):
+                    ownership.update(
+                        kind="gre",
+                        link=device.link,
+                        local=str(device.local),
+                        remote=str(device.remote),
+                        key=device.key,
+                        ttl=device.ttl,
+                    )
+                elif isinstance(device, IpipDevicePlan):
+                    ownership.update(
+                        kind="ipip",
+                        link=device.link,
+                        local=str(device.local),
+                        remote=str(device.remote),
+                        ttl=device.ttl,
                     )
                 elif isinstance(device, MacvlanDevicePlan):
                     ownership.update(

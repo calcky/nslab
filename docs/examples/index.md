@@ -31,6 +31,12 @@ sudo nslab destroy
 | --- | --- |
 | [Virtual devices](virtual-devices.md) | `dummy`, `macvlan`, and `ipvlan` interfaces |
 
+## Tunnel devices
+
+| Example | Focus |
+| --- | --- |
+| [GRE and IPIP](ip-tunnels.md) | Keyed GRE and IPv4-in-IPv4 point-to-point tunnels |
+
 ## Link aggregation
 
 | Example | Focus |

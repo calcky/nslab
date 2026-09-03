@@ -31,6 +31,12 @@ sudo nslab destroy
 | --- | --- |
 | [虚拟设备](virtual-devices.md) | `dummy`、`macvlan` 和 `ipvlan` 接口 |
 
+## 隧道设备
+
+| 示例 | 学习内容 |
+| --- | --- |
+| [GRE 与 IPIP](ip-tunnels.md) | 带 key 的 GRE 与 IPv4-in-IPv4 点到点隧道 |
+
 ## 链路聚合
 
 | 示例 | 学习内容 |
