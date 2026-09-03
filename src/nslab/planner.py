@@ -23,8 +23,12 @@ from nslab.manifest import (
     BgpConfig,
     BondDeviceConfig,
     BridgeNode,
+    DummyDeviceConfig,
     FqCodelConfig,
+    GeneveDeviceConfig,
+    IpvlanDeviceConfig,
     LinuxNode,
+    MacvlanDeviceConfig,
     Manifest,
     NodeConfig,
     OspfConfig,
@@ -163,7 +167,52 @@ class VxlanDevicePlan:
     addresses: tuple[IPInterface, ...] = ()
 
 
-type DevicePlan = VlanDevicePlan | VrfDevicePlan | BondDevicePlan | VxlanDevicePlan
+@dataclass(frozen=True, slots=True)
+class DummyDevicePlan:
+    name: str
+    mtu: int | None = None
+    addresses: tuple[IPInterface, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class GeneveDevicePlan:
+    name: str
+    vni: int
+    link: str
+    remote: IPAddress
+    dst_port: int = 6081
+    mtu: int | None = None
+    addresses: tuple[IPInterface, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class MacvlanDevicePlan:
+    name: str
+    link: str
+    mode: Literal["private", "vepa", "bridge", "passthru", "source"] = "bridge"
+    mtu: int | None = None
+    addresses: tuple[IPInterface, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class IpvlanDevicePlan:
+    name: str
+    link: str
+    mode: Literal["l2", "l3", "l3s"] = "l2"
+    mtu: int | None = None
+    addresses: tuple[IPInterface, ...] = ()
+
+
+type DevicePlan = (
+    VlanDevicePlan
+    | VrfDevicePlan
+    | BondDevicePlan
+    | VxlanDevicePlan
+    | DummyDevicePlan
+    | GeneveDevicePlan
+    | MacvlanDevicePlan
+    | IpvlanDevicePlan
+)
 
 
 def _empty_bridge_ports() -> Mapping[str, BridgePortPlan]:
@@ -278,6 +327,45 @@ def vxlan_device_mtu(node: NodePlan, plan: TopologyPlan, device: VxlanDevicePlan
     return underlay_mtu - (50 if device.local.version == 4 else 70)
 
 
+def parent_device_mtu(node: NodePlan, plan: TopologyPlan, interface: str) -> int:
+    """Return the MTU planned for a linked parent interface."""
+
+    mtu = next(
+        (
+            link.mtu
+            for link in plan.links
+            for endpoint in (link.left, link.right)
+            if endpoint.node == node.name and endpoint.interface == interface
+        ),
+        None,
+    )
+    if mtu is None:
+        raise ValueError(f"device parent is not planned: {node.name}:{interface}")
+    return mtu
+
+
+def dummy_device_mtu(node: NodePlan, plan: TopologyPlan, device: DummyDevicePlan) -> int:
+    del node, plan
+    return 1500 if device.mtu is None else device.mtu
+
+
+def geneve_device_mtu(node: NodePlan, plan: TopologyPlan, device: GeneveDevicePlan) -> int:
+    """Return an explicit Geneve MTU or derive one from its underlay link."""
+
+    if device.mtu is not None:
+        return device.mtu
+    underlay_mtu = parent_device_mtu(node, plan, device.link)
+    return underlay_mtu - (50 if device.remote.version == 4 else 70)
+
+
+def macvlan_device_mtu(node: NodePlan, plan: TopologyPlan, device: MacvlanDevicePlan) -> int:
+    return parent_device_mtu(node, plan, device.link) if device.mtu is None else device.mtu
+
+
+def ipvlan_device_mtu(node: NodePlan, plan: TopologyPlan, device: IpvlanDevicePlan) -> int:
+    return parent_device_mtu(node, plan, device.link) if device.mtu is None else device.mtu
+
+
 def node_interface_addresses(node: NodePlan) -> Mapping[str, tuple[IPInterface, ...]]:
     """Return address declarations for linked and namespace-local devices."""
 
@@ -287,7 +375,18 @@ def node_interface_addresses(node: NodePlan) -> Mapping[str, tuple[IPInterface, 
             **{
                 name: device.addresses
                 for name, device in node.devices.items()
-                if isinstance(device, (VlanDevicePlan, BondDevicePlan, VxlanDevicePlan))
+                if isinstance(
+                    device,
+                    (
+                        VlanDevicePlan,
+                        BondDevicePlan,
+                        VxlanDevicePlan,
+                        DummyDevicePlan,
+                        GeneveDevicePlan,
+                        MacvlanDevicePlan,
+                        IpvlanDevicePlan,
+                    ),
+                )
             },
         }
     )
@@ -327,7 +426,7 @@ def node_interface_master(node: NodePlan, interface: str) -> str | None:
     if interface == node.bridge_name:
         return None
     if any(
-        isinstance(device, VxlanDevicePlan) and device.link == interface
+        isinstance(device, (VxlanDevicePlan, GeneveDevicePlan)) and device.link == interface
         for device in node.devices.values()
     ):
         return None
@@ -417,6 +516,38 @@ def _compile_node(deployment: str, name: str, manifest_node: NodeConfig) -> Node
                     learning=config.learning,
                     mtu=config.mtu,
                 )
+            elif isinstance(config, DummyDeviceConfig):
+                compiled_devices[device_name] = DummyDevicePlan(
+                    name=device_name,
+                    mtu=config.mtu,
+                    addresses=tuple(ip_interface(str(address)) for address in config.addresses),
+                )
+            elif isinstance(config, GeneveDeviceConfig):
+                compiled_devices[device_name] = GeneveDevicePlan(
+                    name=device_name,
+                    vni=config.vni,
+                    link=config.link,
+                    remote=ip_address(str(config.remote)),
+                    addresses=tuple(ip_interface(str(address)) for address in config.addresses),
+                    dst_port=config.dst_port,
+                    mtu=config.mtu,
+                )
+            elif isinstance(config, MacvlanDeviceConfig):
+                compiled_devices[device_name] = MacvlanDevicePlan(
+                    name=device_name,
+                    link=config.link,
+                    mode=config.mode,
+                    mtu=config.mtu,
+                    addresses=tuple(ip_interface(str(address)) for address in config.addresses),
+                )
+            elif isinstance(config, IpvlanDeviceConfig):
+                compiled_devices[device_name] = IpvlanDevicePlan(
+                    name=device_name,
+                    link=config.link,
+                    mode=config.mode,
+                    mtu=config.mtu,
+                    addresses=tuple(ip_interface(str(address)) for address in config.addresses),
+                )
             else:
                 assert isinstance(config, BondDeviceConfig)
                 is_lacp = config.mode == "802.3ad"
@@ -434,19 +565,30 @@ def _compile_node(deployment: str, name: str, manifest_node: NodeConfig) -> Node
                     else None,
                 )
     elif isinstance(manifest_node, BridgeNode):
-        for device_name, vxlan_config in manifest_node.devices.items():
-            assert isinstance(vxlan_config, VxlanDeviceConfig)
-            compiled_devices[device_name] = VxlanDevicePlan(
-                name=device_name,
-                vni=vxlan_config.vni,
-                link=vxlan_config.link,
-                local=ip_address(str(vxlan_config.local)),
-                remote=ip_address(str(vxlan_config.remote)),
-                addresses=tuple(ip_interface(str(address)) for address in vxlan_config.addresses),
-                dst_port=vxlan_config.dst_port,
-                learning=vxlan_config.learning,
-                mtu=vxlan_config.mtu,
-            )
+        for device_name, config in manifest_node.devices.items():
+            if isinstance(config, VxlanDeviceConfig):
+                compiled_devices[device_name] = VxlanDevicePlan(
+                    name=device_name,
+                    vni=config.vni,
+                    link=config.link,
+                    local=ip_address(str(config.local)),
+                    remote=ip_address(str(config.remote)),
+                    addresses=tuple(ip_interface(str(address)) for address in config.addresses),
+                    dst_port=config.dst_port,
+                    learning=config.learning,
+                    mtu=config.mtu,
+                )
+            else:
+                assert isinstance(config, GeneveDeviceConfig)
+                compiled_devices[device_name] = GeneveDevicePlan(
+                    name=device_name,
+                    vni=config.vni,
+                    link=config.link,
+                    remote=ip_address(str(config.remote)),
+                    addresses=tuple(ip_interface(str(address)) for address in config.addresses),
+                    dst_port=config.dst_port,
+                    mtu=config.mtu,
+                )
     devices: Mapping[str, DevicePlan] = MappingProxyType(compiled_devices)
     tables_by_interface = {
         interface: device.table

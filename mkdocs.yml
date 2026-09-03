@@ -55,6 +55,7 @@ plugins:
             Examples: 实验示例
             Overview: 示例索引
             Layer 2 switching: 二层交换
+            Namespace interfaces: Namespace 接口
             Link aggregation: 链路聚合
             IP forwarding: IP 转发
             Routing isolation: 路由域隔离
@@ -71,6 +72,8 @@ plugins:
             Policy routing: 策略路由
             XDP receive and transmit: XDP 收发包
             VXLAN: 二层与三层 VXLAN
+            Geneve: Geneve 二层 overlay
+            Virtual devices: 虚拟设备
           theme:
             palette:
               - media: "(prefers-color-scheme: light)"
@@ -116,6 +119,9 @@ nav:
           - VLAN: examples/vlan.md
           - Bridge STP: examples/bridge-stp.md
           - VXLAN: examples/vxlan.md
+          - Geneve: examples/geneve.md
+      - Namespace interfaces:
+          - Virtual devices: examples/virtual-devices.md
       - Link aggregation:
           - Bond overview: examples/bond.md
           - Bond active-backup: examples/bond-active-backup.md

@@ -10,6 +10,10 @@ from nslab.errors import NslabError
 from nslab.manifest import Manifest
 from nslab.planner import (
     BondDevicePlan,
+    DummyDevicePlan,
+    GeneveDevicePlan,
+    IpvlanDevicePlan,
+    MacvlanDevicePlan,
     TopologyPlan,
     VlanDevicePlan,
     VrfDevicePlan,
@@ -87,6 +91,20 @@ def _expected_ownership(plan: TopologyPlan) -> dict[str, dict[str, object]]:
                     bond_mode=device.mode,
                     interfaces=device.interfaces,
                 )
+            elif isinstance(device, DummyDevicePlan):
+                identity.update(kind="dummy")
+            elif isinstance(device, GeneveDevicePlan):
+                identity.update(
+                    kind="geneve",
+                    vni=device.vni,
+                    link=device.link,
+                    remote=str(device.remote),
+                    dst_port=device.dst_port,
+                )
+            elif isinstance(device, MacvlanDevicePlan):
+                identity.update(kind="macvlan", parent=device.link, mode=device.mode)
+            elif isinstance(device, IpvlanDevicePlan):
+                identity.update(kind="ipvlan", parent=device.link, mode=device.mode)
             else:
                 assert isinstance(device, VxlanDevicePlan)
                 identity.update(

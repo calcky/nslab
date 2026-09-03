@@ -9,9 +9,13 @@ from typing import Protocol, runtime_checkable
 from nslab.planner import (
     BondDevicePlan,
     BridgeVlanPlan,
+    DummyDevicePlan,
+    GeneveDevicePlan,
     IPAddress,
     IPInterface,
+    IpvlanDevicePlan,
     LinkPlan,
+    MacvlanDevicePlan,
     NetemPlan,
     NodeKind,
     NodePlan,
@@ -24,6 +28,10 @@ from nslab.planner import (
     VrfDevicePlan,
     VxlanDevicePlan,
     bond_device_mtu,
+    dummy_device_mtu,
+    geneve_device_mtu,
+    ipvlan_device_mtu,
+    macvlan_device_mtu,
     node_interface_addresses,
     node_interface_master,
     node_interface_route_table,
@@ -66,6 +74,12 @@ class InterfaceInventory:
     vxlan_remote: IPAddress | None = None
     vxlan_dst_port: int | None = None
     vxlan_learning: bool | None = None
+    geneve_vni: int | None = None
+    geneve_link: str | None = None
+    geneve_remote: IPAddress | None = None
+    geneve_dst_port: int | None = None
+    macvlan_mode: str | None = None
+    ipvlan_mode: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "addresses", tuple(self.addresses))
@@ -190,6 +204,12 @@ class _ExpectedInterface:
     vxlan_remote: IPAddress | None = None
     vxlan_dst_port: int | None = None
     vxlan_learning: bool | None = None
+    geneve_vni: int | None = None
+    geneve_link: str | None = None
+    geneve_remote: IPAddress | None = None
+    geneve_dst_port: int | None = None
+    macvlan_mode: str | None = None
+    ipvlan_mode: str | None = None
 
 
 def expected_bridge_port_vlans(node: NodePlan, interface: str) -> tuple[BridgeVlanPlan, ...]:
@@ -312,6 +332,54 @@ def _expected_interfaces(node: NodePlan, plan: TopologyPlan) -> dict[str, _Expec
                 bond_min_links=device.min_links,
             )
         else:
+            if isinstance(device, DummyDevicePlan):
+                expected[device.name] = _ExpectedInterface(
+                    kind="dummy",
+                    master=node_interface_master(node, device.name),
+                    mtu=dummy_device_mtu(node, plan, device),
+                    up=True,
+                    addresses=device.addresses,
+                )
+                continue
+            if isinstance(device, GeneveDevicePlan):
+                port = node.bridge_ports.get(device.name)
+                expected[device.name] = _ExpectedInterface(
+                    kind="geneve",
+                    master=node_interface_master(node, device.name),
+                    mtu=geneve_device_mtu(node, plan, device),
+                    up=True,
+                    addresses=device.addresses,
+                    path_cost=None if port is None else port.path_cost,
+                    port_priority=None if port is None else port.priority,
+                    bridge_vlans=expected_bridge_port_vlans(node, device.name),
+                    geneve_vni=device.vni,
+                    geneve_link=device.link,
+                    geneve_remote=device.remote,
+                    geneve_dst_port=device.dst_port,
+                )
+                continue
+            if isinstance(device, MacvlanDevicePlan):
+                expected[device.name] = _ExpectedInterface(
+                    kind="macvlan",
+                    master=node_interface_master(node, device.name),
+                    mtu=macvlan_device_mtu(node, plan, device),
+                    up=True,
+                    addresses=device.addresses,
+                    parent=device.link,
+                    macvlan_mode=device.mode,
+                )
+                continue
+            if isinstance(device, IpvlanDevicePlan):
+                expected[device.name] = _ExpectedInterface(
+                    kind="ipvlan",
+                    master=node_interface_master(node, device.name),
+                    mtu=ipvlan_device_mtu(node, plan, device),
+                    up=True,
+                    addresses=device.addresses,
+                    parent=device.link,
+                    ipvlan_mode=device.mode,
+                )
+                continue
             assert isinstance(device, VxlanDevicePlan)
             port = node.bridge_ports.get(device.name)
             expected[device.name] = _ExpectedInterface(
@@ -403,6 +471,21 @@ def _interfaces_match(
         if observed.vxlan_dst_port != desired.vxlan_dst_port:
             return False
         if observed.vxlan_learning is not desired.vxlan_learning:
+            return False
+        if observed.geneve_vni != desired.geneve_vni:
+            return False
+        # Linux Geneve has no netlink attribute for a fixed underlay device;
+        # the route to the remote endpoint determines the egress interface.
+        # Compare a link only when a backend can actually report one.
+        if observed.geneve_link is not None and observed.geneve_link != desired.geneve_link:
+            return False
+        if observed.geneve_remote != desired.geneve_remote:
+            return False
+        if observed.geneve_dst_port != desired.geneve_dst_port:
+            return False
+        if observed.macvlan_mode != desired.macvlan_mode:
+            return False
+        if observed.ipvlan_mode != desired.ipvlan_mode:
             return False
 
     return True

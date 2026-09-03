@@ -11,14 +11,19 @@ topology
 │  └─ <node-name>
 │     ├─ kind: linux
 │     │  ├─ interfaces / devices / routes / rules / sysctls
-│     │  ├─ devices → <device-name> → type: vlan | vrf | bond | vxlan
+│     │  ├─ devices → <device-name> → type: vlan | vrf | bond | vxlan | dummy | geneve | macvlan | ipvlan
 │     │  └─ routing
 │     └─ kind: bridge
 │        ├─ interfaces / devices / routes / sysctls
-│        ├─ devices → <device-name> → type: vxlan
+│        ├─ devices → <device-name> → type: vxlan | geneve
 │        └─ bridge → ports → vlans
 └─ links
-   └─ endpoints / mtu / netem | qdisc
+   └─ <link>
+      ├─ endpoints / mtu
+      ├─ netem
+      │  └─ delay_ms / jitter_ms / loss_percent / rate
+      └─ qdisc
+         └─ kind: tbf | fq_codel
 ```
 
 ## 顶层字段
@@ -61,8 +66,8 @@ topology:
 
 接口名必须为 1 到 15 个字符，可包含字母、数字、`_`、`.` 和 `-`。除 bridge 设备名外，
 `interfaces` 中声明的接口必须在 `links[].endpoints` 中出现。
-Namespace 内部的 VLAN、VRF、bond 和 VXLAN 设备应声明在 `devices`，而不是
-`interfaces`。
+Namespace 内部的 VLAN、VRF、bond、VXLAN、Geneve、dummy、macvlan 和 ipvlan 设备应声明在
+`devices`，而不是 `interfaces`。
 
 ##### `interfaces.<ifname>`
 
@@ -175,7 +180,7 @@ start 不能大于 end，两个 realm 不能同时为零。Suppress 选项只适
 
 `devices` 会在所有 veth endpoint 移入节点后，在 Linux 节点内部创建设备。设备名遵循
 接口名规则，不能是 `lo`，不能与 linked endpoint 或 `interfaces` key 冲突。必须通过
-`type` 选择 `vlan`、`vrf`、`bond` 或 `vxlan`。
+`type` 选择 `vlan`、`vrf`、`bond`、`vxlan`、`dummy`、`geneve`、`macvlan` 或 `ipvlan`。
 
 ###### `type: vlan`
 
@@ -211,6 +216,66 @@ lower interface。直连路由、BGP 直连邻居检查以及 OSPF/BGP 自动 ne
 underlay `link` 必须是 linked interface，并包含完全相同的 `local` 地址。自动 MTU 在
 IPv4 下减 50 字节，在 IPv6 下减 70 字节。独立 VXLAN 不设置 bridge master，因此可以
 作为 `routes[].dev`，示例见 `examples/vxlan/nslab.yaml`。
+
+###### `type: dummy`
+
+Dummy 设备是 namespace 内部的虚拟接口，没有物理对端，适合承载稳定的本地地址或作为路由
+目标：
+
+| 字段 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `devices.<name>.type` | 是 | 无 | 必须为 `dummy` |
+| `devices.<name>.addresses` | 否 | `[]` | 配置到 dummy 设备的 IPv4/IPv6 地址 |
+| `devices.<name>.mtu` | 否 | `1500` | MTU，范围 `576..9216` |
+
+###### `type: geneve`
+
+Linux 节点上的 Geneve 设备是静态单播隧道，可以直接承载地址和路由。到 `remote` 的路由
+决定源地址；与 VXLAN 不同，配置中没有 `local` 字段：
+
+| 字段 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `devices.<name>.type` | 是 | 无 | 必须为 `geneve` |
+| `devices.<name>.vni` | 是 | 无 | Geneve Network Identifier，范围 `1..16777215`，节点内唯一 |
+| `devices.<name>.link` | 是 | 无 | 同一节点中的 linked underlay interface |
+| `devices.<name>.remote` | 是 | 无 | 静态单播 IPv4/IPv6 远端 VTEP 地址 |
+| `devices.<name>.dst_port` | 否 | `6081` | UDP 目的端口，范围 `1..65535` |
+| `devices.<name>.addresses` | 否 | `[]` | 配置到 Geneve 设备的 IPv4/IPv6 地址 |
+| `devices.<name>.mtu` | 否 | 自动 | MTU，范围 `576..9216`，上限为 underlay MTU 减封装开销 |
+
+underlay `link` 必须是 linked interface。IPv4 Geneve 从 underlay MTU 减 50 字节，IPv6
+Geneve 减 70 字节。`remote` 必须是单播地址。Linux 节点上的 Geneve 不设置 bridge master，
+可以用作 `routes[].dev`。
+
+###### `type: macvlan`
+
+Macvlan 为 linked parent 增加一个拥有独立 MAC 地址的虚拟接口：
+
+| 字段 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `devices.<name>.type` | 是 | 无 | 必须为 `macvlan` |
+| `devices.<name>.link` | 是 | 无 | 同一节点中的 linked parent interface |
+| `devices.<name>.mode` | 否 | `bridge` | `private`、`vepa`、`bridge`、`passthru` 或 `source` |
+| `devices.<name>.addresses` | 否 | `[]` | 配置到 macvlan 设备的 IPv4/IPv6 地址 |
+| `devices.<name>.mtu` | 否 | Parent MTU | MTU，范围 `576..9216` |
+
+parent 必须是 linked interface，不能是另一个声明设备。`bridge` 模式允许同一 parent 上的
+macvlan sibling 互通，其余模式提供相应的内核隔离行为。
+
+###### `type: ipvlan`
+
+Ipvlan 与 parent 共享下层身份，同时提供独立的接口：
+
+| 字段 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `devices.<name>.type` | 是 | 无 | 必须为 `ipvlan` |
+| `devices.<name>.link` | 是 | 无 | 同一节点中的 linked parent interface |
+| `devices.<name>.mode` | 否 | `l2` | `l2`、`l3` 或 `l3s` |
+| `devices.<name>.addresses` | 否 | `[]` | 配置到 ipvlan 设备的 IPv4/IPv6 地址 |
+| `devices.<name>.mtu` | 否 | Parent MTU | MTU，范围 `576..9216` |
+
+`l2` 在以太网层转发，`l3` 和 `l3s` 使用 ipvlan 的三层转发变体。parent 必须是 linked
+interface，不能是另一个声明设备。
 
 ###### `type: bond`
 
@@ -296,7 +361,7 @@ Bridge 节点在自己的 namespace 中创建一台 Linux bridge。它可以使�
 
 | 节点字段 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `devices` | 否 | `{}` | 挂到此 bridge 的静态 VXLAN 设备 |
+| `devices` | 否 | `{}` | 挂到此 bridge 的静态 VXLAN 或 Geneve 设备 |
 | `bridge` | 是 | 无 | Linux bridge 设备及端口配置对象 |
 
 ```yaml
@@ -341,6 +406,24 @@ Bridge 节点中的 VXLAN 设备创建静态单播二层隧道，并自动加入
 设备来配置 STP 或 VLAN，但不能引用 VXLAN underlay interface。Bridge 节点的 VXLAN
 设备不能声明 `addresses`；三层 VXLAN 请使用 Linux 节点。
 
+##### `devices.<name>`：`type: geneve`
+
+Bridge 节点中的 Geneve 设备创建静态单播二层隧道，并自动加入 `bridge.name`。它通过
+underlay 路由选择源地址，因此没有 `local` 字段。underlay 接口不会加入 bridge：
+
+| 字段 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `type` | 是 | 无 | 必须为 `geneve` |
+| `vni` | 是 | 无 | Geneve Network Identifier，范围 `1..16777215`，同一节点内唯一 |
+| `link` | 是 | 无 | 同一 bridge 节点中的 linked underlay interface |
+| `remote` | 是 | 无 | 静态单播 IPv4/IPv6 远端 VTEP 地址 |
+| `dst_port` | 否 | `6081` | UDP 目的端口，范围 `1..65535` |
+| `mtu` | 否 | 自动 | Geneve MTU，范围 `576..9216`，上限为 underlay MTU 减封装开销 |
+
+自动 MTU 在 IPv4 underlay 上减 50 字节，在 IPv6 下减 70 字节。自定义值不能超过该上限。
+Bridge 节点的 Geneve 设备不能声明 `addresses`；三层 Geneve 请使用 Linux 节点。`bridge.ports`
+可以引用 Geneve 设备配置 STP 或 VLAN，但不能引用 underlay 接口。
+
 ##### `bridge`
 
 | 字段 | 必填 | 默认值 | 说明 |
@@ -349,7 +432,7 @@ Bridge 节点中的 VXLAN 设备创建静态单播二层隧道，并自动加入
 | `stp` | 是 | 无 | 是否开启 Linux bridge STP |
 | `vlan_filtering` | 是 | 无 | 是否开启 VLAN-aware filtering |
 | `priority` | 否 | `null` | Bridge priority，范围 `0..65535` |
-| `ports` | 否 | `{}` | Linked access 或 VXLAN 端口名到 STP/VLAN 配置的映射 |
+| `ports` | 否 | `{}` | Linked access、VXLAN 或 Geneve 端口名到 STP/VLAN 配置的映射 |
 
 `bridge.name` 不能与链接 endpoint 使用同名接口。若要给 bridge 本身配置 IP，可在节点
 `interfaces` 中使用相同的 `bridge.name`。
@@ -363,7 +446,7 @@ Bridge 节点中的 VXLAN 设备创建静态单播二层隧道，并自动加入
 | `vlans` | 否 | `[]` | 端口 VLAN 列表，要求 `vlan_filtering: true` |
 
 端口配置至少要包含一个 STP 或 VLAN 设置；端口必须是 linked access interface 或已声明
-的 VXLAN 设备。
+的 VXLAN/Geneve 设备。
 
 每个 `vlans[]` 项：
 

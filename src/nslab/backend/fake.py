@@ -15,8 +15,12 @@ from nslab.backend.base import (
 from nslab.errors import NslabError
 from nslab.planner import (
     BondDevicePlan,
+    DummyDevicePlan,
     EndpointPlan,
+    GeneveDevicePlan,
+    IpvlanDevicePlan,
     LinkPlan,
+    MacvlanDevicePlan,
     NetemPlan,
     NodeKind,
     NodePlan,
@@ -28,6 +32,10 @@ from nslab.planner import (
     VrfDevicePlan,
     VxlanDevicePlan,
     bond_device_mtu,
+    dummy_device_mtu,
+    geneve_device_mtu,
+    ipvlan_device_mtu,
+    macvlan_device_mtu,
     node_interface_master,
     vxlan_device_mtu,
 )
@@ -303,6 +311,114 @@ class FakeNetworkBackend:
                 vxlan_remote=device.remote,
                 vxlan_dst_port=device.dst_port,
                 vxlan_learning=device.learning,
+            )
+
+        for device in node.devices.values():
+            if not isinstance(device, DummyDevicePlan):
+                continue
+            if device.name in interfaces:
+                raise _resource_error(
+                    "RESOURCE_EXISTS",
+                    "configure_node",
+                    f"{resource}:{device.name}",
+                )
+            interfaces[device.name] = InterfaceInventory(
+                name=device.name,
+                kind="dummy",
+                ifindex=self._allocate_ifindex(resource),
+                master=node_interface_master(node, device.name),
+                mtu=dummy_device_mtu(node, plan, device),
+                up=True,
+                addresses=device.addresses,
+            )
+
+        for device in node.devices.values():
+            if not isinstance(device, GeneveDevicePlan):
+                continue
+            if device.link not in interfaces:
+                raise _resource_error(
+                    "RESOURCE_MISSING",
+                    "configure_node",
+                    f"{resource}:{device.link}",
+                )
+            if device.name in interfaces:
+                raise _resource_error(
+                    "RESOURCE_EXISTS",
+                    "configure_node",
+                    f"{resource}:{device.name}",
+                )
+            port = node.bridge_ports.get(device.name)
+            interfaces[device.name] = InterfaceInventory(
+                name=device.name,
+                kind="geneve",
+                ifindex=self._allocate_ifindex(resource),
+                master=node_interface_master(node, device.name),
+                mtu=geneve_device_mtu(node, plan, device),
+                up=True,
+                addresses=device.addresses,
+                path_cost=None if port is None else port.path_cost,
+                port_priority=None if port is None else port.priority,
+                bridge_vlans=expected_bridge_port_vlans(node, device.name),
+                geneve_vni=device.vni,
+                geneve_link=device.link,
+                geneve_remote=device.remote,
+                geneve_dst_port=device.dst_port,
+            )
+
+        for device in node.devices.values():
+            if not isinstance(device, MacvlanDevicePlan):
+                continue
+            parent = interfaces.get(device.link)
+            if parent is None:
+                raise _resource_error(
+                    "RESOURCE_MISSING",
+                    "configure_node",
+                    f"{resource}:{device.link}",
+                )
+            if device.name in interfaces:
+                raise _resource_error(
+                    "RESOURCE_EXISTS",
+                    "configure_node",
+                    f"{resource}:{device.name}",
+                )
+            interfaces[device.name] = InterfaceInventory(
+                name=device.name,
+                kind="macvlan",
+                ifindex=self._allocate_ifindex(resource),
+                master=node_interface_master(node, device.name),
+                mtu=macvlan_device_mtu(node, plan, device),
+                up=True,
+                addresses=device.addresses,
+                parent=device.link,
+                macvlan_mode=device.mode,
+            )
+
+        for device in node.devices.values():
+            if not isinstance(device, IpvlanDevicePlan):
+                continue
+            parent = interfaces.get(device.link)
+            if parent is None:
+                raise _resource_error(
+                    "RESOURCE_MISSING",
+                    "configure_node",
+                    f"{resource}:{device.link}",
+                )
+            if device.name in interfaces:
+                raise _resource_error(
+                    "RESOURCE_EXISTS",
+                    "configure_node",
+                    f"{resource}:{device.name}",
+                )
+            interfaces[device.name] = InterfaceInventory(
+                name=device.name,
+                kind="ipvlan",
+                ifindex=self._allocate_ifindex(resource),
+                master=node_interface_master(node, device.name),
+                mtu=ipvlan_device_mtu(node, plan, device),
+                up=True,
+                addresses=device.addresses,
+                parent=device.link,
+                ipvlan_mode=device.mode,
             )
 
         for device in node.devices.values():

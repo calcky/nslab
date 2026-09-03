@@ -18,6 +18,10 @@ from nslab.errors import NslabError, OperationCancelled
 from nslab.manifest import Manifest, manifest_fingerprint, normalized_manifest
 from nslab.planner import (
     BondDevicePlan,
+    DummyDevicePlan,
+    GeneveDevicePlan,
+    IpvlanDevicePlan,
+    MacvlanDevicePlan,
     TopologyPlan,
     VlanDevicePlan,
     VrfDevicePlan,
@@ -565,6 +569,28 @@ class LifecycleService:
                         kind="bond",
                         bond_mode=device.mode,
                         interfaces=device.interfaces,
+                    )
+                elif isinstance(device, DummyDevicePlan):
+                    ownership.update(kind="dummy")
+                elif isinstance(device, GeneveDevicePlan):
+                    ownership.update(
+                        kind="geneve",
+                        vni=device.vni,
+                        link=device.link,
+                        remote=str(device.remote),
+                        dst_port=device.dst_port,
+                    )
+                elif isinstance(device, MacvlanDevicePlan):
+                    ownership.update(
+                        kind="macvlan",
+                        parent=device.link,
+                        mode=device.mode,
+                    )
+                elif isinstance(device, IpvlanDevicePlan):
+                    ownership.update(
+                        kind="ipvlan",
+                        parent=device.link,
+                        mode=device.mode,
                     )
                 else:
                     assert isinstance(device, VxlanDevicePlan)

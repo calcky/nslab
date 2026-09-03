@@ -23,6 +23,13 @@ sudo nslab destroy
 | [VLAN](vlan.md) | 802.1Q subinterfaces and router-on-a-stick forwarding |
 | [Bridge STP](bridge-stp.md) | Root election, port selection, and failure reconvergence |
 | [VXLAN](vxlan.md) | Layer 2 bridge overlay and standalone Layer 3 routing |
+| [Geneve](geneve.md) | Static unicast Layer 2 Geneve overlay |
+
+## Namespace interfaces
+
+| Example | Focus |
+| --- | --- |
+| [Virtual devices](virtual-devices.md) | `dummy`, `macvlan`, and `ipvlan` interfaces |
 
 ## Link aggregation
 

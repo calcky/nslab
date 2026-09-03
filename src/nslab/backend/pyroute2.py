@@ -44,10 +44,14 @@ from nslab.errors import NslabError, OperationCancelled
 from nslab.planner import (
     BondDevicePlan,
     BridgeVlanPlan,
+    DummyDevicePlan,
     EndpointPlan,
     FqCodelPlan,
+    GeneveDevicePlan,
     IPInterface,
+    IpvlanDevicePlan,
     LinkPlan,
+    MacvlanDevicePlan,
     NetemPlan,
     NodePlan,
     PolicyRulePlan,
@@ -59,6 +63,10 @@ from nslab.planner import (
     VrfDevicePlan,
     VxlanDevicePlan,
     bond_device_mtu,
+    dummy_device_mtu,
+    geneve_device_mtu,
+    ipvlan_device_mtu,
+    macvlan_device_mtu,
     node_interface_addresses,
     node_interface_master,
     node_route_tables,
@@ -109,6 +117,16 @@ _BOND_XMIT_HASH_POLICY_TO_NETLINK = {
 _BOND_XMIT_HASH_POLICY_FROM_NETLINK = {
     value: key for key, value in _BOND_XMIT_HASH_POLICY_TO_NETLINK.items()
 }
+_MACVLAN_MODE_TO_NETLINK = {
+    "private": 1,
+    "vepa": 2,
+    "bridge": 4,
+    "passthru": 8,
+    "source": 16,
+}
+_MACVLAN_MODE_FROM_NETLINK = {value: key for key, value in _MACVLAN_MODE_TO_NETLINK.items()}
+_IPVLAN_MODE_TO_NETLINK = {"l2": 0, "l3": 1, "l3s": 2}
+_IPVLAN_MODE_FROM_NETLINK = {value: key for key, value in _IPVLAN_MODE_TO_NETLINK.items()}
 # FRR uses the Linux-assigned protocol identifiers for protocol-originated
 # routes.  ``RTPROT_ZEBRA`` is included for FRR releases that use the generic
 # Zebra identifier for an imported/redistributed route.
@@ -1316,6 +1334,129 @@ class Pyroute2Backend:
                     namespace.link("set", index=vxlan_index, state="up")
 
                 for device in node.devices.values():
+                    if not isinstance(device, DummyDevicePlan):
+                        continue
+                    namespace.link("add", ifname=device.name, kind="dummy")
+                    dummy_index = _required_index(
+                        namespace,
+                        device.name,
+                        "configure_node",
+                        f"{node.namespace}:{device.name}",
+                    )
+                    indexes[device.name] = dummy_index
+                    namespace.link(
+                        "set",
+                        index=dummy_index,
+                        mtu=dummy_device_mtu(node, plan, device),
+                        state="up",
+                    )
+
+                for device in node.devices.values():
+                    if not isinstance(device, GeneveDevicePlan):
+                        continue
+                    # Geneve has no IFLA_GENEVE_LINK attribute.  The kernel
+                    # selects the egress interface by routing the remote
+                    # endpoint, so ``link`` is a declarative underlay
+                    # reference used for validation and MTU calculation.
+                    if device.link not in indexes:
+                        indexes[device.link] = _required_index(
+                            namespace,
+                            device.link,
+                            "configure_node",
+                            f"{node.namespace}:{device.link}",
+                        )
+                    geneve_arguments: dict[str, object] = {
+                        "ifname": device.name,
+                        "kind": "geneve",
+                        "geneve_id": device.vni,
+                        "geneve_port": device.dst_port,
+                    }
+                    if device.remote.version == 4:
+                        geneve_arguments["geneve_remote"] = str(device.remote)
+                    else:
+                        geneve_arguments["geneve_remote6"] = str(device.remote)
+                    namespace.link("add", **geneve_arguments)
+                    geneve_index = _required_index(
+                        namespace,
+                        device.name,
+                        "configure_node",
+                        f"{node.namespace}:{device.name}",
+                    )
+                    indexes[device.name] = geneve_index
+                    namespace.link(
+                        "set",
+                        index=geneve_index,
+                        mtu=geneve_device_mtu(node, plan, device),
+                        state="up",
+                    )
+
+                for device in node.devices.values():
+                    if not isinstance(device, MacvlanDevicePlan):
+                        continue
+                    parent_index = indexes.get(device.link)
+                    if parent_index is None:
+                        parent_index = _required_index(
+                            namespace,
+                            device.link,
+                            "configure_node",
+                            f"{node.namespace}:{device.link}",
+                        )
+                        indexes[device.link] = parent_index
+                    namespace.link(
+                        "add",
+                        ifname=device.name,
+                        kind="macvlan",
+                        link=parent_index,
+                        macvlan_mode=_MACVLAN_MODE_TO_NETLINK[device.mode],
+                    )
+                    macvlan_index = _required_index(
+                        namespace,
+                        device.name,
+                        "configure_node",
+                        f"{node.namespace}:{device.name}",
+                    )
+                    indexes[device.name] = macvlan_index
+                    namespace.link(
+                        "set",
+                        index=macvlan_index,
+                        mtu=macvlan_device_mtu(node, plan, device),
+                        state="up",
+                    )
+
+                for device in node.devices.values():
+                    if not isinstance(device, IpvlanDevicePlan):
+                        continue
+                    parent_index = indexes.get(device.link)
+                    if parent_index is None:
+                        parent_index = _required_index(
+                            namespace,
+                            device.link,
+                            "configure_node",
+                            f"{node.namespace}:{device.link}",
+                        )
+                        indexes[device.link] = parent_index
+                    namespace.link(
+                        "add",
+                        ifname=device.name,
+                        kind="ipvlan",
+                        link=parent_index,
+                        ipvlan_mode=_IPVLAN_MODE_TO_NETLINK[device.mode],
+                    )
+                    ipvlan_index = _required_index(
+                        namespace,
+                        device.name,
+                        "configure_node",
+                        f"{node.namespace}:{device.name}",
+                    )
+                    indexes[device.name] = ipvlan_index
+                    namespace.link(
+                        "set",
+                        index=ipvlan_index,
+                        mtu=ipvlan_device_mtu(node, plan, device),
+                        state="up",
+                    )
+
+                for device in node.devices.values():
                     if not isinstance(device, VrfDevicePlan):
                         continue
                     vrf_index = indexes[device.name]
@@ -1384,7 +1525,9 @@ class Pyroute2Backend:
                                         index=port_index,
                                         vlan_info={"vid": vlan.vid, "flags": flags},
                                     )
-                        if isinstance(node.devices.get(interface), VxlanDevicePlan):
+                        if isinstance(
+                            node.devices.get(interface), (VxlanDevicePlan, GeneveDevicePlan)
+                        ):
                             namespace.link("set", index=port_index, state="up")
                     if bridge_name not in node.interfaces:
                         namespace.link("set", index=bridge_index, state="up")
@@ -1497,10 +1640,12 @@ class Pyroute2Backend:
             if endpoint.namespace == node.namespace
             and node_interface_master(node, endpoint.interface) == node.bridge_name
         )
-        vxlan_interfaces = (
-            device.name for device in node.devices.values() if isinstance(device, VxlanDevicePlan)
+        overlay_interfaces = (
+            device.name
+            for device in node.devices.values()
+            if isinstance(device, (VxlanDevicePlan, GeneveDevicePlan))
         )
-        return tuple(dict.fromkeys((*linked_interfaces, *vxlan_interfaces)))
+        return tuple(dict.fromkeys((*linked_interfaces, *overlay_interfaces)))
 
     def _write_sysctls(self, node: NodePlan) -> None:
         if not node.sysctls:
@@ -2019,6 +2164,12 @@ class Pyroute2Backend:
             vxlan_remote: IPv4Address | IPv6Address | None = None
             vxlan_dst_port: int | None = None
             vxlan_learning: bool | None = None
+            geneve_vni: int | None = None
+            geneve_link: str | None = None
+            geneve_remote: IPv4Address | IPv6Address | None = None
+            geneve_dst_port: int | None = None
+            macvlan_mode: str | None = None
+            ipvlan_mode: str | None = None
             if kind == "bridge":
                 info_data = _attribute(link_info, "IFLA_INFO_DATA")
                 stp_value = _attribute(info_data, "IFLA_BR_STP_STATE")
@@ -2094,6 +2245,50 @@ class Pyroute2Backend:
                     vxlan_dst_port = int(port_value)
                 if learning_value is not None:
                     vxlan_learning = bool(int(learning_value))
+            if kind == "geneve":
+                info_data = _attribute(link_info, "IFLA_INFO_DATA")
+                vni_value = _attribute(info_data, "IFLA_GENEVE_ID")
+                link_value = _attribute(info_data, "IFLA_GENEVE_LINK")
+                if link_value is None:
+                    link_value = _attribute(message, "IFLA_LINK")
+                remote_value = _attribute(info_data, "IFLA_GENEVE_REMOTE")
+                if remote_value is None:
+                    remote_value = _attribute(info_data, "IFLA_GENEVE_REMOTE6")
+                port_value = _attribute(info_data, "IFLA_GENEVE_PORT")
+                if vni_value is not None:
+                    geneve_vni = int(vni_value)
+                if link_value is not None:
+                    geneve_link = names_by_index.get(int(link_value))
+                if remote_value is not None:
+                    geneve_remote = ip_address(remote_value)
+                if port_value is not None:
+                    geneve_dst_port = int(port_value)
+            if kind == "macvlan":
+                parent_value = _attribute(message, "IFLA_LINK")
+                if parent_value is not None:
+                    parent = names_by_index.get(int(parent_value))
+                info_data = _attribute(link_info, "IFLA_INFO_DATA")
+                mode_value = _attribute(info_data, "IFLA_MACVLAN_MODE")
+                if mode_value is not None:
+                    if isinstance(mode_value, str):
+                        macvlan_mode = mode_value
+                    else:
+                        raw_mode = int(mode_value)
+                        macvlan_mode = _MACVLAN_MODE_FROM_NETLINK.get(
+                            raw_mode, f"unknown:{raw_mode}"
+                        )
+            if kind == "ipvlan":
+                parent_value = _attribute(message, "IFLA_LINK")
+                if parent_value is not None:
+                    parent = names_by_index.get(int(parent_value))
+                info_data = _attribute(link_info, "IFLA_INFO_DATA")
+                mode_value = _attribute(info_data, "IFLA_IPVLAN_MODE")
+                if mode_value is not None:
+                    if isinstance(mode_value, str):
+                        ipvlan_mode = mode_value
+                    else:
+                        raw_mode = int(mode_value)
+                        ipvlan_mode = _IPVLAN_MODE_FROM_NETLINK.get(raw_mode, f"unknown:{raw_mode}")
             slave_kind = _attribute(link_info, "IFLA_INFO_SLAVE_KIND")
             if slave_kind == "bridge":
                 slave_data = _attribute(link_info, "IFLA_INFO_SLAVE_DATA")
@@ -2141,6 +2336,12 @@ class Pyroute2Backend:
                 vxlan_remote=vxlan_remote,
                 vxlan_dst_port=vxlan_dst_port,
                 vxlan_learning=vxlan_learning,
+                geneve_vni=geneve_vni,
+                geneve_link=geneve_link,
+                geneve_remote=geneve_remote,
+                geneve_dst_port=geneve_dst_port,
+                macvlan_mode=macvlan_mode,
+                ipvlan_mode=ipvlan_mode,
             )
         return interfaces, names_by_index
 

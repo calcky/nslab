@@ -81,6 +81,7 @@ class InterfaceConfig(BaseModel):
 
 
 VlanDeviceId = Annotated[StrictInt, Field(ge=1, le=4094)]
+DeviceMtu = Annotated[StrictInt, Field(ge=576, le=9_216)]
 
 
 class VlanDeviceConfig(InterfaceConfig):
@@ -197,6 +198,100 @@ VxlanPort = Annotated[StrictInt, Field(ge=1, le=65_535)]
 VxlanMtu = Annotated[StrictInt, Field(ge=576, le=9_216)]
 
 
+class DummyDeviceConfig(InterfaceConfig):
+    """A namespace-local dummy interface."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    type: Literal["dummy"]
+    mtu: DeviceMtu | None = None
+
+
+GeneveVni = Annotated[StrictInt, Field(ge=1, le=16_777_215)]
+GenevePort = Annotated[StrictInt, Field(ge=1, le=65_535)]
+GeneveMtu = Annotated[StrictInt, Field(ge=576, le=9_216)]
+
+
+class GeneveDeviceConfig(InterfaceConfig):
+    """A static unicast Geneve interface.
+
+    Geneve selects the source address through the underlay route.  Unlike VXLAN,
+    the Linux Geneve netlink API has no local-address attribute, so only the
+    remote endpoint is declared here.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    type: Literal["geneve"]
+    vni: GeneveVni
+    link: str
+    remote: IPv4Address | IPv6Address
+    dst_port: GenevePort = 6081
+    mtu: GeneveMtu | None = None
+
+    @field_validator("link")
+    @classmethod
+    def validate_link_name(cls, value: str) -> str:
+        link = _require_name(value, IFNAME_PATTERN, "Geneve underlay interface name")
+        if link == "lo":
+            raise ValueError("Geneve underlay interface cannot be 'lo'")
+        return link
+
+    @field_validator("remote", mode="before")
+    @classmethod
+    def validate_remote_input(cls, value: object) -> object:
+        if not isinstance(value, (str, IPv4Address, IPv6Address)):
+            raise ValueError("Geneve remote endpoint must be an IPv4 or IPv6 string")
+        return value
+
+    @field_validator("remote")
+    @classmethod
+    def validate_remote_address(cls, value: IPv4Address | IPv6Address) -> IPv4Address | IPv6Address:
+        if value.is_unspecified or value.is_multicast:
+            raise ValueError("Geneve remote endpoint must be a unicast address")
+        return value
+
+
+MacvlanMode = Literal["private", "vepa", "bridge", "passthru", "source"]
+
+
+class MacvlanDeviceConfig(InterfaceConfig):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    type: Literal["macvlan"]
+    link: str
+    mode: MacvlanMode = "bridge"
+    mtu: DeviceMtu | None = None
+
+    @field_validator("link")
+    @classmethod
+    def validate_link_name(cls, value: str) -> str:
+        link = _require_name(value, IFNAME_PATTERN, "macvlan parent interface name")
+        if link == "lo":
+            raise ValueError("macvlan parent interface cannot be 'lo'")
+        return link
+
+
+IpvlanMode = Literal["l2", "l3", "l3s"]
+
+
+class IpvlanDeviceConfig(InterfaceConfig):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    type: Literal["ipvlan"]
+    link: str
+    mode: IpvlanMode = "l2"
+    mtu: DeviceMtu | None = None
+
+    @field_validator("link")
+    @classmethod
+    def validate_link_name(cls, value: str) -> str:
+        link = _require_name(value, IFNAME_PATTERN, "ipvlan parent interface name")
+        if link == "lo":
+            raise ValueError("ipvlan parent interface cannot be 'lo'")
+        return link
+
+
 class VxlanDeviceConfig(InterfaceConfig):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -241,7 +336,19 @@ class VxlanDeviceConfig(InterfaceConfig):
 
 
 type LinuxDeviceConfig = Annotated[
-    VlanDeviceConfig | VrfDeviceConfig | BondDeviceConfig | VxlanDeviceConfig,
+    VlanDeviceConfig
+    | VrfDeviceConfig
+    | BondDeviceConfig
+    | VxlanDeviceConfig
+    | DummyDeviceConfig
+    | GeneveDeviceConfig
+    | MacvlanDeviceConfig
+    | IpvlanDeviceConfig,
+    Field(discriminator="type"),
+]
+
+type BridgeDeviceConfig = Annotated[
+    VxlanDeviceConfig | GeneveDeviceConfig,
     Field(discriminator="type"),
 ]
 
@@ -677,6 +784,26 @@ class LinuxNode(_NodeBase):
             for name, device in self.devices.items()
             if isinstance(device, BondDeviceConfig)
         }
+        dummy_devices = {
+            name: device
+            for name, device in self.devices.items()
+            if isinstance(device, DummyDeviceConfig)
+        }
+        geneve_devices = {
+            name: device
+            for name, device in self.devices.items()
+            if isinstance(device, GeneveDeviceConfig)
+        }
+        macvlan_devices = {
+            name: device
+            for name, device in self.devices.items()
+            if isinstance(device, MacvlanDeviceConfig)
+        }
+        ipvlan_devices = {
+            name: device
+            for name, device in self.devices.items()
+            if isinstance(device, IpvlanDeviceConfig)
+        }
         vxlan_devices = {
             name: device
             for name, device in self.devices.items()
@@ -723,6 +850,30 @@ class LinuxNode(_NodeBase):
             if vxlan.vni in seen_vxlan_vnis:
                 raise ValueError(f"duplicate VXLAN VNI: {vxlan.vni}")
             seen_vxlan_vnis.add(vxlan.vni)
+
+        seen_geneve_vnis: set[int] = set()
+        for name, geneve in geneve_devices.items():
+            if geneve.link in self.devices:
+                raise ValueError(
+                    f"Geneve underlay interface must be a linked interface: "
+                    f"{name!r} -> {geneve.link!r}"
+                )
+            if geneve.vni in seen_geneve_vnis:
+                raise ValueError(f"duplicate Geneve VNI: {geneve.vni}")
+            seen_geneve_vnis.add(geneve.vni)
+
+        for name, macvlan in macvlan_devices.items():
+            if macvlan.link in self.devices:
+                raise ValueError(
+                    f"macvlan parent interface must be a linked interface: "
+                    f"{name!r} -> {macvlan.link!r}"
+                )
+        for name, ipvlan in ipvlan_devices.items():
+            if ipvlan.link in self.devices:
+                raise ValueError(
+                    f"ipvlan parent interface must be a linked interface: "
+                    f"{name!r} -> {ipvlan.link!r}"
+                )
 
         seen_tables: set[int] = set()
         tables_by_interface: dict[str, int] = {}
@@ -777,6 +928,26 @@ class LinuxNode(_NodeBase):
         connected_networks.update(
             (tables_by_interface.get(name, MAIN_ROUTE_TABLE), address.network)
             for name, device in vxlan_devices.items()
+            for address in device.addresses
+        )
+        connected_networks.update(
+            (tables_by_interface.get(name, MAIN_ROUTE_TABLE), address.network)
+            for name, device in dummy_devices.items()
+            for address in device.addresses
+        )
+        connected_networks.update(
+            (tables_by_interface.get(name, MAIN_ROUTE_TABLE), address.network)
+            for name, device in geneve_devices.items()
+            for address in device.addresses
+        )
+        connected_networks.update(
+            (tables_by_interface.get(name, MAIN_ROUTE_TABLE), address.network)
+            for name, device in macvlan_devices.items()
+            for address in device.addresses
+        )
+        connected_networks.update(
+            (tables_by_interface.get(name, MAIN_ROUTE_TABLE), address.network)
+            for name, device in ipvlan_devices.items()
             for address in device.addresses
         )
         _validate_routes_by_table(self.routes, connected_networks, tables_by_interface)
@@ -866,14 +1037,14 @@ class BridgeNode(_NodeBase):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     kind: Literal["bridge"]
-    devices: dict[str, VxlanDeviceConfig] = Field(default_factory=dict)
+    devices: dict[str, BridgeDeviceConfig] = Field(default_factory=dict)
     bridge: BridgeConfig
 
     @field_validator("devices")
     @classmethod
     def validate_device_names(
-        cls, devices: dict[str, VxlanDeviceConfig]
-    ) -> dict[str, VxlanDeviceConfig]:
+        cls, devices: dict[str, BridgeDeviceConfig]
+    ) -> dict[str, BridgeDeviceConfig]:
         for device_name in devices:
             _require_name(device_name, IFNAME_PATTERN, "device name")
             if device_name == "lo":
@@ -890,13 +1061,21 @@ class BridgeNode(_NodeBase):
             raise ValueError(
                 f"device name conflicts with the bridge interface: {self.bridge.name!r}"
             )
-        seen_vnis: set[int] = set()
+        seen_vxlan_vnis: set[int] = set()
+        seen_geneve_vnis: set[int] = set()
         for device_name, device in self.devices.items():
             if device.addresses:
-                raise ValueError(f"bridge VXLAN device cannot declare addresses: {device_name!r}")
-            if device.vni in seen_vnis:
-                raise ValueError(f"duplicate VXLAN VNI: {device.vni}")
-            seen_vnis.add(device.vni)
+                raise ValueError(
+                    f"bridge {device.type.upper()} device cannot declare addresses: {device_name!r}"
+                )
+            if isinstance(device, VxlanDeviceConfig):
+                if device.vni in seen_vxlan_vnis:
+                    raise ValueError(f"duplicate VXLAN VNI: {device.vni}")
+                seen_vxlan_vnis.add(device.vni)
+            else:
+                if device.vni in seen_geneve_vnis:
+                    raise ValueError(f"duplicate Geneve VNI: {device.vni}")
+                seen_geneve_vnis.add(device.vni)
 
         connected_networks = {
             (MAIN_ROUTE_TABLE, address.network)
@@ -1054,6 +1233,26 @@ class Topology(BaseModel):
                     for name, device in node.devices.items()
                     if isinstance(device, VxlanDeviceConfig)
                 }
+                dummy_devices = {
+                    name: device
+                    for name, device in node.devices.items()
+                    if isinstance(device, DummyDeviceConfig)
+                }
+                geneve_devices = {
+                    name: device
+                    for name, device in node.devices.items()
+                    if isinstance(device, GeneveDeviceConfig)
+                }
+                macvlan_devices = {
+                    name: device
+                    for name, device in node.devices.items()
+                    if isinstance(device, MacvlanDeviceConfig)
+                }
+                ipvlan_devices = {
+                    name: device
+                    for name, device in node.devices.items()
+                    if isinstance(device, IpvlanDeviceConfig)
+                }
                 for device_name in node.devices:
                     if device_name in linked:
                         raise ValueError(
@@ -1112,6 +1311,44 @@ class Topology(BaseModel):
                             f"{device_name!r} maximum is {maximum_mtu}"
                         )
                 available.update(vxlan_devices)
+                for device_name, geneve_device in geneve_devices.items():
+                    if geneve_device.link not in linked:
+                        raise ValueError(
+                            f"Geneve underlay interface is not linked on node "
+                            f"{node_name!r}: {device_name!r} -> {geneve_device.link!r}"
+                        )
+                    parent_mtu = linked_mtus[node_name][geneve_device.link]
+                    maximum_mtu = parent_mtu - (50 if geneve_device.remote.version == 4 else 70)
+                    if maximum_mtu < 576:
+                        raise ValueError(
+                            f"Geneve underlay MTU is too small on node "
+                            f"{node_name!r}: {device_name!r}"
+                        )
+                    if geneve_device.mtu is not None and geneve_device.mtu > maximum_mtu:
+                        raise ValueError(
+                            f"Geneve MTU exceeds encapsulation limit on node "
+                            f"{node_name!r}: {device_name!r} maximum is {maximum_mtu}"
+                        )
+                for device_type, devices in (
+                    ("macvlan", macvlan_devices),
+                    ("ipvlan", ipvlan_devices),
+                ):
+                    for device_name, parent_device in devices.items():
+                        if parent_device.link not in linked:
+                            raise ValueError(
+                                f"{device_type.capitalize()} parent interface is not linked "
+                                f"on node {node_name!r}: {device_name!r} -> {parent_device.link!r}"
+                            )
+                        parent_mtu = linked_mtus[node_name][parent_device.link]
+                        if parent_device.mtu is not None and parent_device.mtu > parent_mtu:
+                            raise ValueError(
+                                f"{device_type.capitalize()} MTU exceeds parent MTU on node "
+                                f"{node_name!r}: {device_name!r} maximum is {parent_mtu}"
+                            )
+                available.update(geneve_devices)
+                available.update(macvlan_devices)
+                available.update(ipvlan_devices)
+                available.update(dummy_devices)
                 for vrf_name, vrf in vrf_devices.items():
                     for interface in vrf.interfaces:
                         if interface not in available:
@@ -1128,41 +1365,50 @@ class Topology(BaseModel):
                                 f"{node_name!r}: {rule_interface!r}"
                             )
             if isinstance(node, BridgeNode):
-                vxlan_devices = node.devices
-                for device_name in vxlan_devices:
+                overlay_devices = node.devices
+                for device_name in overlay_devices:
                     if device_name in linked:
                         raise ValueError(
                             f"device name conflicts with a linked endpoint on node "
                             f"{node_name!r}: {device_name!r}"
                         )
                 underlay_interfaces: set[str] = set()
-                for device_name, vxlan in vxlan_devices.items():
-                    if vxlan.link not in linked:
+                for device_name, overlay_device in overlay_devices.items():
+                    protocol = overlay_device.type.upper()
+                    if overlay_device.link not in linked:
+                        if isinstance(overlay_device, VxlanDeviceConfig):
+                            raise ValueError(
+                                f"VXLAN underlay interface is not linked on node "
+                                f"{node_name!r}: {device_name!r} -> {overlay_device.link!r}"
+                            )
                         raise ValueError(
-                            f"VXLAN underlay interface is not linked on node "
-                            f"{node_name!r}: {device_name!r} -> {vxlan.link!r}"
+                            f"Geneve underlay interface is not linked on node "
+                            f"{node_name!r}: {device_name!r} -> {overlay_device.link!r}"
                         )
-                    configured_addresses = node.interfaces.get(vxlan.link)
-                    if configured_addresses is None or vxlan.local not in {
-                        address.ip for address in configured_addresses.addresses
-                    }:
-                        raise ValueError(
-                            f"VXLAN local address is not configured on underlay interface "
-                            f"{node_name!r}: {device_name!r} -> {vxlan.link!r}"
-                        )
-                    overhead = 50 if vxlan.local.version == 4 else 70
-                    maximum_mtu = linked_mtus[node_name][vxlan.link] - overhead
+                    if isinstance(overlay_device, VxlanDeviceConfig):
+                        configured_addresses = node.interfaces.get(overlay_device.link)
+                        if configured_addresses is None or overlay_device.local not in {
+                            address.ip for address in configured_addresses.addresses
+                        }:
+                            raise ValueError(
+                                f"VXLAN local address is not configured on underlay interface "
+                                f"{node_name!r}: {device_name!r} -> {overlay_device.link!r}"
+                            )
+                        overhead = 50 if overlay_device.local.version == 4 else 70
+                    else:
+                        overhead = 50 if overlay_device.remote.version == 4 else 70
+                    maximum_mtu = linked_mtus[node_name][overlay_device.link] - overhead
                     if maximum_mtu < 576:
                         raise ValueError(
-                            f"VXLAN underlay MTU is too small on node {node_name!r}: "
+                            f"{protocol} underlay MTU is too small on node {node_name!r}: "
                             f"{device_name!r}"
                         )
-                    if vxlan.mtu is not None and vxlan.mtu > maximum_mtu:
+                    if overlay_device.mtu is not None and overlay_device.mtu > maximum_mtu:
                         raise ValueError(
-                            f"VXLAN MTU exceeds encapsulation limit on node {node_name!r}: "
+                            f"{protocol} MTU exceeds encapsulation limit on node {node_name!r}: "
                             f"{device_name!r} maximum is {maximum_mtu}"
                         )
-                    underlay_interfaces.add(vxlan.link)
+                    underlay_interfaces.add(overlay_device.link)
 
                 if node.bridge.name in linked:
                     raise ValueError(
@@ -1170,15 +1416,16 @@ class Topology(BaseModel):
                         f"{node_name!r}: {node.bridge.name!r}"
                     )
                 available.add(node.bridge.name)
+                available.update(overlay_devices)
                 for port_name in node.bridge.ports:
                     if port_name in underlay_interfaces:
                         raise ValueError(
-                            f"VXLAN underlay interface cannot be a bridge port on node "
+                            f"overlay underlay interface cannot be a bridge port on node "
                             f"{node_name!r}: {port_name!r}"
                         )
-                    if port_name not in linked and port_name not in vxlan_devices:
+                    if port_name not in linked and port_name not in overlay_devices:
                         raise ValueError(
-                            f"configured bridge port is not linked or a VXLAN device on node "
+                            f"configured bridge port is not linked or an overlay device on node "
                             f"{node_name!r}: {port_name!r}"
                         )
 
@@ -1235,7 +1482,15 @@ class Topology(BaseModel):
                             for device in node.devices.values()
                             if isinstance(
                                 device,
-                                (VlanDeviceConfig, BondDeviceConfig, VxlanDeviceConfig),
+                                (
+                                    VlanDeviceConfig,
+                                    BondDeviceConfig,
+                                    VxlanDeviceConfig,
+                                    DummyDeviceConfig,
+                                    GeneveDeviceConfig,
+                                    MacvlanDeviceConfig,
+                                    IpvlanDeviceConfig,
+                                ),
                             )
                         ),
                     )

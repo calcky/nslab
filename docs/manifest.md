@@ -11,14 +11,19 @@ topology
 │  └─ <node-name>
 │     ├─ kind: linux
 │     │  ├─ interfaces / devices / routes / rules / sysctls
-│     │  ├─ devices → <device-name> → type: vlan | vrf | bond | vxlan
+│     │  ├─ devices → <device-name> → type: vlan | vrf | bond | vxlan | dummy | geneve | macvlan | ipvlan
 │     │  └─ routing
 │     └─ kind: bridge
 │        ├─ interfaces / devices / routes / sysctls
-│        ├─ devices → <device-name> → type: vxlan
+│        ├─ devices → <device-name> → type: vxlan | geneve
 │        └─ bridge → ports → vlans
 └─ links
-   └─ endpoints / mtu / netem | qdisc
+   └─ <link>
+      ├─ endpoints / mtu
+      ├─ netem
+      │  └─ delay_ms / jitter_ms / loss_percent / rate
+      └─ qdisc
+         └─ kind: tbf | fq_codel
 ```
 
 ## Top-level fields
@@ -62,7 +67,8 @@ and `bridge`.
 
 Interface names contain 1 to 15 letters, digits, `_`, `.`, or `-`. Except for a bridge device
 name, every interface declared in `interfaces` must appear in a `links[].endpoints` entry.
-Namespace-local VLAN, VRF, bond, and VXLAN devices belong under `devices`, not `interfaces`.
+Namespace-local VLAN, VRF, bond, VXLAN, Geneve, dummy, macvlan, and ipvlan devices belong under
+`devices`, not `interfaces`.
 
 ##### `interfaces.<ifname>`
 
@@ -176,8 +182,8 @@ does not preserve its address through the netlink inventory used for determinist
 
 `devices` creates interfaces inside the Linux node after all veth endpoints have been moved
 into place. Device names follow the interface-name rules, cannot be `lo`, and cannot collide with
-a linked endpoint or an `interfaces` key. `type` is required and selects `vlan`, `vrf`, `bond`, or
-`vxlan`.
+a linked endpoint or an `interfaces` key. `type` is required and selects `vlan`, `vrf`, `bond`,
+`vxlan`, `dummy`, `geneve`, `macvlan`, or `ipvlan`.
 
 ###### `type: vlan`
 
@@ -216,6 +222,68 @@ The underlay `link` must be linked and contain the exact `local` address. The au
 subtracts 50 bytes for IPv4 or 70 bytes for IPv6. A standalone VXLAN has no bridge master, so it
 can be used as `routes[].dev`, as shown in the combined VXLAN example at
 `examples/vxlan/nslab.yaml`.
+
+###### `type: dummy`
+
+A dummy device is a namespace-local virtual interface with no physical peer. It is useful as a
+stable address or route target:
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `devices.<name>.type` | Yes | None | Must be `dummy` |
+| `devices.<name>.addresses` | No | `[]` | IPv4/IPv6 addresses assigned to the dummy device |
+| `devices.<name>.mtu` | No | `1500` | MTU in `576..9216` |
+
+###### `type: geneve`
+
+A Linux-node Geneve device is a static unicast tunnel that may carry addresses and routes. Its
+source address is selected by the route to `remote`; unlike VXLAN, the manifest does not declare a
+`local` field:
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `devices.<name>.type` | Yes | None | Must be `geneve` |
+| `devices.<name>.vni` | Yes | None | Geneve Network Identifier in `1..16777215`, unique on the node |
+| `devices.<name>.link` | Yes | None | Linked underlay interface on the same node |
+| `devices.<name>.remote` | Yes | None | Static unicast IPv4/IPv6 remote VTEP address |
+| `devices.<name>.dst_port` | No | `6081` | UDP destination port in `1..65535` |
+| `devices.<name>.addresses` | No | `[]` | IPv4/IPv6 addresses assigned to the Geneve device |
+| `devices.<name>.mtu` | No | Automatic | MTU in `576..9216`, bounded by underlay MTU minus encapsulation overhead |
+
+The underlay `link` must be a linked interface. IPv4 Geneve subtracts 50 bytes from the underlay
+MTU; IPv6 Geneve subtracts 70 bytes. The `remote` address must be unicast. A Geneve device on a
+Linux node has no bridge master and can be selected by `routes[].dev`.
+
+###### `type: macvlan`
+
+A macvlan device gives a linked parent interface an additional virtual interface and MAC address:
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `devices.<name>.type` | Yes | None | Must be `macvlan` |
+| `devices.<name>.link` | Yes | None | Linked parent interface on the same node |
+| `devices.<name>.mode` | No | `bridge` | `private`, `vepa`, `bridge`, `passthru`, or `source` |
+| `devices.<name>.addresses` | No | `[]` | IPv4/IPv6 addresses assigned to the macvlan device |
+| `devices.<name>.mtu` | No | Parent MTU | MTU in `576..9216` |
+
+The parent must be a linked interface, not another declared device. `bridge` mode permits sibling
+macvlan interfaces on the same parent to communicate; the other modes expose their corresponding
+kernel isolation behavior.
+
+###### `type: ipvlan`
+
+An ipvlan device shares its parent's lower-layer identity while providing a separate interface:
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `devices.<name>.type` | Yes | None | Must be `ipvlan` |
+| `devices.<name>.link` | Yes | None | Linked parent interface on the same node |
+| `devices.<name>.mode` | No | `l2` | `l2`, `l3`, or `l3s` |
+| `devices.<name>.addresses` | No | `[]` | IPv4/IPv6 addresses assigned to the ipvlan device |
+| `devices.<name>.mtu` | No | Parent MTU | MTU in `576..9216` |
+
+`l2` forwards at the Ethernet layer, while `l3` and `l3s` use IPvlan layer-3 forwarding variants.
+The parent must be a linked interface and cannot be another declared device.
 
 ###### `type: bond`
 
@@ -303,7 +371,7 @@ A bridge node creates a Linux bridge in its own namespace. It accepts the common
 
 | Node field | Required | Default | Description |
 | --- | --- | --- | --- |
-| `devices` | No | `{}` | Static VXLAN devices attached to this bridge |
+| `devices` | No | `{}` | Static VXLAN or Geneve devices attached to this bridge |
 | `bridge` | Yes | None | Linux bridge device and port configuration object |
 
 ```yaml
@@ -349,6 +417,26 @@ kernel installs a permanent all-zero-MAC FDB entry for the static remote. `bridg
 the VXLAN device to configure STP or VLAN behavior, but it cannot name a VXLAN underlay interface.
 Bridge-node VXLAN devices cannot declare `addresses`; use a Linux node for routed VXLAN.
 
+##### `devices.<name>` with `type: geneve`
+
+A bridge-node Geneve device creates a static unicast Layer 2 tunnel and automatically joins
+`bridge.name`. It uses the route-selected source address for the underlay, so it has no `local`
+field. The underlay interface remains outside the bridge:
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `type` | Yes | None | Must be `geneve` |
+| `vni` | Yes | None | Geneve Network Identifier in `1..16777215`, unique on the node |
+| `link` | Yes | None | Linked underlay interface on the same bridge node |
+| `remote` | Yes | None | Static unicast IPv4/IPv6 remote VTEP address |
+| `dst_port` | No | `6081` | UDP destination port in `1..65535` |
+| `mtu` | No | Automatic | Geneve MTU in `576..9216`, bounded by underlay MTU minus encapsulation overhead |
+
+The automatic MTU subtracts 50 bytes for an IPv4 underlay or 70 bytes for IPv6. A custom value
+cannot exceed that limit. Bridge-node Geneve devices cannot declare `addresses`; use a Linux node
+for routed Geneve. `bridge.ports` may name the Geneve device for STP or VLAN settings, but it may
+not name the underlay interface.
+
 ##### `bridge`
 
 | Field | Required | Default | Description |
@@ -357,7 +445,7 @@ Bridge-node VXLAN devices cannot declare `addresses`; use a Linux node for route
 | `stp` | Yes | None | Enable Linux bridge STP |
 | `vlan_filtering` | Yes | None | Enable VLAN-aware filtering |
 | `priority` | No | `null` | Bridge priority in `0..65535` |
-| `ports` | No | `{}` | Mapping from linked access or VXLAN port name to STP/VLAN settings |
+| `ports` | No | `{}` | Mapping from linked access, VXLAN, or Geneve port name to STP/VLAN settings |
 
 `bridge.name` cannot collide with a linked endpoint. To assign an IP address to the bridge
 itself, use the same `bridge.name` under the node's `interfaces` mapping.
@@ -371,7 +459,7 @@ itself, use the same `bridge.name` under the node's `interfaces` mapping.
 | `vlans` | No | `[]` | Port VLAN entries; requires `vlan_filtering: true` |
 
 A port configuration must contain at least one STP or VLAN setting, and the port must be a linked
-access interface or declared VXLAN device.
+access interface or declared VXLAN/Geneve device.
 
 Each `vlans[]` item contains:
 

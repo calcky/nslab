@@ -10,8 +10,12 @@ from nslab.errors import NslabError
 from nslab.planner import (
     BondDevicePlan,
     DevicePlan,
+    DummyDevicePlan,
     FqCodelPlan,
+    GeneveDevicePlan,
+    IpvlanDevicePlan,
     LinkPlan,
+    MacvlanDevicePlan,
     NetemPlan,
     NodePlan,
     QdiscPlan,
@@ -180,6 +184,36 @@ def _device_text(
             if device.min_links is not None:
                 options.append(f"min links {device.min_links}")
             text += f" · {' · '.join(options)}"
+        if include_addresses and device.addresses:
+            text += f" · {', '.join(str(address) for address in device.addresses)}"
+        return text
+    if isinstance(device, DummyDevicePlan):
+        text = f"{device.name}: dummy"
+        if detail and device.mtu is not None:
+            text += f" · mtu {device.mtu}"
+        if include_addresses and device.addresses:
+            text += f" · {', '.join(str(address) for address in device.addresses)}"
+        return text
+    if isinstance(device, GeneveDevicePlan):
+        text = f"{device.name}: geneve {device.vni} -> {device.remote}"
+        if detail:
+            text += f" · via {device.link} · udp {device.dst_port}"
+            if device.mtu is not None:
+                text += f" · mtu {device.mtu}"
+        if include_addresses and device.addresses:
+            text += f" · {', '.join(str(address) for address in device.addresses)}"
+        return text
+    if isinstance(device, MacvlanDevicePlan):
+        text = f"{device.name}: macvlan {device.mode} on {device.link}"
+        if detail and device.mtu is not None:
+            text += f" · mtu {device.mtu}"
+        if include_addresses and device.addresses:
+            text += f" · {', '.join(str(address) for address in device.addresses)}"
+        return text
+    if isinstance(device, IpvlanDevicePlan):
+        text = f"{device.name}: ipvlan {device.mode} on {device.link}"
+        if detail and device.mtu is not None:
+            text += f" · mtu {device.mtu}"
         if include_addresses and device.addresses:
             text += f" · {', '.join(str(address) for address in device.addresses)}"
         return text
@@ -589,7 +623,10 @@ def _vxlan_nodes(plan: TopologyPlan) -> set[str]:
     return {
         name
         for name, node in plan.nodes.items()
-        if any(isinstance(device, VxlanDevicePlan) for device in node.devices.values())
+        if any(
+            isinstance(device, (VxlanDevicePlan, GeneveDevicePlan))
+            for device in node.devices.values()
+        )
     }
 
 
@@ -713,6 +750,50 @@ def _node_document(node: NodePlan) -> dict[str, object]:
                 if device.min_links is not None:
                     bond_document["min_links"] = device.min_links
                 devices.append(bond_document)
+            elif isinstance(device, DummyDevicePlan):
+                dummy_document: dict[str, object] = {
+                    "mtu": device.mtu,
+                    "name": device.name,
+                    "type": "dummy",
+                }
+                if device.addresses:
+                    dummy_document["addresses"] = [str(address) for address in device.addresses]
+                devices.append(dummy_document)
+            elif isinstance(device, GeneveDevicePlan):
+                geneve_document: dict[str, object] = {
+                    "dst_port": device.dst_port,
+                    "link": device.link,
+                    "mtu": device.mtu,
+                    "name": device.name,
+                    "remote": str(device.remote),
+                    "type": "geneve",
+                    "vni": device.vni,
+                }
+                if device.addresses:
+                    geneve_document["addresses"] = [str(address) for address in device.addresses]
+                devices.append(geneve_document)
+            elif isinstance(device, MacvlanDevicePlan):
+                macvlan_document: dict[str, object] = {
+                    "link": device.link,
+                    "mode": device.mode,
+                    "mtu": device.mtu,
+                    "name": device.name,
+                    "type": "macvlan",
+                }
+                if device.addresses:
+                    macvlan_document["addresses"] = [str(address) for address in device.addresses]
+                devices.append(macvlan_document)
+            elif isinstance(device, IpvlanDevicePlan):
+                ipvlan_document: dict[str, object] = {
+                    "link": device.link,
+                    "mode": device.mode,
+                    "mtu": device.mtu,
+                    "name": device.name,
+                    "type": "ipvlan",
+                }
+                if device.addresses:
+                    ipvlan_document["addresses"] = [str(address) for address in device.addresses]
+                devices.append(ipvlan_document)
             else:
                 assert isinstance(device, VxlanDevicePlan)
                 vxlan_document: dict[str, object] = {

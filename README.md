@@ -10,7 +10,8 @@
 `nslab` 是一个面向 Linux network namespace 实验的声明式 CLI。使用严格校验的
 `nslab.yaml` 描述拓扑，然后通过统一的命令重复部署、检查、执行和销毁实验。
 
-支持 Linux namespace、veth、bridge、STP、VLAN 子接口、VXLAN、bond、VRF、IPv4/IPv6、
+支持 Linux namespace、veth、bridge、STP、VLAN 子接口、VXLAN、Geneve、bond、VRF、dummy、
+macvlan、ipvlan、IPv4/IPv6、
 静态路由、策略路由、netem、TBF、fq_codel，以及基于 FRRouting 的 OSPFv2/eBGP 和 XDP 实验。
 网络资源通过 pyroute2 管理，不依赖生命周期 shell hook。
 
@@ -103,6 +104,8 @@ sudo nslab destroy
 | [vlan](examples/vlan/README.md) | Linux 802.1Q VLAN 子接口与单臂路由 |
 | [bridge-stp](examples/bridge-stp/README.md) | STP 选举、路径选择与重收敛 |
 | [vxlan](examples/vxlan/README.md) | Bridge 二层 VXLAN 与独立三层 VXLAN |
+| [geneve](examples/geneve/README.md) | 静态单播二层 Geneve overlay |
+| [virtual-devices](examples/virtual-devices/README.md) | dummy、macvlan 与 ipvlan |
 | [bond-active-backup](examples/bond-active-backup/README.md) | Bond 主备切换与恢复 |
 | [bond-8023ad](examples/bond-8023ad/README.md) | LACP 聚合与多流哈希 |
 | [ipv4-forward](examples/ipv4-forward/README.md) | Linux IPv4 转发 |

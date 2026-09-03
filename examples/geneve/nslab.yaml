@@ -1,0 +1,51 @@
+version: 1
+name: geneve
+
+topology:
+  nodes:
+    h1:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.60.0.1/24]
+    vtep1:
+      kind: bridge
+      interfaces:
+        underlay0:
+          addresses: [192.0.2.1/30]
+      devices:
+        geneve100:
+          type: geneve
+          vni: 100
+          link: underlay0
+          remote: 192.0.2.2
+      bridge:
+        name: br0
+        stp: false
+        vlan_filtering: false
+    vtep2:
+      kind: bridge
+      interfaces:
+        underlay0:
+          addresses: [192.0.2.2/30]
+      devices:
+        geneve100:
+          type: geneve
+          vni: 100
+          link: underlay0
+          remote: 192.0.2.1
+      bridge:
+        name: br0
+        stp: false
+        vlan_filtering: false
+    h2:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.60.0.2/24]
+  links:
+    - endpoints: [h1:eth0, vtep1:access0]
+      mtu: 1450
+    - endpoints: [vtep1:underlay0, vtep2:underlay0]
+    - endpoints: [vtep2:access0, h2:eth0]
+      mtu: 1450
