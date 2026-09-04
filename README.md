@@ -12,7 +12,7 @@
 
 支持 Linux namespace、veth、bridge、bridge 端口隔离/学习/泛洪、STP、VLAN 子接口、VXLAN、Geneve、GRE、IPIP、bond、VRF、
 dummy、macvlan、ipvlan、IPv4/IPv6、
-固定 MAC、静态 ARP/NDP、Proxy ARP/NDP、静态路由、策略路由、netem、TBF、fq_codel，
+固定 MAC、静态 ARP/NDP、Proxy ARP/NDP、静态路由、策略路由、MTU/PMTU、netem、TBF、fq_codel，
 以及基于 FRRouting 的 OSPFv2/eBGP/PIM-SM 和 XDP 实验。
 网络资源通过 pyroute2 管理，不依赖生命周期 shell hook。
 
@@ -113,6 +113,7 @@ sudo nslab destroy
 | [bond-8023ad](examples/bond-8023ad/README.md) | LACP 聚合与多流哈希 |
 | [ipv4-forward](examples/ipv4-forward/README.md) | Linux IPv4 转发 |
 | [ipv6-forward](examples/ipv6-forward/README.md) | Linux IPv6 转发 |
+| [pmtu](examples/pmtu/README.md) | MTU、PMTU、IPv4 分片与 IPv6 Packet Too Big |
 | [neighbors](examples/neighbors/README.md) | 固定 MAC、静态 ARP/NDP 与 Proxy ARP/NDP |
 | [ecmp](examples/ecmp/README.md) | 静态等价多路径与逐流哈希 |
 | [vrf](examples/vrf/README.md) | VRF 路由域与重叠地址空间 |

@@ -46,6 +46,7 @@ type IPInterface = IPv4Interface | IPv6Interface
 type IPNetwork = IPv4Network | IPv6Network
 
 MAIN_ROUTE_TABLE = 254
+IPV6_MINIMUM_LINK_MTU = 1280
 _RESERVED_VRF_TABLES = frozenset({253, 254, 255})
 
 
@@ -1561,6 +1562,15 @@ class Topology(BaseModel):
                     raise ValueError(f"link endpoint references unknown node: {node_name!r}")
                 if endpoint in used_endpoints:
                     raise ValueError(f"link endpoint is used more than once: {endpoint!r}")
+                endpoint_config = self.nodes[node_name].interfaces.get(interface_name)
+                if (
+                    link.mtu < IPV6_MINIMUM_LINK_MTU
+                    and endpoint_config is not None
+                    and any(address.version == 6 for address in endpoint_config.addresses)
+                ):
+                    raise ValueError(
+                        f"IPv6 link MTU must be at least {IPV6_MINIMUM_LINK_MTU}: {endpoint!r}"
+                    )
 
                 used_endpoints.add(endpoint)
                 linked_interfaces[node_name].add(interface_name)

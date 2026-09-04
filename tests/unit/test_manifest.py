@@ -683,6 +683,19 @@ def test_rejects_mtu_outside_supported_range(
     _assert_invalid(tmp_path, manifest_data)
 
 
+def test_rejects_ipv6_endpoint_on_link_below_minimum_mtu(
+    tmp_path: Path, manifest_data: ManifestData
+) -> None:
+    manifest_data["topology"]["nodes"]["h1"]["interfaces"]["eth0"]["addresses"].append(
+        "2001:db8::1/64"
+    )
+    manifest_data["topology"]["links"][0]["mtu"] = 1279
+
+    error = _assert_invalid(tmp_path, manifest_data)
+
+    assert "IPv6 link MTU must be at least 1280: 'h1:eth0'" in json.dumps(error.details["issues"])
+
+
 def test_loads_link_netem_settings(manifest_data: ManifestData) -> None:
     manifest_data["topology"]["links"][0]["netem"] = {
         "delay_ms": 100,

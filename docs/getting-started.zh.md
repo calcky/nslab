@@ -15,6 +15,12 @@ sudo apt install -y iproute2 iputils-ping
 sudo apt install -y frr frr-pythontools
 ```
 
+`pmtu` 示例中的抓包和路径 MTU 探测还会使用两个可选工具：
+
+```bash
+sudo apt install -y tcpdump iputils-tracepath
+```
+
 所有创建、修改或删除网络资源的生命周期命令都需要 root。图形渲染和 manifest 校验
 不读取 live state，可以不使用 root 执行。
 

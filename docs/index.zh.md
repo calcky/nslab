@@ -35,7 +35,7 @@ no-op；保留 `nslab.yaml` 时，重复 `destroy` 也会成功。
 | [快速开始](getting-started.md) | 安装、权限、生命周期和故障恢复 |
 | [Manifest](manifest.md) | `nslab.yaml` 的字段、约束和完整片段 |
 | [CLI 参考](cli.md) | 命令、选项、输出格式和补全 |
-| [实验示例](examples/index.md) | bridge、VLAN、bond、VRF、转发、XDP、OSPF、BGP、PIM |
+| [实验示例](examples/index.md) | bridge、VLAN、bond、PMTU、VRF、XDP、OSPF、BGP、PIM |
 
 ## 设计边界
 

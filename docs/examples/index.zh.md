@@ -52,6 +52,7 @@ sudo nslab destroy
 | --- | --- |
 | [IPv4 转发](ipv4-forward.md) | IPv4 静态路由和 Linux 转发路径 |
 | [IPv6 转发](ipv6-forward.md) | IPv6 默认路由、DAD 和 Linux 转发路径 |
+| [MTU 与 PMTU](pmtu.md) | IPv4 分片、PMTU 学习与 IPv6 Packet Too Big |
 | [邻居表](neighbors.md) | 固定 MAC、静态 ARP/NDP 与 Proxy ARP/NDP |
 | [ECMP](ecmp.md) | 静态等价下一跳、权重与逐流哈希 |
 

@@ -116,6 +116,7 @@ _RT_TABLE_MAIN = 254
 _RTN_UNICAST = 1
 _RTPROT_KERNEL = 2
 _RT_SCOPE_LINK = 253
+_RTM_F_CLONED = 0x200
 _FR_ACT_TO_TBL = 1
 _FIB_RULE_INVERT = 2
 _RULE_ACTION_TO_NETLINK = {
@@ -2887,6 +2888,15 @@ class Pyroute2Backend:
                 continue
 
             try:
+                route_flags = int(_value(message, "flags", 0))
+            except (TypeError, ValueError):
+                if dynamic_route:
+                    continue
+                raise _unsupported_inventory_route(namespace, "route_flags") from None
+            if route_flags & _RTM_F_CLONED:
+                continue
+
+            try:
                 route_type = int(_value(message, "type", _RTN_UNICAST))
             except (TypeError, ValueError):
                 if dynamic_route:
@@ -2985,12 +2995,6 @@ class Pyroute2Backend:
                 if dynamic_route:
                     continue
                 raise _unsupported_inventory_route(namespace, "tos")
-            try:
-                route_flags = int(_value(message, "flags", 0))
-            except (TypeError, ValueError):
-                if dynamic_route:
-                    continue
-                raise _unsupported_inventory_route(namespace, "route_flags") from None
             if route_flags != 0:
                 if dynamic_route:
                     continue

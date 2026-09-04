@@ -15,6 +15,12 @@ Install FRRouting as well when running the `ospf`, `bgp`, or `pim` examples:
 sudo apt install -y frr frr-pythontools
 ```
 
+The packet captures and path-MTU probes in the `pmtu` example use two optional tools:
+
+```bash
+sudo apt install -y tcpdump iputils-tracepath
+```
+
 All lifecycle commands that create, change, or remove network resources require root. Graph
 rendering and manifest validation do not read live state and can run without root.
 

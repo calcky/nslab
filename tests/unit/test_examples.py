@@ -240,6 +240,33 @@ def test_ipv6_forward_example_compiles_router_and_default_routes() -> None:
     )
 
 
+def test_pmtu_example_has_dual_stack_bottleneck_link() -> None:
+    plan = compile_plan(load_manifest(_EXAMPLES / "pmtu" / "nslab.yaml"))
+
+    assert tuple(plan.nodes) == ("h1", "r1", "r2", "h2")
+    assert tuple(link.mtu for link in plan.links) == (1500, 1280, 1500)
+    assert plan.nodes["r1"].sysctls == {
+        "net.ipv4.ip_forward": 1,
+        "net.ipv6.conf.all.forwarding": 1,
+    }
+    assert plan.nodes["r2"].sysctls == {
+        "net.ipv4.ip_forward": 1,
+        "net.ipv6.conf.all.forwarding": 1,
+    }
+    assert plan.nodes["h1"].routes == (
+        RoutePlan(
+            dst=IPv4Network("198.51.100.0/24"),
+            via=IPv4Address("192.0.2.1"),
+            dev="eth0",
+        ),
+        RoutePlan(
+            dst=IPv6Network("2001:db8:3::/64"),
+            via=IPv6Address("2001:db8:1::1"),
+            dev="eth0",
+        ),
+    )
+
+
 def test_ecmp_example_compiles_bidirectional_equal_cost_routes() -> None:
     plan = compile_plan(load_manifest(_EXAMPLES / "ecmp" / "nslab.yaml"))
 

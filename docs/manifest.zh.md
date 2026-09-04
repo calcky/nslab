@@ -602,7 +602,7 @@ Bridge 节点的 Geneve 设备不能声明 `addresses`；三层 Geneve 请使用
 | --- | --- | --- | --- |
 | `kind` | 否 | `veth` | 链路类型，目前只能是 `veth` |
 | `endpoints` | 是 | 无 | 恰好两个 `node:interface` 字符串 |
-| `mtu` | 否 | `1500` | 两端 MTU，范围 `576..9216` |
+| `mtu` | 否 | `1500` | 两端 MTU，范围 `576..9216`；端点承载 IPv6 时不得小于 `1280` |
 | `netem` | 否 | `null` | 同时应用到两端 egress 的 netem 条件；不能与 `qdisc` 同时使用 |
 | `qdisc` | 否 | `null` | 同时应用到两端 egress 的根 qdisc，目前支持 `tbf` 和 `fq_codel` |
 

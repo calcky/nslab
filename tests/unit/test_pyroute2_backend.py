@@ -3523,6 +3523,37 @@ def test_inventory_accepts_verified_kernel_connected_preferred_source(
     )
 
 
+def test_inventory_ignores_cloned_pmtu_cache_routes() -> None:
+    configured = _route_message(
+        "198.51.100.0",
+        24,
+        10,
+        gateway="192.0.2.1",
+    )
+    pmtu_cache = _route_message(
+        "198.51.100.2",
+        32,
+        10,
+        gateway="192.0.2.1",
+        flags=0x200,
+        extra_attrs=(
+            ("RTA_METRICS", {"attrs": [("RTAX_MTU", 1280)]}),
+            ("RTA_CACHEINFO", {"expires": 60000}),
+            ("RTA_EXPIRES", 60000),
+            ("RTA_UID", 0),
+        ),
+    )
+
+    routes = Pyroute2Backend._inventory_routes(
+        (configured, pmtu_cache),
+        {10: "eth0"},
+        {},
+        "pmtu-namespace",
+    )
+
+    assert routes == (RoutePlan(IPv4Network("198.51.100.0/24"), IPv4Address("192.0.2.1"), "eth0"),)
+
+
 @pytest.mark.parametrize(
     ("route", "reason"),
     [

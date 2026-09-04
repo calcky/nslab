@@ -52,6 +52,7 @@ sudo nslab destroy
 | --- | --- |
 | [IPv4 forwarding](ipv4-forward.md) | IPv4 static routes and the Linux forwarding path |
 | [IPv6 forwarding](ipv6-forward.md) | IPv6 default routes, DAD, and the Linux forwarding path |
+| [MTU and PMTU](pmtu.md) | IPv4 fragmentation, PMTU learning, and IPv6 Packet Too Big |
 | [Neighbor tables](neighbors.md) | Fixed MAC addresses, static ARP/NDP, and proxying |
 | [ECMP](ecmp.md) | Static equal-cost next hops, weights, and per-flow hashing |
 
