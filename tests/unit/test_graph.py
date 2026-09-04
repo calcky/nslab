@@ -256,6 +256,37 @@ def test_terminal_graph_renders_netem_only_with_detail_and_json_keeps_structure(
                 "ecn": True,
             },
         ),
+        (
+            {
+                "kind": "htb",
+                "rate": "20mbit",
+                "leaf": {"kind": "fq_codel"},
+            },
+            "qdisc htb rate 20mbit · leaf fq_codel target 5ms",
+            {
+                "kind": "htb",
+                "rate": "20mbit",
+                "leaf": {
+                    "kind": "fq_codel",
+                    "target_ms": 5,
+                    "interval_ms": 100,
+                    "limit": 10240,
+                    "ecn": True,
+                },
+            },
+        ),
+        (
+            {"kind": "cake", "bandwidth": "20mbit"},
+            "qdisc cake bandwidth 20mbit · flows · besteffort · rtt 100ms · nat off",
+            {
+                "kind": "cake",
+                "bandwidth": "20mbit",
+                "flow_mode": "flows",
+                "diffserv_mode": "besteffort",
+                "rtt_ms": 100,
+                "nat": False,
+            },
+        ),
     ],
 )
 def test_terminal_graph_renders_link_qdisc(

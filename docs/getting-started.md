@@ -21,6 +21,15 @@ The packet captures and path-MTU probes in the `pmtu` example use two optional t
 sudo apt install -y tcpdump iputils-tracepath
 ```
 
+The concurrent-flow steps in the `qdisc` and `cake` examples use `iperf3`:
+
+```bash
+sudo apt install -y iperf3
+```
+
+The CAKE example also requires a kernel that provides `sch_cake`. Check or load it with
+`sudo modprobe sch_cake`; nslab reports `QDISC_UNSUPPORTED` when the qdisc is unavailable.
+
 All lifecycle commands that create, change, or remove network resources require root. Graph
 rendering and manifest validation do not read live state and can run without root.
 

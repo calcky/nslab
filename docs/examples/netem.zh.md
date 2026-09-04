@@ -110,7 +110,8 @@ qdisc:
 ```
 
 修改后运行 `sudo nslab redeploy`，再用 `sudo nslab exec --node h1 -- tc -s qdisc show dev eth0`
-查看参数。三种配置的完整并行实验见 [qdisc 示例](qdisc.md)。
+查看参数。四种配置的完整并行实验见 [qdisc 示例](qdisc.md)；CAKE 需要可选的 `sch_cake`
+内核模块，因此单独放在 [CAKE 示例](cake.md) 中。
 
 ## 清理
 

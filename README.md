@@ -12,7 +12,7 @@
 
 支持 Linux namespace、veth、bridge、bridge 端口隔离/学习/泛洪、STP、VLAN 子接口、VXLAN、Geneve、GRE、IPIP、bond、VRF、
 dummy、macvlan、ipvlan、IPv4/IPv6、
-固定 MAC、静态 ARP/NDP、Proxy ARP/NDP、静态路由、策略路由、MTU/PMTU、netem、TBF、fq_codel，
+固定 MAC、静态 ARP/NDP、Proxy ARP/NDP、静态路由、策略路由、MTU/PMTU、netem、TBF、fq_codel、HTB 和 CAKE，
 以及基于 FRRouting 的 OSPFv2/eBGP/PIM-SM 和 XDP 实验。
 网络资源通过 pyroute2 管理，不依赖生命周期 shell hook。
 
@@ -20,7 +20,7 @@ dummy、macvlan、ipvlan、IPv4/IPv6、
 
 运行环境为 x86_64 Linux，推荐 Ubuntu 22.04 或更高版本。网络拓扑操作需要 root；
 OSPF/BGP/PIM 示例还需要 `frr` 与 `frr-pythontools`；XDP 示例需要 Clang、libbpf 和
-bpftool。
+bpftool；CAKE 示例要求内核提供 `sch_cake`。
 
 从源码运行：
 
@@ -119,7 +119,8 @@ sudo nslab destroy
 | [vrf](examples/vrf/README.md) | VRF 路由域与重叠地址空间 |
 | [policy-routing](examples/policy-routing/README.md) | RPDB rule、多路由表和 fwmark 选路 |
 | [netem](examples/netem/README.md) | 延迟、抖动、丢包与 egress 限速 |
-| [qdisc](examples/qdisc/README.md) | netem rate、TBF 和 fq_codel 根 qdisc |
+| [qdisc](examples/qdisc/README.md) | netem、TBF、fq_codel 与 HTB + fq_codel |
+| [cake](examples/cake/README.md) | CAKE 整形、逐流公平与 AQM |
 | [xdp](examples/xdp/README.md) | `XDP_PASS`、`XDP_DROP`、`XDP_TX` 与 `XDP_REDIRECT` |
 | [ospf](examples/ospf/README.md) | OSPFv2 邻居与故障收敛 |
 | [bgp](examples/bgp/README.md) | eBGP 与 AS_PATH 传播 |

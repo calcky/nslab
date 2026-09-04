@@ -23,7 +23,8 @@ topology
       ├─ netem
       │  └─ delay_ms / jitter_ms / loss_percent / rate
       └─ qdisc
-         └─ kind: tbf | fq_codel
+         ├─ kind: tbf | fq_codel | htb | cake
+         └─ leaf → kind: fq_codel（仅 htb）
 ```
 
 ## 顶层字段
@@ -604,7 +605,7 @@ Bridge 节点的 Geneve 设备不能声明 `addresses`；三层 Geneve 请使用
 | `endpoints` | 是 | 无 | 恰好两个 `node:interface` 字符串 |
 | `mtu` | 否 | `1500` | 两端 MTU，范围 `576..9216`；端点承载 IPv6 时不得小于 `1280` |
 | `netem` | 否 | `null` | 同时应用到两端 egress 的 netem 条件；不能与 `qdisc` 同时使用 |
-| `qdisc` | 否 | `null` | 同时应用到两端 egress 的根 qdisc，目前支持 `tbf` 和 `fq_codel` |
+| `qdisc` | 否 | `null` | 同时应用到两端 egress 的 qdisc，支持 `tbf`、`fq_codel`、`htb` 和 `cake` |
 
 ```yaml
 links:
@@ -663,6 +664,53 @@ qdisc:
 
 `target_ms` 和 `interval_ms` 是队列延迟参数，`limit` 是报文数上限，`ecn` 控制是否启用
 ECN 标记。
+
+使用 HTB 做总带宽整形、fq_codel 做 leaf：
+
+```yaml
+qdisc:
+  kind: htb
+  rate: 20mbit
+  leaf:
+    kind: fq_codel
+    target_ms: 5
+    interval_ms: 100
+    limit: 10240
+    ecn: true
+```
+
+| 字段 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `kind` | 是 | 无 | 必须是 `htb` |
+| `rate` | 是 | 无 | 单个 HTB class 的总速率 |
+| `leaf` | 是 | 无 | 挂在该 class 下的 fq_codel 配置 |
+
+nslab 创建固定层级：HTB 根 `1:`、class `1:1` 和 fq_codel leaf `10:`。报文进入默认 class，
+因此 `rate` 限制 egress 总带宽，fq_codel 负责区分 flow 和控制队列延迟。
+
+使用 CAKE 做整形和队列管理：
+
+```yaml
+qdisc:
+  kind: cake
+  bandwidth: 20mbit
+  flow_mode: flows
+  diffserv_mode: besteffort
+  rtt_ms: 100
+  nat: false
+```
+
+| 字段 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `kind` | 是 | 无 | 必须是 `cake` |
+| `bandwidth` | 是 | 无 | 总整形带宽 |
+| `flow_mode` | 否 | `flows` | `srchost`、`dsthost`、`hosts`、`flows`、`dual-srchost`、`dual-dsthost` 或 `triple-isolate` |
+| `diffserv_mode` | 否 | `besteffort` | `diffserv3`、`diffserv4`、`diffserv8`、`besteffort` 或 `precedence` |
+| `rtt_ms` | 否 | `100` | CAKE AQM 使用的 RTT 假设，范围 `1..60000` ms |
+| `nat` | 否 | `false` | 隔离 host 和 flow 时是否识别 NAT 内侧地址 |
+
+CAKE 需要内核支持 `sch_cake`。不包含该 qdisc 的主机不能部署声明了 CAKE 的拓扑；独立的
+CAKE 示例可用于检查支持情况，不会影响其他实验。
 
 ## Manifest 边界
 

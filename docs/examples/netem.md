@@ -110,8 +110,9 @@ qdisc:
 ```
 
 Run `sudo nslab redeploy` after editing, then inspect the result with `sudo nslab exec --node h1
--- tc -s qdisc show dev eth0`. The [qdisc example](qdisc.md) runs all three configurations in
-parallel.
+-- tc -s qdisc show dev eth0`. The [qdisc example](qdisc.md) runs its four configurations in
+parallel. CAKE is covered separately in the [CAKE example](cake.md), because it requires the
+optional `sch_cake` kernel module.
 
 ## Clean up
 

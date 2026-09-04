@@ -23,7 +23,8 @@ topology
       ├─ netem
       │  └─ delay_ms / jitter_ms / loss_percent / rate
       └─ qdisc
-         └─ kind: tbf | fq_codel
+         ├─ kind: tbf | fq_codel | htb | cake
+         └─ leaf → kind: fq_codel (htb only)
 ```
 
 ## Top-level fields
@@ -623,7 +624,7 @@ topology. Node and interface references must be valid and cannot use `lo`.
 | `endpoints` | Yes | None | Exactly two `node:interface` strings |
 | `mtu` | No | `1500` | MTU on both ends in `576..9216`; at least `1280` when an endpoint carries IPv6 |
 | `netem` | No | `null` | Netem conditions applied to egress at both ends; mutually exclusive with `qdisc` |
-| `qdisc` | No | `null` | Root traffic-control qdisc applied to egress at both ends; currently `tbf` or `fq_codel` |
+| `qdisc` | No | `null` | Traffic-control qdisc applied to egress at both ends; `tbf`, `fq_codel`, `htb`, or `cake` |
 
 ```yaml
 links:
@@ -682,6 +683,54 @@ qdisc:
 
 `target_ms` and `interval_ms` are queue-delay parameters, `limit` is the packet limit, and
 `ecn` enables ECN marking.
+
+For aggregate HTB shaping with an fq_codel leaf:
+
+```yaml
+qdisc:
+  kind: htb
+  rate: 20mbit
+  leaf:
+    kind: fq_codel
+    target_ms: 5
+    interval_ms: 100
+    limit: 10240
+    ecn: true
+```
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `kind` | Yes | None | Must be `htb` |
+| `rate` | Yes | None | Aggregate rate of the single HTB class |
+| `leaf` | Yes | None | fq_codel configuration attached below that class |
+
+nslab creates a fixed hierarchy: root HTB `1:`, class `1:1`, and fq_codel leaf `10:`. Packets
+enter the default class, so `rate` limits aggregate egress while fq_codel separates flows and
+controls queue delay.
+
+For CAKE shaping and queue management:
+
+```yaml
+qdisc:
+  kind: cake
+  bandwidth: 20mbit
+  flow_mode: flows
+  diffserv_mode: besteffort
+  rtt_ms: 100
+  nat: false
+```
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `kind` | Yes | None | Must be `cake` |
+| `bandwidth` | Yes | None | Aggregate shaper bandwidth |
+| `flow_mode` | No | `flows` | `srchost`, `dsthost`, `hosts`, `flows`, `dual-srchost`, `dual-dsthost`, or `triple-isolate` |
+| `diffserv_mode` | No | `besteffort` | `diffserv3`, `diffserv4`, `diffserv8`, `besteffort`, or `precedence` |
+| `rtt_ms` | No | `100` | RTT assumption in `1..60000` ms used by CAKE's AQM |
+| `nat` | No | `false` | Consider addresses behind NAT when isolating hosts and flows |
+
+CAKE requires kernel support for `sch_cake`. A host without that qdisc cannot deploy a topology
+that declares it; use the separate CAKE example to check support without affecting other labs.
 
 ## Manifest boundary
 

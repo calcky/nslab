@@ -1,7 +1,9 @@
 # Linux qdisc lab
 
-This lab puts three traffic-control configurations on three independent point-to-point links:
-netem with a rate, TBF, and fq_codel. Each qdisc is installed at egress on both ends of its link.
+This lab puts four traffic-control configurations on independent point-to-point links: netem
+with a rate, TBF, fq_codel, and HTB with an fq_codel leaf. They compare link conditions, simple
+shaping, standalone fair queueing, and multi-flow fairness under one aggregate rate. Each qdisc
+is installed at egress on both ends of its link. The concurrent-flow exercise requires `iperf3`.
 
 ## Graph
 
@@ -17,9 +19,12 @@ flowchart LR
     n3["h4\nlinux"]
     n4["h5\nlinux"]
     n5["h6\nlinux"]
+    n6["h7\nlinux"]
+    n7["h8\nlinux"]
     n0 -- "eth0 <-> eth0" --- n1
     n2 -- "eth0 <-> eth0" --- n3
     n4 -- "eth0 <-> eth0" --- n5
+    n6 -- "eth0 <-> eth0" --- n7
 ```
 
 ## Run
@@ -39,6 +44,8 @@ h3    linux  matching  nslab-qdisc-h3-...
 h4    linux  matching  nslab-qdisc-h4-...
 h5    linux  matching  nslab-qdisc-h5-...
 h6    linux  matching  nslab-qdisc-h6-...
+h7    linux  matching  nslab-qdisc-h7-...
+h8    linux  matching  nslab-qdisc-h8-...
 ```
 
 ## Observe netem + rate
@@ -91,7 +98,28 @@ PING 10.60.3.2 (10.60.3.2) 56(84) bytes of data.
 5 packets transmitted, 5 received, 0% packet loss
 ```
 
-Each link has the same qdisc at both ends; replace `h1`, `h3`, or `h5` with its peer to inspect
+## Observe HTB + fq_codel
+
+The `h7`/`h8` link uses one 20mbit HTB class for aggregate shaping and attaches fq_codel below
+that class. Start two TCP flows together; at roughly 20 Mbit/s aggregate throughput, each flow
+normally receives about half of the available bandwidth:
+
+```console
+$ sudo nslab exec --node h8 -- sh -c 'iperf3 -s -D -p 5201 && iperf3 -s -D -p 5202 && echo servers-ready'
+servers-ready
+
+$ sudo nslab exec --node h7 -- sh -c 'iperf3 -c 10.60.4.2 -p 5201 -t 10 > /tmp/flow1 & iperf3 -c 10.60.4.2 -p 5202 -t 10 > /tmp/flow2 & wait; grep receiver /tmp/flow1 /tmp/flow2'
+/tmp/flow1:[  5]   0.00-10.01 sec  11.5 MBytes  9.64 Mbits/sec  receiver
+/tmp/flow2:[  5]   0.00-10.01 sec  11.2 MBytes  9.38 Mbits/sec  receiver
+
+$ sudo nslab exec --node h7 -- tc -s -d qdisc show dev eth0
+qdisc htb 1: root ... default 0x1 ...
+ Sent ... bytes ... pkt (dropped ..., overlimits ...)
+qdisc fq_codel 10: parent 1:1 limit 10240p flows 1024 quantum 1514 target 5ms interval 100ms ecn
+ Sent ... bytes ... pkt (dropped ..., overlimits ...)
+```
+
+Each link has the same qdisc at both ends; replace `h1`, `h3`, `h5`, or `h7` with its peer to inspect
 the reverse direction. `netem` and `qdisc` are mutually exclusive, so a link selects one or the
 other.
 

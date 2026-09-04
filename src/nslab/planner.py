@@ -23,10 +23,12 @@ from nslab.manifest import (
     BgpConfig,
     BondDeviceConfig,
     BridgeNode,
+    CakeConfig,
     DummyDeviceConfig,
     FqCodelConfig,
     GeneveDeviceConfig,
     GreDeviceConfig,
+    HtbConfig,
     InterfaceConfig,
     IpipDeviceConfig,
     IpvlanDeviceConfig,
@@ -362,7 +364,22 @@ class FqCodelPlan:
     ecn: bool
 
 
-type QdiscPlan = TbfPlan | FqCodelPlan
+@dataclass(frozen=True, slots=True)
+class HtbPlan:
+    rate: str
+    leaf: FqCodelPlan
+
+
+@dataclass(frozen=True, slots=True)
+class CakePlan:
+    bandwidth: str
+    flow_mode: str
+    diffserv_mode: str
+    rtt_ms: int
+    nat: bool
+
+
+type QdiscPlan = TbfPlan | FqCodelPlan | HtbPlan | CakePlan
 
 
 @dataclass(frozen=True, slots=True)
@@ -958,7 +975,21 @@ def _compile_qdisc(config: QdiscConfig) -> QdiscPlan:
             burst_bytes=config.burst,
             latency_ms=config.latency_ms,
         )
-    assert isinstance(config, FqCodelConfig)
+    if isinstance(config, FqCodelConfig):
+        return _compile_fq_codel(config)
+    if isinstance(config, HtbConfig):
+        return HtbPlan(rate=config.rate, leaf=_compile_fq_codel(config.leaf))
+    assert isinstance(config, CakeConfig)
+    return CakePlan(
+        bandwidth=config.bandwidth,
+        flow_mode=config.flow_mode,
+        diffserv_mode=config.diffserv_mode,
+        rtt_ms=config.rtt_ms,
+        nat=config.nat,
+    )
+
+
+def _compile_fq_codel(config: FqCodelConfig) -> FqCodelPlan:
     return FqCodelPlan(
         target_ms=config.target_ms,
         interval_ms=config.interval_ms,

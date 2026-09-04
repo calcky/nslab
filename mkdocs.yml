@@ -76,6 +76,7 @@ plugins:
             Bond 802.3ad: Bond 802.3ad
             Linux VRF: Linux VRF
             Policy routing: 策略路由
+            CAKE: CAKE
             XDP receive and transmit: XDP 收发包
             VXLAN: 二层与三层 VXLAN
             Geneve: Geneve 二层 overlay
@@ -148,6 +149,7 @@ nav:
       - Link conditions:
           - netem: examples/netem.md
           - qdisc: examples/qdisc.md
+          - CAKE: examples/cake.md
       - Packet processing:
           - XDP receive and transmit: examples/xdp.md
       - Dynamic routing:

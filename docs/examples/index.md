@@ -68,7 +68,8 @@ sudo nslab destroy
 | Example | Focus |
 | --- | --- |
 | [netem](netem.md) | Bidirectional delay, jitter, random loss, and qdisc statistics |
-| [qdisc](qdisc.md) | netem rate, token-bucket shaping, and fq_codel |
+| [qdisc](qdisc.md) | netem, TBF, fq_codel, and HTB with an fq_codel leaf |
+| [CAKE](cake.md) | Integrated shaping, per-flow fairness, and AQM |
 
 ## Packet processing
 
@@ -88,4 +89,5 @@ sudo nslab destroy
 
     `graph` does not require root. Creating namespaces, bridges, veth pairs, or qdiscs does.
     The OSPF, BGP, and PIM pages also require the system `frr` and `frr-pythontools` packages. The XDP
-    page requires Clang, libbpf headers, and bpftool.
+    page requires Clang, libbpf headers, and bpftool. The CAKE page requires kernel support for
+    `sch_cake`.

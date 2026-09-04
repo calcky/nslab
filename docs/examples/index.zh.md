@@ -68,7 +68,8 @@ sudo nslab destroy
 | 示例 | 学习内容 |
 | --- | --- |
 | [netem](netem.md) | 双向延迟、抖动、随机丢包和 qdisc 统计 |
-| [qdisc](qdisc.md) | netem 速率、令牌桶整形和 fq_codel |
+| [qdisc](qdisc.md) | netem、TBF、fq_codel 与 HTB + fq_codel |
+| [CAKE](cake.md) | 一体化整形、逐流公平和 AQM |
 
 ## 数据包处理
 
@@ -88,4 +89,4 @@ sudo nslab destroy
 
     `graph` 不需要 root。创建 namespace、bridge、veth 或 qdisc 需要 root。OSPF/BGP/PIM
     页面还需要系统安装 `frr` 和 `frr-pythontools`。XDP 页面需要 Clang、libbpf
-    头文件和 bpftool。
+    头文件和 bpftool。CAKE 页面需要内核支持 `sch_cake`。

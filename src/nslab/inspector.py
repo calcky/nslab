@@ -19,10 +19,12 @@ from nslab.errors import NslabError
 from nslab.planner import (
     BondDevicePlan,
     BridgeVlanPlan,
+    CakePlan,
     DummyDevicePlan,
     FqCodelPlan,
     GeneveDevicePlan,
     GreDevicePlan,
+    HtbPlan,
     IPInterface,
     IpipDevicePlan,
     IpvlanDevicePlan,
@@ -526,7 +528,19 @@ def _qdisc_string(qdisc: QdiscPlan | None) -> str | None:
         return None
     if isinstance(qdisc, TbfPlan):
         return f"tbf rate {qdisc.rate} burst {qdisc.burst_bytes}B latency {qdisc.latency_ms}ms"
-    assert isinstance(qdisc, FqCodelPlan)
+    if isinstance(qdisc, FqCodelPlan):
+        return _fq_codel_string(qdisc)
+    if isinstance(qdisc, HtbPlan):
+        return f"htb rate {qdisc.rate} leaf {_fq_codel_string(qdisc.leaf)}"
+    assert isinstance(qdisc, CakePlan)
+    return (
+        f"cake bandwidth {qdisc.bandwidth} flow-mode {qdisc.flow_mode} "
+        f"diffserv {qdisc.diffserv_mode} rtt {qdisc.rtt_ms}ms "
+        f"nat {'on' if qdisc.nat else 'off'}"
+    )
+
+
+def _fq_codel_string(qdisc: FqCodelPlan) -> str:
     return (
         f"fq_codel target {qdisc.target_ms}ms interval {qdisc.interval_ms}ms "
         f"limit {qdisc.limit} ecn {'on' if qdisc.ecn else 'off'}"

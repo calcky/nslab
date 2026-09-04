@@ -9,11 +9,13 @@ from types import MappingProxyType
 from nslab.errors import NslabError
 from nslab.planner import (
     BondDevicePlan,
+    CakePlan,
     DevicePlan,
     DummyDevicePlan,
     FqCodelPlan,
     GeneveDevicePlan,
     GreDevicePlan,
+    HtbPlan,
     IpipDevicePlan,
     IpvlanDevicePlan,
     LinkPlan,
@@ -155,7 +157,18 @@ def _netem_text(netem: NetemPlan) -> str:
 def _qdisc_text(qdisc: QdiscPlan) -> str:
     if isinstance(qdisc, TbfPlan):
         return f"tbf rate {qdisc.rate} · burst {qdisc.burst_bytes}B · latency {qdisc.latency_ms}ms"
-    assert isinstance(qdisc, FqCodelPlan)
+    if isinstance(qdisc, FqCodelPlan):
+        return _fq_codel_text(qdisc)
+    if isinstance(qdisc, HtbPlan):
+        return f"htb rate {qdisc.rate} · leaf {_fq_codel_text(qdisc.leaf)}"
+    assert isinstance(qdisc, CakePlan)
+    return (
+        f"cake bandwidth {qdisc.bandwidth} · {qdisc.flow_mode} · {qdisc.diffserv_mode}"
+        f" · rtt {qdisc.rtt_ms}ms · nat {'on' if qdisc.nat else 'off'}"
+    )
+
+
+def _fq_codel_text(qdisc: FqCodelPlan) -> str:
     return (
         f"fq_codel target {qdisc.target_ms}ms · interval {qdisc.interval_ms}ms"
         f" · limit {qdisc.limit} · ecn {'on' if qdisc.ecn else 'off'}"
@@ -908,14 +921,35 @@ def _link_document(link: LinkPlan) -> dict[str, object]:
                 "latency_ms": link.qdisc.latency_ms,
                 "rate": link.qdisc.rate,
             }
-        else:
-            assert isinstance(link.qdisc, FqCodelPlan)
+        elif isinstance(link.qdisc, FqCodelPlan):
             document["qdisc"] = {
                 "ecn": link.qdisc.ecn,
                 "interval_ms": link.qdisc.interval_ms,
                 "kind": "fq_codel",
                 "limit": link.qdisc.limit,
                 "target_ms": link.qdisc.target_ms,
+            }
+        elif isinstance(link.qdisc, HtbPlan):
+            document["qdisc"] = {
+                "kind": "htb",
+                "leaf": {
+                    "ecn": link.qdisc.leaf.ecn,
+                    "interval_ms": link.qdisc.leaf.interval_ms,
+                    "kind": "fq_codel",
+                    "limit": link.qdisc.leaf.limit,
+                    "target_ms": link.qdisc.leaf.target_ms,
+                },
+                "rate": link.qdisc.rate,
+            }
+        else:
+            assert isinstance(link.qdisc, CakePlan)
+            document["qdisc"] = {
+                "bandwidth": link.qdisc.bandwidth,
+                "diffserv_mode": link.qdisc.diffserv_mode,
+                "flow_mode": link.qdisc.flow_mode,
+                "kind": "cake",
+                "nat": link.qdisc.nat,
+                "rtt_ms": link.qdisc.rtt_ms,
             }
     return document
 

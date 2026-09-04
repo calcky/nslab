@@ -21,6 +21,15 @@ sudo apt install -y frr frr-pythontools
 sudo apt install -y tcpdump iputils-tracepath
 ```
 
+`qdisc` 和 `cake` 示例中的并发流步骤使用 `iperf3`：
+
+```bash
+sudo apt install -y iperf3
+```
+
+CAKE 示例还要求内核提供 `sch_cake`。可用 `sudo modprobe sch_cake` 检查或加载；该 qdisc
+不可用时，nslab 会报告 `QDISC_UNSUPPORTED`。
+
 所有创建、修改或删除网络资源的生命周期命令都需要 root。图形渲染和 manifest 校验
 不读取 live state，可以不使用 root 执行。
 

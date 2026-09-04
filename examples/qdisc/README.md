@@ -1,7 +1,8 @@
 # Linux qdisc 实验
 
-这个实验把三条独立的点到点链路分别配置为 netem（带 `rate`）、TBF 和 fq_codel，便于
-比较延迟/丢包、令牌桶整形以及公平队列。每个 qdisc 都会安装在链路两端的 egress。
+这个实验把四条独立的点到点链路分别配置为 netem（带 `rate`）、TBF、fq_codel 以及
+HTB + fq_codel，便于比较链路条件、简单整形、独立公平队列和“总带宽 + 多流公平”。
+每个 qdisc 都会安装在链路两端的 egress。并发流实验需要安装 `iperf3`。
 
 ## 拓扑图
 
@@ -17,9 +18,12 @@ flowchart LR
     n3["h4\nlinux"]
     n4["h5\nlinux"]
     n5["h6\nlinux"]
+    n6["h7\nlinux"]
+    n7["h8\nlinux"]
     n0 -- "eth0 <-> eth0" --- n1
     n2 -- "eth0 <-> eth0" --- n3
     n4 -- "eth0 <-> eth0" --- n5
+    n6 -- "eth0 <-> eth0" --- n7
 ```
 
 ## 运行
@@ -39,6 +43,8 @@ h3    linux  matching  nslab-qdisc-h3-...
 h4    linux  matching  nslab-qdisc-h4-...
 h5    linux  matching  nslab-qdisc-h5-...
 h6    linux  matching  nslab-qdisc-h6-...
+h7    linux  matching  nslab-qdisc-h7-...
+h8    linux  matching  nslab-qdisc-h8-...
 ```
 
 ## 观察 netem + rate
@@ -90,7 +96,27 @@ PING 10.60.3.2 (10.60.3.2) 56(84) bytes of data.
 5 packets transmitted, 5 received, 0% packet loss
 ```
 
-每条链路的 qdisc 都会同时出现在两端；可将 `h1`/`h3`/`h5` 换成对应的对端节点观察
+## 观察 HTB + fq_codel
+
+`h7`/`h8` 使用单个 20mbit HTB class 做总带宽整形，并把 fq_codel 挂在 class 下。下面
+同时发起两个 TCP flow；总吞吐接近 20 Mbit/s 时，两个 flow 通常各获得约一半带宽：
+
+```console
+$ sudo nslab exec --node h8 -- sh -c 'iperf3 -s -D -p 5201 && iperf3 -s -D -p 5202 && echo servers-ready'
+servers-ready
+
+$ sudo nslab exec --node h7 -- sh -c 'iperf3 -c 10.60.4.2 -p 5201 -t 10 > /tmp/flow1 & iperf3 -c 10.60.4.2 -p 5202 -t 10 > /tmp/flow2 & wait; grep receiver /tmp/flow1 /tmp/flow2'
+/tmp/flow1:[  5]   0.00-10.01 sec  11.5 MBytes  9.64 Mbits/sec  receiver
+/tmp/flow2:[  5]   0.00-10.01 sec  11.2 MBytes  9.38 Mbits/sec  receiver
+
+$ sudo nslab exec --node h7 -- tc -s -d qdisc show dev eth0
+qdisc htb 1: root ... default 0x1 ...
+ Sent ... bytes ... pkt (dropped ..., overlimits ...)
+qdisc fq_codel 10: parent 1:1 limit 10240p flows 1024 quantum 1514 target 5ms interval 100ms ecn
+ Sent ... bytes ... pkt (dropped ..., overlimits ...)
+```
+
+每条链路的 qdisc 都会同时出现在两端；可将 `h1`/`h3`/`h5`/`h7` 换成对应的对端节点观察
 另一方向。`netem` 与 `qdisc` 是互斥字段，同一条链路只能选择其中一种。
 
 ## 清理

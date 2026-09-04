@@ -455,6 +455,39 @@ def test_inspection_exposes_link_qdisc_and_netem_rate(
     assert "fq_codel target 5ms" in qdisc_report.nodes[0].desired.interfaces[1].qdisc
 
 
+@pytest.mark.parametrize(
+    ("qdisc", "expected"),
+    [
+        (
+            {
+                "kind": "htb",
+                "rate": "20mbit",
+                "leaf": {"kind": "fq_codel"},
+            },
+            ("htb rate 20mbit leaf fq_codel target 5ms interval 100ms limit 10240 ecn on"),
+        ),
+        (
+            {"kind": "cake", "bandwidth": "20mbit"},
+            "cake bandwidth 20mbit flow-mode flows diffserv besteffort rtt 100ms nat off",
+        ),
+    ],
+)
+def test_inspection_exposes_hierarchical_qdiscs(
+    manifest: Manifest,
+    qdisc: dict[str, object],
+    expected: str,
+) -> None:
+    document = manifest.model_dump(mode="json")
+    document["topology"]["links"][0]["qdisc"] = qdisc
+    plan = compile_plan(Manifest.model_validate(document))
+    backend = FakeNetworkBackend()
+    _create_topology(backend, plan)
+
+    report = inspect_topology(plan, None, backend.inventory(plan))
+
+    assert report.nodes[0].desired.interfaces[1].qdisc == expected
+
+
 def test_inspection_reports_explicit_stp_tuning_drift(
     plan: TopologyPlan,
     manifest: Manifest,

@@ -746,6 +746,19 @@ def test_loads_and_normalizes_netem_rate(
     [
         {"kind": "tbf", "rate": "10mbit", "burst": "32kb", "latency_ms": 400},
         {"kind": "fq_codel", "target_ms": 5, "interval_ms": 100, "limit": 10240},
+        {
+            "kind": "htb",
+            "rate": "20000kbit",
+            "leaf": {"kind": "fq_codel", "target_ms": 5, "interval_ms": 100},
+        },
+        {
+            "kind": "cake",
+            "bandwidth": "20000kbit",
+            "flow_mode": "flows",
+            "diffserv_mode": "besteffort",
+            "rtt_ms": 100,
+            "nat": False,
+        },
     ],
 )
 def test_loads_link_qdisc_settings(manifest_data: ManifestData, qdisc: dict[str, object]) -> None:
@@ -755,6 +768,50 @@ def test_loads_link_qdisc_settings(manifest_data: ManifestData, qdisc: dict[str,
 
     assert manifest.topology.links[0].qdisc is not None
     assert normalized_manifest(manifest)["topology"]["links"][0]["qdisc"]["kind"] == qdisc["kind"]
+
+
+def test_normalizes_htb_and_cake_rates(manifest_data: ManifestData) -> None:
+    manifest_data["topology"]["links"][0]["qdisc"] = {
+        "kind": "htb",
+        "rate": "20000kbit",
+        "leaf": {"kind": "fq_codel"},
+    }
+    htb = Manifest.model_validate(manifest_data)
+    assert normalized_manifest(htb)["topology"]["links"][0]["qdisc"]["rate"] == "20mbit"
+
+    manifest_data["topology"]["links"][0]["qdisc"] = {
+        "kind": "cake",
+        "bandwidth": "20000kbit",
+    }
+    cake = Manifest.model_validate(manifest_data)
+    assert normalized_manifest(cake)["topology"]["links"][0]["qdisc"] == {
+        "kind": "cake",
+        "bandwidth": "20mbit",
+        "flow_mode": "flows",
+        "diffserv_mode": "besteffort",
+        "rtt_ms": 100,
+        "nat": False,
+    }
+
+
+@pytest.mark.parametrize(
+    "qdisc",
+    [
+        {"kind": "htb", "rate": "20mbit", "leaf": {"kind": "tbf"}},
+        {"kind": "cake", "bandwidth": "unlimited"},
+        {"kind": "cake", "bandwidth": "20mbit", "flow_mode": "unknown"},
+        {"kind": "cake", "bandwidth": "20mbit", "diffserv_mode": "unknown"},
+        {"kind": "cake", "bandwidth": "20mbit", "rtt_ms": True},
+    ],
+)
+def test_rejects_invalid_hierarchical_qdisc(
+    tmp_path: Path,
+    manifest_data: ManifestData,
+    qdisc: dict[str, object],
+) -> None:
+    manifest_data["topology"]["links"][0]["qdisc"] = qdisc
+
+    _assert_invalid(tmp_path, manifest_data)
 
 
 def test_rejects_netem_and_qdisc_on_one_link(tmp_path: Path, manifest_data: ManifestData) -> None:

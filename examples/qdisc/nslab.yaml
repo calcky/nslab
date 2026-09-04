@@ -33,6 +33,16 @@ topology:
       interfaces:
         eth0:
           addresses: [10.60.3.2/24]
+    h7:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.60.4.1/24]
+    h8:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.60.4.2/24]
   links:
     - endpoints: [h1:eth0, h2:eth0]
       netem:
@@ -53,3 +63,13 @@ topology:
         interval_ms: 100
         limit: 10240
         ecn: true
+    - endpoints: [h7:eth0, h8:eth0]
+      qdisc:
+        kind: htb
+        rate: 20mbit
+        leaf:
+          kind: fq_codel
+          target_ms: 5
+          interval_ms: 100
+          limit: 10240
+          ecn: true

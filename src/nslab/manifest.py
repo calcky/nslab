@@ -1509,7 +1509,53 @@ class FqCodelConfig(BaseModel):
         return self
 
 
-type QdiscConfig = Annotated[TbfConfig | FqCodelConfig, Field(discriminator="kind")]
+class HtbConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["htb"]
+    rate: str
+    leaf: FqCodelConfig
+
+    @field_validator("rate", mode="before")
+    @classmethod
+    def validate_rate(cls, value: object) -> object:
+        return normalize_rate(value)
+
+
+class CakeConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["cake"]
+    bandwidth: str
+    flow_mode: Literal[
+        "srchost",
+        "dsthost",
+        "hosts",
+        "flows",
+        "dual-srchost",
+        "dual-dsthost",
+        "triple-isolate",
+    ] = "flows"
+    diffserv_mode: Literal[
+        "diffserv3",
+        "diffserv4",
+        "diffserv8",
+        "besteffort",
+        "precedence",
+    ] = "besteffort"
+    rtt_ms: Annotated[StrictInt, Field(ge=1, le=60_000)] = 100
+    nat: StrictBool = False
+
+    @field_validator("bandwidth", mode="before")
+    @classmethod
+    def validate_bandwidth(cls, value: object) -> object:
+        return normalize_rate(value)
+
+
+type QdiscConfig = Annotated[
+    TbfConfig | FqCodelConfig | HtbConfig | CakeConfig,
+    Field(discriminator="kind"),
+]
 
 
 class LinkConfig(BaseModel):

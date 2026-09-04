@@ -20,7 +20,9 @@ from nslab.backend.fake import FakeNetworkBackend
 from nslab.errors import NslabError
 from nslab.manifest import Manifest
 from nslab.planner import (
+    CakePlan,
     FqCodelPlan,
+    HtbPlan,
     NetemPlan,
     QdiscPlan,
     RoutePlan,
@@ -404,6 +406,17 @@ def test_fake_backend_applies_link_netem_to_both_endpoints_and_detects_drift(
     [
         TbfPlan(rate="10mbit", burst_bytes=32 * 1024, latency_ms=400),
         FqCodelPlan(target_ms=5, interval_ms=100, limit=10240, ecn=True),
+        HtbPlan(
+            rate="20mbit",
+            leaf=FqCodelPlan(target_ms=5, interval_ms=100, limit=10240, ecn=True),
+        ),
+        CakePlan(
+            bandwidth="20mbit",
+            flow_mode="flows",
+            diffserv_mode="besteffort",
+            rtt_ms=100,
+            nat=False,
+        ),
     ],
 )
 def test_fake_backend_applies_link_qdisc_to_both_endpoints_and_detects_drift(

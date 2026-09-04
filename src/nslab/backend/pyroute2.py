@@ -44,11 +44,13 @@ from nslab.errors import NslabError, OperationCancelled
 from nslab.planner import (
     BondDevicePlan,
     BridgeVlanPlan,
+    CakePlan,
     DummyDevicePlan,
     EndpointPlan,
     FqCodelPlan,
     GeneveDevicePlan,
     GreDevicePlan,
+    HtbPlan,
     IPInterface,
     IpipDevicePlan,
     IpvlanDevicePlan,
@@ -147,6 +149,25 @@ _BOND_XMIT_HASH_POLICY_TO_NETLINK = {
 _BOND_XMIT_HASH_POLICY_FROM_NETLINK = {
     value: key for key, value in _BOND_XMIT_HASH_POLICY_TO_NETLINK.items()
 }
+_CAKE_FLOW_MODE_FROM_NETLINK = {
+    1: "srchost",
+    2: "dsthost",
+    3: "hosts",
+    4: "flows",
+    5: "dual-srchost",
+    6: "dual-dsthost",
+    7: "triple-isolate",
+}
+_CAKE_DIFFSERV_MODE_FROM_NETLINK = {
+    0: "diffserv3",
+    1: "diffserv4",
+    2: "diffserv8",
+    3: "besteffort",
+    4: "precedence",
+}
+_HTB_ROOT_HANDLE = 0x00010000
+_HTB_CLASS_HANDLE = 0x00010001
+_HTB_LEAF_HANDLE = 0x00100000
 _MACVLAN_MODE_TO_NETLINK = {
     "private": 1,
     "vepa": 2,
@@ -577,6 +598,239 @@ def _qdisc_option(options: Any, name: str, default: object = None) -> Any:
     if value is not None:
         return value
     return _value(options, name, default)
+
+
+def _fq_codel_arguments(qdisc: FqCodelPlan) -> dict[str, object]:
+    return {
+        "fqc_limit": qdisc.limit,
+        "fqc_target": f"{qdisc.target_ms}ms",
+        "fqc_interval": f"{qdisc.interval_ms}ms",
+        "fqc_ecn": int(qdisc.ecn),
+    }
+
+
+def _qdisc_kind(qdisc: QdiscPlan) -> str:
+    if isinstance(qdisc, TbfPlan):
+        return "tbf"
+    if isinstance(qdisc, FqCodelPlan):
+        return "fq_codel"
+    if isinstance(qdisc, HtbPlan):
+        return "htb"
+    assert isinstance(qdisc, CakePlan)
+    return "cake"
+
+
+def _add_qdisc(handle: Any, index: int, qdisc: QdiscPlan, resource: str) -> None:
+    try:
+        if isinstance(qdisc, TbfPlan):
+            handle.tc(
+                "add",
+                "tbf",
+                index,
+                "1:",
+                rate=qdisc.rate,
+                burst=qdisc.burst_bytes,
+                latency=f"{qdisc.latency_ms}ms",
+            )
+        elif isinstance(qdisc, FqCodelPlan):
+            handle.tc(
+                "add",
+                "fq_codel",
+                index,
+                "1:",
+                **_fq_codel_arguments(qdisc),
+            )
+        elif isinstance(qdisc, HtbPlan):
+            handle.tc("add", "htb", index, "1:", default=1)
+            handle.tc(
+                "add-class",
+                "htb",
+                index,
+                "1:1",
+                parent="1:",
+                rate=qdisc.rate,
+                ceil=qdisc.rate,
+            )
+            handle.tc(
+                "add",
+                "fq_codel",
+                index,
+                "10:",
+                parent="1:1",
+                **_fq_codel_arguments(qdisc.leaf),
+            )
+        else:
+            assert isinstance(qdisc, CakePlan)
+            handle.tc(
+                "add",
+                "cake",
+                index,
+                "1:",
+                bandwidth=qdisc.bandwidth,
+                flow_mode=qdisc.flow_mode,
+                diffserv_mode=qdisc.diffserv_mode,
+                rtt=qdisc.rtt_ms * 1000,
+                nat=qdisc.nat,
+            )
+    except (NetlinkError, OSError) as error:
+        error_number = error.code if isinstance(error, NetlinkError) else error.errno
+        if error_number is None or not _is_missing_error(error_number):
+            raise
+        kind = _qdisc_kind(qdisc)
+        raise NslabError(
+            code="QDISC_UNSUPPORTED",
+            message=f"kernel qdisc is unavailable: {kind}",
+            details={
+                "errno": abs(error_number),
+                "operation": "create_veth",
+                "qdisc": kind,
+                "resource": resource,
+            },
+        ) from error
+
+
+def _decode_fq_codel(options: Any, namespace: str) -> FqCodelPlan:
+    # fq_codel stores time values in microseconds. The kernel rounds
+    # the values to its internal clock, so a requested 5ms commonly
+    # comes back as 4999us (and 100ms as 99999us).
+    try:
+        raw_target = int(float(_qdisc_option(options, "TCA_FQ_CODEL_TARGET", 5_000)))
+        raw_interval = int(float(_qdisc_option(options, "TCA_FQ_CODEL_INTERVAL", 100_000)))
+        limit = int(_qdisc_option(options, "TCA_FQ_CODEL_LIMIT", 10_240))
+        ecn = bool(int(_qdisc_option(options, "TCA_FQ_CODEL_ECN", 1)))
+    except (TypeError, ValueError):
+        raise _unsupported_inventory_qdisc(namespace, "invalid_parameters") from None
+    target_ms = _decode_milliseconds(raw_target, namespace, "target")
+    interval_ms = _decode_milliseconds(raw_interval, namespace, "interval")
+    if limit <= 0:
+        raise _unsupported_inventory_qdisc(namespace, "parameters")
+
+    # These options are intentionally not part of the manifest. Keep
+    # inventory honest if an operator changes them outside nslab.
+    unsupported_defaults = (
+        ("TCA_FQ_CODEL_FLOWS", 1024),
+        ("TCA_FQ_CODEL_QUANTUM", None),
+        ("TCA_FQ_CODEL_CE_THRESHOLD", 0),
+        ("TCA_FQ_CODEL_DROP_BATCH_SIZE", 64),
+        ("TCA_FQ_CODEL_MEMORY_LIMIT", 32 * 1024 * 1024),
+    )
+    for option_name, default in unsupported_defaults:
+        option_value = _qdisc_option(options, option_name)
+        if option_value is None:
+            continue
+        try:
+            option_value_int = int(option_value)
+        except (TypeError, ValueError):
+            raise _unsupported_inventory_qdisc(namespace, "invalid_parameters") from None
+        if default is not None and option_value_int != default:
+            raise _unsupported_inventory_qdisc(namespace, "unsupported_options")
+    return FqCodelPlan(
+        target_ms=target_ms,
+        interval_ms=interval_ms,
+        limit=limit,
+        ecn=ecn,
+    )
+
+
+def _decode_cake(options: Any, namespace: str) -> CakePlan:
+    try:
+        raw_bandwidth = int(_qdisc_option(options, "TCA_CAKE_BASE_RATE64"))
+        raw_flow_mode = int(_qdisc_option(options, "TCA_CAKE_FLOW_MODE", 4))
+        raw_diffserv_mode = int(_qdisc_option(options, "TCA_CAKE_DIFFSERV_MODE", 3))
+        raw_rtt = int(_qdisc_option(options, "TCA_CAKE_RTT", 100_000))
+        raw_nat = int(_qdisc_option(options, "TCA_CAKE_NAT", 0))
+        if raw_nat not in {0, 1}:
+            raise ValueError("invalid CAKE NAT flag")
+        bandwidth = format_rate(raw_bandwidth)
+        flow_mode = _CAKE_FLOW_MODE_FROM_NETLINK[raw_flow_mode]
+        diffserv_mode = _CAKE_DIFFSERV_MODE_FROM_NETLINK[raw_diffserv_mode]
+    except (KeyError, TypeError, ValueError):
+        raise _unsupported_inventory_qdisc(namespace, "invalid_parameters") from None
+    return CakePlan(
+        bandwidth=bandwidth,
+        flow_mode=flow_mode,
+        diffserv_mode=diffserv_mode,
+        rtt_ms=_decode_milliseconds(raw_rtt, namespace, "rtt"),
+        nat=bool(raw_nat),
+    )
+
+
+def _decode_htb(
+    root_message: Any,
+    options: Any,
+    qdisc_messages: Sequence[Any],
+    class_messages: Sequence[Any],
+    namespace: str,
+) -> HtbPlan:
+    try:
+        index = int(_value(root_message, "index"))
+        root_handle = int(_value(root_message, "handle"))
+    except (TypeError, ValueError):
+        raise _unsupported_inventory_qdisc(namespace, "invalid_htb_root") from None
+    init = _attribute(options, "TCA_HTB_INIT")
+    if init is None:
+        raise _unsupported_inventory_qdisc(namespace, "missing_htb_init")
+    try:
+        default_class = int(_qdisc_option(init, "defcls"))
+        rate2quantum = int(_qdisc_option(init, "rate2quantum"))
+    except (TypeError, ValueError):
+        raise _unsupported_inventory_qdisc(namespace, "invalid_htb_root") from None
+    if root_handle != _HTB_ROOT_HANDLE or default_class != 1 or rate2quantum != 10:
+        raise _unsupported_inventory_qdisc(namespace, "htb_root")
+
+    classes = [
+        message
+        for message in class_messages
+        if int(_value(message, "index", -1)) == index and _attribute(message, "TCA_KIND") == "htb"
+    ]
+    if len(classes) != 1:
+        raise _unsupported_inventory_qdisc(namespace, "htb_classes")
+    class_message = classes[0]
+    try:
+        class_handle = int(_value(class_message, "handle"))
+        class_parent = int(_value(class_message, "parent"))
+    except (TypeError, ValueError):
+        raise _unsupported_inventory_qdisc(namespace, "invalid_htb_class") from None
+    if class_handle != _HTB_CLASS_HANDLE or class_parent != TC_H_ROOT:
+        raise _unsupported_inventory_qdisc(namespace, "htb_class")
+    class_options = _attribute(class_message, "TCA_OPTIONS")
+    parameters = _attribute(class_options, "TCA_HTB_PARMS")
+    if parameters is None:
+        raise _unsupported_inventory_qdisc(namespace, "missing_htb_parameters")
+    try:
+        raw_rate = int(_qdisc_option(parameters, "rate"))
+        raw_ceil = int(_qdisc_option(parameters, "ceil"))
+        rate_overhead = int(_qdisc_option(parameters, "rate_overhead", 0))
+        ceil_overhead = int(_qdisc_option(parameters, "ceil_overhead", 0))
+        rate_mpu = int(_qdisc_option(parameters, "rate_mpu", 0))
+        ceil_mpu = int(_qdisc_option(parameters, "ceil_mpu", 0))
+        priority = int(_qdisc_option(parameters, "prio", 0))
+        rate = format_rate(raw_rate)
+    except (TypeError, ValueError):
+        raise _unsupported_inventory_qdisc(namespace, "invalid_htb_parameters") from None
+    if raw_ceil != raw_rate or rate_overhead or ceil_overhead or rate_mpu or ceil_mpu or priority:
+        raise _unsupported_inventory_qdisc(namespace, "htb_parameters")
+
+    leaves = [
+        message
+        for message in qdisc_messages
+        if int(_value(message, "index", -1)) == index
+        and _attribute(message, "TCA_KIND") == "fq_codel"
+        and int(_value(message, "parent", -1)) == _HTB_CLASS_HANDLE
+    ]
+    if len(leaves) != 1:
+        raise _unsupported_inventory_qdisc(namespace, "htb_leaf")
+    leaf_message = leaves[0]
+    try:
+        leaf_handle = int(_value(leaf_message, "handle"))
+    except (TypeError, ValueError):
+        raise _unsupported_inventory_qdisc(namespace, "invalid_htb_leaf") from None
+    if leaf_handle != _HTB_LEAF_HANDLE:
+        raise _unsupported_inventory_qdisc(namespace, "htb_leaf")
+    leaf_options = _attribute(leaf_message, "TCA_OPTIONS")
+    if leaf_options is None:
+        raise _unsupported_inventory_qdisc(namespace, "missing_options")
+    return HtbPlan(rate=rate, leaf=_decode_fq_codel(leaf_options, namespace))
 
 
 def _netem_request_filter(index: int, netem: NetemPlan) -> Any:
@@ -1188,28 +1442,12 @@ class Pyroute2Backend:
                             )
                     elif qdisc is not None:
                         phase = "namespace-set-qdisc"
-                        if isinstance(qdisc, TbfPlan):
-                            namespace.tc(
-                                "add",
-                                "tbf",
-                                index,
-                                "1:",
-                                rate=qdisc.rate,
-                                burst=qdisc.burst_bytes,
-                                latency=f"{qdisc.latency_ms}ms",
-                            )
-                        else:
-                            assert isinstance(qdisc, FqCodelPlan)
-                            namespace.tc(
-                                "add",
-                                "fq_codel",
-                                index,
-                                "1:",
-                                fqc_limit=qdisc.limit,
-                                fqc_target=f"{qdisc.target_ms}ms",
-                                fqc_interval=f"{qdisc.interval_ms}ms",
-                                fqc_ecn=int(qdisc.ecn),
-                            )
+                        _add_qdisc(
+                            namespace,
+                            index,
+                            qdisc,
+                            f"{endpoint.namespace}:{endpoint.interface}",
+                        )
                 return
             except (Exception, KeyboardInterrupt) as error:
                 if not _is_transient_veth_error(error):
@@ -2049,8 +2287,20 @@ class Pyroute2Backend:
     ) -> NamespaceInventory:
         neighbor_messages: tuple[Any, ...] = ()
         proxy_neighbor_messages: list[Any] = []
+        declared_qdiscs = {
+            endpoint.interface: link.qdisc
+            for link in plan.links
+            if link.qdisc is not None
+            for endpoint in (link.left, link.right)
+            if endpoint.namespace == node.namespace
+        }
         with _managed_handle(namespace) as handle:
             link_messages = tuple(handle.get_links())
+            indexes_by_name = {
+                str(name): int(_value(message, "index"))
+                for message in link_messages
+                if (name := _attribute(message, "IFLA_IFNAME")) is not None
+            }
             families = self._inventory_families(node)
             address_messages = tuple(
                 message for family in families for message in handle.get_addr(family=family)
@@ -2059,6 +2309,15 @@ class Pyroute2Backend:
                 tuple(handle.get_vlans()) if node.kind == "bridge" and node.vlan_filtering else ()
             )
             qdisc_messages = tuple(handle.get_qdiscs()) if inspect_qdiscs else ()
+            class_messages_list: list[Any] = []
+            if inspect_qdiscs:
+                for interface, qdisc in declared_qdiscs.items():
+                    if not isinstance(qdisc, HtbPlan):
+                        continue
+                    index = indexes_by_name.get(interface)
+                    if index is not None:
+                        class_messages_list.extend(handle.get_classes(index=index))
+            class_messages = tuple(class_messages_list)
             route_messages = tuple(
                 (
                     family,
@@ -2093,11 +2352,6 @@ class Pyroute2Backend:
                 for family in regular_neighbor_families
                 for message in handle.get_neighbours(family=family)
             )
-            indexes_by_name = {
-                str(name): int(_value(message, "index"))
-                for message in link_messages
-                if (name := _attribute(message, "IFLA_IFNAME")) is not None
-            }
             for neighbor in node.neighbors:
                 if not neighbor.proxy:
                     continue
@@ -2122,6 +2376,7 @@ class Pyroute2Backend:
             address_messages,
             vlan_messages,
             qdisc_messages,
+            class_messages,
             namespace=node.namespace,
             declared_addresses=node_interface_addresses(node),
             declared_netem_interfaces={
@@ -2131,13 +2386,7 @@ class Pyroute2Backend:
                 for endpoint in (link.left, link.right)
                 if endpoint.namespace == node.namespace
             },
-            declared_qdiscs={
-                endpoint.interface: link.qdisc
-                for link in plan.links
-                if link.qdisc is not None
-                for endpoint in (link.left, link.right)
-                if endpoint.namespace == node.namespace
-            },
+            declared_qdiscs=declared_qdiscs,
         )
         observed_routes = tuple(
             route
@@ -2228,6 +2477,7 @@ class Pyroute2Backend:
         address_messages: Sequence[Any],
         vlan_messages: Sequence[Any] = (),
         qdisc_messages: Sequence[Any] = (),
+        class_messages: Sequence[Any] = (),
         *,
         namespace: str = "network namespace",
         declared_addresses: Mapping[str, Sequence[IPInterface]] | None = None,
@@ -2301,7 +2551,7 @@ class Pyroute2Backend:
             if declared_names is not None and interface_name not in declared_names:
                 continue
             kind = _attribute(message, "TCA_KIND")
-            if kind not in {"netem", "tbf", "fq_codel"}:
+            if kind not in {"netem", "tbf", "fq_codel", "htb", "cake"}:
                 continue
             options = _attribute(message, "TCA_OPTIONS")
             if options is None:
@@ -2399,47 +2649,19 @@ class Pyroute2Backend:
                     latency_ms=latency_ms,
                 )
                 continue
-
-            # fq_codel stores time values in microseconds. The kernel rounds
-            # the values to its internal clock, so a requested 5ms commonly
-            # comes back as 4999us (and 100ms as 99999us).
-            try:
-                raw_target = int(float(_qdisc_option(options, "TCA_FQ_CODEL_TARGET", 5_000)))
-                raw_interval = int(float(_qdisc_option(options, "TCA_FQ_CODEL_INTERVAL", 100_000)))
-                limit = int(_qdisc_option(options, "TCA_FQ_CODEL_LIMIT", 10_240))
-                ecn = bool(int(_qdisc_option(options, "TCA_FQ_CODEL_ECN", 1)))
-            except (TypeError, ValueError):
-                raise _unsupported_inventory_qdisc(namespace, "invalid_parameters") from None
-            target_ms = _decode_milliseconds(raw_target, namespace, "target")
-            interval_ms = _decode_milliseconds(raw_interval, namespace, "interval")
-            if limit <= 0:
-                raise _unsupported_inventory_qdisc(namespace, "parameters")
-
-            # These options are intentionally not part of the manifest. Keep
-            # inventory honest if an operator changes them outside nslab.
-            unsupported_defaults = (
-                ("TCA_FQ_CODEL_FLOWS", 1024),
-                ("TCA_FQ_CODEL_QUANTUM", None),
-                ("TCA_FQ_CODEL_CE_THRESHOLD", 0),
-                ("TCA_FQ_CODEL_DROP_BATCH_SIZE", 64),
-                ("TCA_FQ_CODEL_MEMORY_LIMIT", 32 * 1024 * 1024),
-            )
-            for option_name, default in unsupported_defaults:
-                option_value = _qdisc_option(options, option_name)
-                if option_value is None:
-                    continue
-                try:
-                    option_value_int = int(option_value)
-                except (TypeError, ValueError):
-                    raise _unsupported_inventory_qdisc(namespace, "invalid_parameters") from None
-                if default is not None and option_value_int != default:
-                    raise _unsupported_inventory_qdisc(namespace, "unsupported_options")
-            qdisc_by_index[index] = FqCodelPlan(
-                target_ms=target_ms,
-                interval_ms=interval_ms,
-                limit=limit,
-                ecn=ecn,
-            )
+            if kind == "fq_codel":
+                qdisc_by_index[index] = _decode_fq_codel(options, namespace)
+            elif kind == "htb":
+                qdisc_by_index[index] = _decode_htb(
+                    message,
+                    options,
+                    qdisc_messages,
+                    class_messages,
+                    namespace,
+                )
+            else:
+                assert kind == "cake"
+                qdisc_by_index[index] = _decode_cake(options, namespace)
 
         interfaces: dict[str, InterfaceInventory] = {}
         for message in link_messages:

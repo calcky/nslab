@@ -32,8 +32,10 @@ from nslab.backend.pyroute2 import Pyroute2Backend
 from nslab.errors import NslabError, OperationCancelled
 from nslab.planner import (
     BridgePortPlan,
+    CakePlan,
     EndpointPlan,
     FqCodelPlan,
+    HtbPlan,
     LinkPlan,
     NetemPlan,
     NodePlan,
@@ -1188,6 +1190,139 @@ def test_create_veth_adds_declared_qdisc_to_both_endpoints(
 
     left.tc.assert_called_once_with("add", kind, 201, "1:", **expected)
     right.tc.assert_called_once_with("add", kind, 301, "1:", **expected)
+
+
+def test_create_veth_adds_htb_class_and_fq_codel_leaf_to_both_endpoints(
+    veth_link: LinkPlan,
+) -> None:
+    leaf = FqCodelPlan(target_ms=5, interval_ms=100, limit=10_240, ecn=True)
+    link = replace(veth_link, qdisc=HtbPlan(rate="20mbit", leaf=leaf))
+    root = Mock()
+    lookup_count: dict[str, int] = {}
+
+    def root_lookup(*, ifname: str) -> list[int]:
+        occurrence = lookup_count.get(ifname, 0)
+        lookup_count[ifname] = occurrence + 1
+        if occurrence == 0:
+            return []
+        return [101 if ifname == link.left.temporary_name else 102]
+
+    root.link_lookup.side_effect = root_lookup
+    left = Mock()
+    left.link_lookup.return_value = [201]
+    right = Mock()
+    right.link_lookup.return_value = [301]
+    handles = {link.left.namespace: left, link.right.namespace: right}
+    backend = Pyroute2Backend(
+        iproute_factory=Mock(return_value=root),
+        netns_factory=Mock(side_effect=lambda namespace: handles[namespace]),
+        ownership_token_factory=Mock(return_value=_OWNERSHIP_TOKEN),
+    )
+
+    backend.create_veth(link)
+
+    for handle, index in ((left, 201), (right, 301)):
+        assert handle.tc.call_args_list == [
+            call("add", "htb", index, "1:", default=1),
+            call(
+                "add-class",
+                "htb",
+                index,
+                "1:1",
+                parent="1:",
+                rate="20mbit",
+                ceil="20mbit",
+            ),
+            call(
+                "add",
+                "fq_codel",
+                index,
+                "10:",
+                parent="1:1",
+                fqc_limit=10_240,
+                fqc_target="5ms",
+                fqc_interval="100ms",
+                fqc_ecn=1,
+            ),
+        ]
+
+
+def test_create_veth_adds_cake_to_both_endpoints(veth_link: LinkPlan) -> None:
+    link = replace(
+        veth_link,
+        qdisc=CakePlan(
+            bandwidth="20mbit",
+            flow_mode="flows",
+            diffserv_mode="besteffort",
+            rtt_ms=100,
+            nat=False,
+        ),
+    )
+    root = Mock()
+    lookup_count: dict[str, int] = {}
+
+    def root_lookup(*, ifname: str) -> list[int]:
+        occurrence = lookup_count.get(ifname, 0)
+        lookup_count[ifname] = occurrence + 1
+        if occurrence == 0:
+            return []
+        return [101 if ifname == link.left.temporary_name else 102]
+
+    root.link_lookup.side_effect = root_lookup
+    left = Mock()
+    left.link_lookup.return_value = [201]
+    right = Mock()
+    right.link_lookup.return_value = [301]
+    handles = {link.left.namespace: left, link.right.namespace: right}
+    backend = Pyroute2Backend(
+        iproute_factory=Mock(return_value=root),
+        netns_factory=Mock(side_effect=lambda namespace: handles[namespace]),
+        ownership_token_factory=Mock(return_value=_OWNERSHIP_TOKEN),
+    )
+
+    backend.create_veth(link)
+
+    for handle, index in ((left, 201), (right, 301)):
+        handle.tc.assert_called_once_with(
+            "add",
+            "cake",
+            index,
+            "1:",
+            bandwidth="20mbit",
+            flow_mode="flows",
+            diffserv_mode="besteffort",
+            rtt=100_000,
+            nat=False,
+        )
+
+
+def test_missing_kernel_qdisc_reports_capability_error_without_visibility_retry() -> None:
+    qdisc = CakePlan(
+        bandwidth="20mbit",
+        flow_mode="flows",
+        diffserv_mode="besteffort",
+        rtt_ms=100,
+        nat=False,
+    )
+    failure = NetlinkError(errno.ENOENT, "qdisc module missing")
+    handle = Mock()
+    handle.tc.side_effect = failure
+
+    with pytest.raises(NslabError) as caught:
+        pyroute2_backend._add_qdisc(handle, 10, qdisc, "nslab-cake-h1:eth0")
+
+    assert caught.value.as_dict() == {
+        "code": "QDISC_UNSUPPORTED",
+        "message": "kernel qdisc is unavailable: cake",
+        "details": {
+            "errno": errno.ENOENT,
+            "operation": "create_veth",
+            "qdisc": "cake",
+            "resource": "nslab-cake-h1:eth0",
+        },
+    }
+    assert caught.value.__cause__ is failure
+    handle.tc.assert_called_once()
 
 
 def test_veth_cleanup_skips_same_location_name_reused_by_foreign_interface(
@@ -4125,10 +4260,50 @@ def test_inventory_decodes_netem_qdisc_into_semantic_values() -> None:
             },
             FqCodelPlan(target_ms=5, interval_ms=100, limit=10_240, ecn=True),
         ),
+        (
+            "cake",
+            {
+                "attrs": [
+                    ("TCA_CAKE_BASE_RATE64", 2_500_000),
+                    ("TCA_CAKE_DIFFSERV_MODE", 3),
+                    ("TCA_CAKE_FLOW_MODE", 4),
+                    ("TCA_CAKE_NAT", 0),
+                    ("TCA_CAKE_RTT", 100_000),
+                ]
+            },
+            CakePlan(
+                bandwidth="20mbit",
+                flow_mode="flows",
+                diffserv_mode="besteffort",
+                rtt_ms=100,
+                nat=False,
+            ),
+        ),
+        (
+            "cake",
+            {
+                "attrs": [
+                    ("TCA_CAKE_BASE_RATE64", 1_250_000),
+                    ("TCA_CAKE_DIFFSERV_MODE", 1),
+                    ("TCA_CAKE_FLOW_MODE", 6),
+                    ("TCA_CAKE_NAT", 1),
+                    ("TCA_CAKE_RTT", 30_000),
+                ]
+            },
+            CakePlan(
+                bandwidth="10mbit",
+                flow_mode="dual-dsthost",
+                diffserv_mode="diffserv4",
+                rtt_ms=30,
+                nat=True,
+            ),
+        ),
     ],
 )
 def test_inventory_decodes_supported_qdiscs(
-    kind: str, options: dict[str, object], expected: NetemPlan | TbfPlan | FqCodelPlan
+    kind: str,
+    options: dict[str, object],
+    expected: NetemPlan | TbfPlan | FqCodelPlan | HtbPlan | CakePlan,
 ) -> None:
     qdisc = {
         "index": 10,
@@ -4189,6 +4364,89 @@ def test_inventory_accepts_kernel_quantization_for_fq_codel_times() -> None:
         interval_ms=100,
         limit=10_240,
         ecn=True,
+    )
+
+
+def test_inventory_decodes_htb_class_and_fq_codel_leaf() -> None:
+    root = {
+        "index": 10,
+        "handle": 0x00010000,
+        "parent": 0xFFFFFFFF,
+        "attrs": [
+            ("TCA_KIND", "htb"),
+            (
+                "TCA_OPTIONS",
+                {
+                    "attrs": [
+                        (
+                            "TCA_HTB_INIT",
+                            {"defcls": 1, "rate2quantum": 10, "version": 196625},
+                        )
+                    ]
+                },
+            ),
+        ],
+    }
+    leaf = {
+        "index": 10,
+        "handle": 0x00100000,
+        "parent": 0x00010001,
+        "attrs": [
+            ("TCA_KIND", "fq_codel"),
+            (
+                "TCA_OPTIONS",
+                {
+                    "attrs": [
+                        ("TCA_FQ_CODEL_TARGET", 5_000),
+                        ("TCA_FQ_CODEL_INTERVAL", 100_000),
+                        ("TCA_FQ_CODEL_LIMIT", 10_240),
+                        ("TCA_FQ_CODEL_ECN", 1),
+                    ]
+                },
+            ),
+        ],
+    }
+    htb_class = {
+        "index": 10,
+        "handle": 0x00010001,
+        "parent": 0xFFFFFFFF,
+        "attrs": [
+            ("TCA_KIND", "htb"),
+            (
+                "TCA_OPTIONS",
+                {
+                    "attrs": [
+                        (
+                            "TCA_HTB_PARMS",
+                            {
+                                "rate": 2_500_000,
+                                "ceil": 2_500_000,
+                                "rate_overhead": 0,
+                                "ceil_overhead": 0,
+                                "rate_mpu": 0,
+                                "ceil_mpu": 0,
+                                "prio": 0,
+                            },
+                        )
+                    ]
+                },
+            ),
+        ],
+    }
+
+    interfaces, _ = Pyroute2Backend._inventory_interfaces(
+        [_link_message(10, "eth0", "veth", 1500)],
+        [],
+        (),
+        [root, leaf],
+        [htb_class],
+        namespace="nslab-htb-h1",
+        declared_qdiscs={"eth0": None},
+    )
+
+    assert interfaces["eth0"].qdisc == HtbPlan(
+        rate="20mbit",
+        leaf=FqCodelPlan(target_ms=5, interval_ms=100, limit=10_240, ecn=True),
     )
 
 

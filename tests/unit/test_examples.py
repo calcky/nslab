@@ -16,7 +16,9 @@ from nslab.graph import render_graph
 from nslab.manifest import load_manifest
 from nslab.planner import (
     BridgeVlanPlan,
+    CakePlan,
     FqCodelPlan,
+    HtbPlan,
     NetemPlan,
     RouteNextHopPlan,
     RoutePlan,
@@ -316,6 +318,29 @@ def test_qdisc_example_compiles_all_supported_link_qdiscs() -> None:
         interval_ms=100,
         limit=10_240,
         ecn=True,
+    )
+    assert plan.links[3].qdisc == HtbPlan(
+        rate="20mbit",
+        leaf=FqCodelPlan(
+            target_ms=5,
+            interval_ms=100,
+            limit=10_240,
+            ecn=True,
+        ),
+    )
+
+
+def test_cake_example_compiles_common_shaping_options() -> None:
+    plan = compile_plan(load_manifest(_EXAMPLES / "cake" / "nslab.yaml"))
+
+    assert plan.name == "cake"
+    assert len(plan.links) == 1
+    assert plan.links[0].qdisc == CakePlan(
+        bandwidth="20mbit",
+        flow_mode="flows",
+        diffserv_mode="besteffort",
+        rtt_ms=100,
+        nat=False,
     )
 
 

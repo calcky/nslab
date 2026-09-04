@@ -17,8 +17,10 @@ from nslab.manifest import InterfaceConfig, LinuxNode, Manifest, manifest_finger
 from nslab.naming import namespace_name, temporary_veth_names
 from nslab.planner import (
     BridgePortPlan,
+    CakePlan,
     EndpointPlan,
     FqCodelPlan,
+    HtbPlan,
     LinkPlan,
     NetemPlan,
     NodePlan,
@@ -164,6 +166,34 @@ def test_compile_plan_preserves_link_netem(bridge_manifest: Manifest) -> None:
         (
             {"kind": "fq_codel", "target_ms": 5, "interval_ms": 100},
             FqCodelPlan(target_ms=5, interval_ms=100, limit=10240, ecn=True),
+        ),
+        (
+            {
+                "kind": "htb",
+                "rate": "20mbit",
+                "leaf": {"kind": "fq_codel", "target_ms": 4, "interval_ms": 80},
+            },
+            HtbPlan(
+                rate="20mbit",
+                leaf=FqCodelPlan(target_ms=4, interval_ms=80, limit=10240, ecn=True),
+            ),
+        ),
+        (
+            {
+                "kind": "cake",
+                "bandwidth": "20mbit",
+                "flow_mode": "dual-srchost",
+                "diffserv_mode": "diffserv4",
+                "rtt_ms": 30,
+                "nat": True,
+            },
+            CakePlan(
+                bandwidth="20mbit",
+                flow_mode="dual-srchost",
+                diffserv_mode="diffserv4",
+                rtt_ms=30,
+                nat=True,
+            ),
         ),
     ],
 )
