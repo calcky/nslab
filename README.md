@@ -113,6 +113,7 @@ sudo nslab destroy
 | [bond-8023ad](examples/bond-8023ad/README.md) | LACP 聚合与多流哈希 |
 | [ipv4-forward](examples/ipv4-forward/README.md) | Linux IPv4 转发 |
 | [ipv6-forward](examples/ipv6-forward/README.md) | Linux IPv6 转发 |
+| [ipv6-autoconf](examples/ipv6-autoconf/README.md) | SLAAC、RA、DAD、NDP 与默认路由切换 |
 | [pmtu](examples/pmtu/README.md) | MTU、PMTU、IPv4 分片与 IPv6 Packet Too Big |
 | [neighbors](examples/neighbors/README.md) | 固定 MAC、静态 ARP/NDP 与 Proxy ARP/NDP |
 | [ecmp](examples/ecmp/README.md) | 静态等价多路径与逐流哈希 |

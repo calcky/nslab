@@ -1,0 +1,48 @@
+version: 1
+name: ipv6-autoconf
+
+topology:
+  nodes:
+    r1:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [fe80::1/64, 2001:db8:10::1/64]
+      devices:
+        dummy0:
+          type: dummy
+          addresses: [2001:db8:100::1/128]
+      sysctls:
+        net.ipv6.conf.all.forwarding: 1
+    r2:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [fe80::2/64, 2001:db8:10::2/64]
+      devices:
+        dummy0:
+          type: dummy
+          addresses: [2001:db8:100::1/128]
+      sysctls:
+        net.ipv6.conf.all.forwarding: 1
+    sw1:
+      kind: bridge
+      bridge:
+        name: br0
+        stp: false
+        vlan_filtering: false
+    h1:
+      kind: linux
+      interfaces:
+        eth0:
+          mac: "02:00:00:00:00:11"
+    h2:
+      kind: linux
+      interfaces:
+        eth0:
+          mac: "02:00:00:00:00:22"
+  links:
+    - endpoints: [r1:eth0, sw1:swp1]
+    - endpoints: [r2:eth0, sw1:swp2]
+    - endpoints: [h1:eth0, sw1:swp3]
+    - endpoints: [h2:eth0, sw1:swp4]
