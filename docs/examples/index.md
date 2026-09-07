@@ -80,7 +80,7 @@ sudo nslab destroy
 | Example | Focus |
 | --- | --- |
 | [XDP receive and transmit](xdp.md) | `XDP_PASS`, `XDP_DROP`, `XDP_TX`, `XDP_REDIRECT`, and BPF map counters |
-| [BPF data path](bpf-path.md) | XDP versus TC ingress/egress and capture visibility |
+| [BPF data path](bpf-path.md) | XDP/TC, DEVMAP, CPUMAP, and AF_XDP userspace RX/TX |
 | [MTU and offload](mtu-offload.md) | MTU boundaries, segmentation, coalescing, and checksum capture artifacts |
 | [TCP behavior](tcp-behavior.md) | Handshake, congestion window, retransmissions, and zero window |
 

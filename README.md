@@ -119,7 +119,7 @@ sudo nslab destroy
 | [mtu-offload](examples/mtu-offload/README.md) | MTU 边界、GSO/GRO/TSO 与抓包差异 |
 | [wireguard](examples/wireguard/README.md) | WireGuard 双栈加密隧道与 AllowedIPs |
 | [ipsec](examples/ipsec/README.md) | 静态 XFRM、IKEv2 PSK 协商、ESP tunnel 与 rekey |
-| [bpf-path](examples/bpf-path/README.md) | XDP 与 TC ingress/egress 数据路径 |
+| [bpf-path](examples/bpf-path/README.md) | XDP/TC、DEVMAP、CPUMAP、AF_XDP 用户态收发 |
 | [pmtu](examples/pmtu/README.md) | MTU、PMTU、IPv4 分片与 IPv6 Packet Too Big |
 | [neighbors](examples/neighbors/README.md) | 固定 MAC、静态 ARP/NDP 与 Proxy ARP/NDP |
 | [ecmp](examples/ecmp/README.md) | 静态等价多路径与逐流哈希 |

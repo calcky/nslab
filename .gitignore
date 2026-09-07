@@ -7,6 +7,9 @@ __pycache__/
 *.so
 /examples/xdp/*.o
 /examples/bpf-path/*.o
+/examples/bpf-path/redirect_lab
+/examples/bpf-path/cpu_lab
+/examples/bpf-path/xsk_lab
 
 # Distribution / packaging
 .Python

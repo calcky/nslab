@@ -80,7 +80,7 @@ sudo nslab destroy
 | 示例 | 学习内容 |
 | --- | --- |
 | [XDP 收发包](xdp.md) | `XDP_PASS`、`XDP_DROP`、`XDP_TX`、`XDP_REDIRECT` 和 BPF map 计数器 |
-| [BPF 数据路径](bpf-path.md) | XDP 与 TC ingress/egress、抓包可见性 |
+| [BPF 数据路径](bpf-path.md) | XDP/TC、DEVMAP、CPUMAP、AF_XDP 用户态收发 |
 | [MTU 与 offload](mtu-offload.md) | MTU 边界、分段、聚合与校验和抓包现象 |
 | [TCP 行为](tcp-behavior.md) | 握手、拥塞窗口、重传与零窗口 |
 
