@@ -89,6 +89,70 @@ ESTAB ... timer:(persist,...) ...
 ...
 ```
 
+## 深入实验：SACK、DSACK、RACK、TLP 和 ECN
+
+`advanced.py` 在同一份两节点 manifest 上为每个场景创建独立的临时拓扑，不使用上面手动部署的 `tcp-behavior`。额外依赖 `ethtool`，以及内核的 `netem`、`clsact`、`u32`、`gact`、`pedit`、`csum` 支持。以 root 运行；不安装软件、不修改宿主机 sysctl。特权实验只在本机手动执行，不加入 CI。
+
+| 场景 | 注入条件 | 主要证据 |
+| --- | --- | --- |
+| `sack` / `no-sack` | 8 段中丢第 3、5 段的首次匹配 | SACK block、`TCPSackRecovery`、`TCPRenoRecovery`、重传与乱序队列 |
+| `dsack` / `no-dsack` | h1 方向 netem duplicate 100% | `TCPDSACKOldSent`、`TCPDSACKRecv`；首个 SACK block 位于累计 ACK 之前 |
+| `rack` / `rack-zero` | 3 段中丢第 2 段，禁用 TLP | `tcp_recovery=1/0` 对照；重传、`TCPTimeouts` 和时间线 |
+| `tlp` / `no-tlp` | 4 段中丢尾部两段，`tcp_early_retrans=3/0` | `TCPLossProbes` 与 RTO 对照；不保证 `TCPLossProbeRecovery` 增长 |
+| `ecn` / `no-ecn` | 只把 ECT(0) 数据包改成 CE；`tcp_ecn=1/0` | SYN 的 ECE/CWR 协商、CE、ECE ACK、后续 CWR；`InCEPkts`、`TCPDeliveredCE` |
+
+每个场景使用 Reno、512 字节 MSS，关闭 timestamps 和两端分段/合并及校验和 offload，双向各延迟 20ms。payload 的前 4 字节是从 0 开始的段编号；IPv4/TCP 数据头各 20 字节，`tc u32` 按 IP 起点偏移 40 匹配。仅适用于这里受控的数据包布局，不能原样用于任意 TCP 流。
+
+丢包在 **h2 ingress** 注入，避免发送端 egress 丢弃的本地反馈掩盖网络丢包。`gact drop random determ pass 2` 对每个目标交替丢弃/放行，并非永久“只丢一次”；正常运行的首次重传被放行，实际命中看 `result.json` 中 `filters`。接收端验证完整 payload 的 SHA256 后返回摘要，发送端收到摘要之前不发送 FIN，避免 FIN 改变尾部丢包恢复。
+
+```console
+$ sudo python3 ./advanced.py
+results: /tmp/nslab-tcp-results-<random>
+sack: observed
+no-sack: observed
+dsack: observed
+no-dsack: observed
+rack: observed
+rack-zero: observed
+tlp: observed
+no-tlp: observed
+ecn: observed
+no-ecn: observed
+$ sudo python3 ./advanced.py --scenario tlp
+results: /tmp/nslab-tcp-results-<random>
+tlp: observed
+$ sudo python3 ./advanced.py --scenario ecn --output /tmp/tcp-ecn-run1
+results: /tmp/tcp-ecn-run1
+ecn: observed
+```
+
+输出为成功时的示意，不保证每种内核都观察到同样事件。`--output` 必须是不存在的新目录。nslab 不在 sudo 的 PATH 中时，用 `sudo env NSLAB_BIN=/absolute/path/nslab python3 ./advanced.py` 指定。
+
+### 读懂证据，而不是只看 observed
+
+- **SACK** 告诉发送端哪些非连续字节已到达；**DSACK** 报告重复到达的字节，不是另一种拥塞控制算法。此处 DSACK 使用人为复制，不能据此断定发生了伪重传。
+- **RACK** 按发送时间判断丢失，不等同于“出现重传”。`rack` 只验证启用该参数时存在无 TLP、无 RTO 的恢复，不是函数级跟踪。新内核的 `tcp_recovery` bit 0 清零已无效，`rack-zero` **不表示 RACK off**；旧内核可能退回 RTO，新内核仍可能非 RTO 恢复。见 [内核 sysctl 文档](https://docs.kernel.org/networking/ip-sysctl.html#tcp-recovery-integer)。
+- **TLP** 是尾部丢包探测，不是所有尾部重传。必须结合 `TCPLossProbes`；关闭 TLP 的对照要求观察到 `TCPTimeouts`。这里故意丢尾部两段，让探测后的 ACK/SACK 推动恢复。
+- **ECN** 协商成功不等于发生了拥塞反馈。此处人为标记 CE 验证反馈路径，不是 AQM、吞吐或公平性测试。tcpdump 用 `E` 表示 ECE，`W` 表示 CWR；在 h2 ingress 修改前抓到的包仍可能显示 ECT(0)，需同时查看接收端 `InCEPkts` 和 h1 收到的 ECE ACK。
+
+结果目录保留 `summary.json` 和每场景的 `result.json`、`h1.pcap`、`h2.pcap`、`h1-packets.txt`、`h2-packets.txt`、进程日志。JSON 包括内核/架构、nslab 版本、manifest 和采集器 SHA256、命令与退出码、两端 `nstat -aszj` 前后值/增量、tc filter 统计及清理结果。缺失的内核计数为 `null`，不是 0。
+
+```console
+$ sudo python3 -m json.tool /tmp/tcp-ecn-run1/ecn/result.json
+{
+    "scenario": "ecn",
+    ...
+}
+$ sudo tcpdump -nn -tt -S -v -r /tmp/tcp-ecn-run1/ecn/h1.pcap
+...
+... Flags [SEW], ...
+... Flags [S.E], ...
+... Flags [.E], ...
+... Flags [W.], ...
+```
+
+`observed` 表示传输校验和该场景的计数条件满足；证据不足标成 `inconclusive`，命令或清理失败标成 `error`。任一场景未观察到预期证据，整体退出码为 1，但继续后续场景。Ctrl+C 或 SIGTERM 会停止实验、终止子进程、销毁临时拓扑并保留已有结果（退出码 130）；SIGKILL 或主机掉电无法保证自动清理，可按 `result.json` 的 deployment 用 `nslab destroy --name <deployment>` 清理。
+
 ## 清理
 
 停止 iperf3、watch 和抓包进程，再销毁。两个 Python 程序正常完成后会自行退出；超时会报错并关闭 socket。

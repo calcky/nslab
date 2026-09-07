@@ -115,7 +115,7 @@ sudo nslab destroy
 | [ipv6-forward](examples/ipv6-forward/README.md) | Linux IPv6 转发 |
 | [ipv6-autoconf](examples/ipv6-autoconf/README.md) | SLAAC、RA、DAD、NDP 与默认路由切换 |
 | [dhcpv6](examples/dhcpv6/README.md) | DHCPv6 地址租约、RA 默认路由与续租 |
-| [tcp-behavior](examples/tcp-behavior/README.md) | TCP 握手、拥塞窗口、重传与零窗口 |
+| [tcp-behavior](examples/tcp-behavior/README.md) | TCP 窗口、SACK/DSACK、RACK/TLP 与 ECN 对照实验 |
 | [mtu-offload](examples/mtu-offload/README.md) | MTU 边界、GSO/GRO/TSO 与抓包差异 |
 | [wireguard](examples/wireguard/README.md) | WireGuard 双栈加密隧道与 AllowedIPs |
 | [ipsec](examples/ipsec/README.md) | 静态 XFRM、IKEv2 PSK 协商、ESP tunnel 与 rekey |
