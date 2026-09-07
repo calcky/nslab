@@ -70,6 +70,7 @@ plugins:
             IPv6 autoconfiguration: IPv6 自动配置
             DHCPv6 leases: DHCPv6 地址租约
             TCP behavior: TCP 行为
+            Drop diagnosis: 观测与丢包定位
             MTU and offload: MTU 与 offload
             WireGuard tunnel: WireGuard 隧道
             IPsec and XFRM: IPsec 与 XFRM
@@ -166,6 +167,7 @@ nav:
           - BPF data path: examples/bpf-path.md
           - MTU and offload: examples/mtu-offload.md
           - TCP behavior: examples/tcp-behavior.md
+          - Drop diagnosis: examples/drop-diagnosis.md
       - Dynamic routing:
           - OSPF: examples/ospf.md
           - BGP: examples/bgp.md

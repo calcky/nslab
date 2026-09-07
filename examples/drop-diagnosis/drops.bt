@@ -1,0 +1,32 @@
+// Rendered by trace.py; namespace inode comes from the tracer's netns.
+BEGIN
+{
+    printf("ready netns=__NETNS__\n");
+}
+
+tracepoint:skb:kfree_skb
+{
+    $skb = (struct sk_buff *)args->skbaddr;
+    $dev = $skb->dev;
+    if ($dev != 0 && args->protocol == 0x0800 &&
+        $dev->nd_net.net->ns.inum == __NETNS__ &&
+        $skb->tail >= $skb->network_header + 28) {
+        $ip = (uint8 *)($skb->head + $skb->network_header);
+        // This lab sends linear, unfragmented IPv4 ICMP, without IP options.
+        if ($ip[0] == 0x45 && $ip[9] == 1 &&
+            ($ip[6] & 0x3f) == 0 && $ip[7] == 0 &&
+            $ip[12] == 10 && $ip[13] == 73 && $ip[14] == 1 && $ip[15] == 1 &&
+            $ip[16] == 10 && $ip[17] == 73 && $ip[18] == 2 && $ip[19] == 2 &&
+            $ip[20] == 8 && $ip[21] == 0) {
+            printf("drop ns=%u ifindex=%d id=%u seq=%u reason=%u location=%s\n",
+                   $dev->nd_net.net->ns.inum, $dev->ifindex,
+                   $ip[24] * 256 + $ip[25], $ip[26] * 256 + $ip[27],
+                   args->reason, ksym(args->location));
+        }
+    }
+}
+
+interval:s:__SECONDS__
+{
+    exit();
+}
