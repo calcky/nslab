@@ -1,0 +1,22 @@
+version: 1
+name: dhcpv6
+topology:
+  nodes:
+    r1:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [fe80::1/64, "2001:db8:60::1/64"]
+      devices:
+        dummy0:
+          type: dummy
+          addresses: ["2001:db8:61::1/128"]
+      sysctls:
+        net.ipv6.conf.all.forwarding: 1
+    h1:
+      kind: linux
+      interfaces:
+        eth0:
+          mac: "02:00:00:00:60:02"
+  links:
+    - endpoints: [r1:eth0, h1:eth0]

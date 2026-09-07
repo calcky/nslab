@@ -37,6 +37,7 @@ sudo nslab destroy
 | Example | Focus |
 | --- | --- |
 | [GRE and IPIP](ip-tunnels.md) | Keyed GRE and IPv4-in-IPv4 point-to-point tunnels |
+| [WireGuard](wireguard.md) | Dual-stack encrypted tunnels, handshakes, and AllowedIPs |
 
 ## Link aggregation
 
@@ -53,6 +54,7 @@ sudo nslab destroy
 | [IPv4 forwarding](ipv4-forward.md) | IPv4 static routes and the Linux forwarding path |
 | [IPv6 forwarding](ipv6-forward.md) | IPv6 default routes, DAD, and the Linux forwarding path |
 | [IPv6 autoconfiguration](ipv6-autoconf.md) | SLAAC, RA, DAD, NDP, and default-router failover |
+| [DHCPv6](dhcpv6.md) | Stateful leases, RA default routes, and renewal |
 | [MTU and PMTU](pmtu.md) | IPv4 fragmentation, PMTU learning, and IPv6 Packet Too Big |
 | [Neighbor tables](neighbors.md) | Fixed MAC addresses, static ARP/NDP, and proxying |
 | [ECMP](ecmp.md) | Static equal-cost next hops, weights, and per-flow hashing |
@@ -77,6 +79,9 @@ sudo nslab destroy
 | Example | Focus |
 | --- | --- |
 | [XDP receive and transmit](xdp.md) | `XDP_PASS`, `XDP_DROP`, `XDP_TX`, `XDP_REDIRECT`, and BPF map counters |
+| [BPF data path](bpf-path.md) | XDP versus TC ingress/egress and capture visibility |
+| [MTU and offload](mtu-offload.md) | MTU boundaries, segmentation, coalescing, and checksum capture artifacts |
+| [TCP behavior](tcp-behavior.md) | Handshake, congestion window, retransmissions, and zero window |
 
 ## Dynamic routing
 

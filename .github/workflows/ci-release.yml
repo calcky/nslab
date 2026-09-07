@@ -95,8 +95,10 @@ jobs:
           sudo systemctl disable --now frr.service || true
       - name: Sync integration environment
         run: uv sync --locked --python 3.12
-      - name: Compile XDP example
-        run: make -C examples/xdp
+      - name: Compile BPF examples
+        run: |
+          make -C examples/xdp
+          make -C examples/bpf-path
       - name: Run supported root integration tests
         run: |
           sudo env TMPDIR=/tmp "$GITHUB_WORKSPACE/.venv/bin/pytest" \

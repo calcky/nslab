@@ -1,0 +1,16 @@
+version: 1
+name: wireguard
+topology:
+  nodes:
+    r1:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [192.0.2.1/24]
+    r2:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [192.0.2.2/24]
+  links:
+    - endpoints: [r1:eth0, r2:eth0]

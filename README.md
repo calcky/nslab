@@ -114,6 +114,11 @@ sudo nslab destroy
 | [ipv4-forward](examples/ipv4-forward/README.md) | Linux IPv4 转发 |
 | [ipv6-forward](examples/ipv6-forward/README.md) | Linux IPv6 转发 |
 | [ipv6-autoconf](examples/ipv6-autoconf/README.md) | SLAAC、RA、DAD、NDP 与默认路由切换 |
+| [dhcpv6](examples/dhcpv6/README.md) | DHCPv6 地址租约、RA 默认路由与续租 |
+| [tcp-behavior](examples/tcp-behavior/README.md) | TCP 握手、拥塞窗口、重传与零窗口 |
+| [mtu-offload](examples/mtu-offload/README.md) | MTU 边界、GSO/GRO/TSO 与抓包差异 |
+| [wireguard](examples/wireguard/README.md) | WireGuard 双栈加密隧道与 AllowedIPs |
+| [bpf-path](examples/bpf-path/README.md) | XDP 与 TC ingress/egress 数据路径 |
 | [pmtu](examples/pmtu/README.md) | MTU、PMTU、IPv4 分片与 IPv6 Packet Too Big |
 | [neighbors](examples/neighbors/README.md) | 固定 MAC、静态 ARP/NDP 与 Proxy ARP/NDP |
 | [ecmp](examples/ecmp/README.md) | 静态等价多路径与逐流哈希 |

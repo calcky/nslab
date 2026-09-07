@@ -37,6 +37,7 @@ sudo nslab destroy
 | 示例 | 学习内容 |
 | --- | --- |
 | [GRE 与 IPIP](ip-tunnels.md) | 带 key 的 GRE 与 IPv4-in-IPv4 点到点隧道 |
+| [WireGuard](wireguard.md) | 双栈加密隧道、握手与 AllowedIPs |
 
 ## 链路聚合
 
@@ -53,6 +54,7 @@ sudo nslab destroy
 | [IPv4 转发](ipv4-forward.md) | IPv4 静态路由和 Linux 转发路径 |
 | [IPv6 转发](ipv6-forward.md) | IPv6 默认路由、DAD 和 Linux 转发路径 |
 | [IPv6 自动配置](ipv6-autoconf.md) | SLAAC、RA、DAD、NDP 与默认路由切换 |
+| [DHCPv6](dhcpv6.md) | 有状态租约、RA 默认路由与续租 |
 | [MTU 与 PMTU](pmtu.md) | IPv4 分片、PMTU 学习与 IPv6 Packet Too Big |
 | [邻居表](neighbors.md) | 固定 MAC、静态 ARP/NDP 与 Proxy ARP/NDP |
 | [ECMP](ecmp.md) | 静态等价下一跳、权重与逐流哈希 |
@@ -77,6 +79,9 @@ sudo nslab destroy
 | 示例 | 学习内容 |
 | --- | --- |
 | [XDP 收发包](xdp.md) | `XDP_PASS`、`XDP_DROP`、`XDP_TX`、`XDP_REDIRECT` 和 BPF map 计数器 |
+| [BPF 数据路径](bpf-path.md) | XDP 与 TC ingress/egress、抓包可见性 |
+| [MTU 与 offload](mtu-offload.md) | MTU 边界、分段、聚合与校验和抓包现象 |
+| [TCP 行为](tcp-behavior.md) | 握手、拥塞窗口、重传与零窗口 |
 
 ## 动态路由
 
