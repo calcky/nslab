@@ -38,6 +38,7 @@ sudo nslab destroy
 | --- | --- |
 | [GRE and IPIP](ip-tunnels.md) | Keyed GRE and IPv4-in-IPv4 point-to-point tunnels |
 | [WireGuard](wireguard.md) | Dual-stack encrypted tunnels, handshakes, and AllowedIPs |
+| [IPsec and XFRM](ipsec.md) | Static ESP tunnels, IKEv2 PSK negotiation, rekey, and encrypted captures |
 
 ## Link aggregation
 

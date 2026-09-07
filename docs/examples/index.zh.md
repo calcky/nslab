@@ -38,6 +38,7 @@ sudo nslab destroy
 | --- | --- |
 | [GRE 与 IPIP](ip-tunnels.md) | 带 key 的 GRE 与 IPv4-in-IPv4 点到点隧道 |
 | [WireGuard](wireguard.md) | 双栈加密隧道、握手与 AllowedIPs |
+| [IPsec 与 XFRM](ipsec.md) | 静态 ESP tunnel、IKEv2 PSK 协商、rekey 与加密抓包 |
 
 ## 链路聚合
 

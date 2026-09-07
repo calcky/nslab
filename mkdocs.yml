@@ -72,6 +72,7 @@ plugins:
             TCP behavior: TCP 行为
             MTU and offload: MTU 与 offload
             WireGuard tunnel: WireGuard 隧道
+            IPsec and XFRM: IPsec 与 XFRM
             BPF data path: BPF 数据路径
             MTU and PMTU: MTU 与 PMTU
             Neighbor tables: 邻居表
@@ -140,6 +141,7 @@ nav:
       - Tunnel devices:
           - GRE and IPIP: examples/ip-tunnels.md
           - WireGuard tunnel: examples/wireguard.md
+          - IPsec and XFRM: examples/ipsec.md
       - Link aggregation:
           - Bond overview: examples/bond.md
           - Bond active-backup: examples/bond-active-backup.md
