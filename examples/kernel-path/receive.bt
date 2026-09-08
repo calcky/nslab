@@ -1,0 +1,100 @@
+// Usage: sudo bpftrace receive.bt NETNS_INODE
+// Run on the host; Ctrl+C detaches. NET_RX and scheduler events are host-wide.
+BEGIN
+{
+    if ($# != 1 || $1 <= 0) {
+        printf("usage: bpftrace receive.bt NETNS_INODE\n");
+        exit();
+    }
+    printf("ready netns=%llu\n", $1);
+}
+
+tracepoint:net:netif_receive_skb
+{
+    $skb = (struct sk_buff *)args->skbaddr;
+    $dev = $skb->dev;
+    if ($dev != 0 && $dev->nd_net.net->ns.inum == $1 &&
+        $skb->tail >= $skb->network_header + 28) {
+        $ip = (uint8 *)($skb->head + $skb->network_header);
+        if ($ip[0] == 0x45 && $ip[9] == 1 &&
+            ($ip[6] & 0x3f) == 0 && $ip[7] == 0 &&
+            $ip[12] == 10 && $ip[13] == 73 && ($ip[14] == 1 || $ip[14] == 2) &&
+            $ip[16] == 10 && $ip[17] == 73 && ($ip[18] == 1 || $ip[18] == 2) &&
+            ($ip[20] == 8 || $ip[20] == 0) && $ip[21] == 0) {
+            $vec = @softirq[cpu];
+            $context = strcontains(comm, "ksoftirqd/") ? "ksoftirqd" :
+                       ($vec == 2 ? "NET_TX" : ($vec == 3 ? "NET_RX" : "task/unknown"));
+            printf("rx ts=%llu cpu=%u pid=%u comm=%s context=%s softirq=%s dev=%s skb=0x%lx type=%u id=%u seq=%u\n",
+                   nsecs, cpu, pid, comm, $context,
+                   $vec == 2 ? "NET_TX" : ($vec == 3 ? "NET_RX" : "none"),
+                   str($dev->name, 16), (uint64)$skb,
+                   $ip[20], $ip[24] * 256 + $ip[25], $ip[26] * 256 + $ip[27]);
+            @rx_cpu[cpu] = count();
+            @rx_context[$context, comm] = count();
+        }
+    }
+}
+
+kprobe:ip_rcv
+{
+    $skb = (struct sk_buff *)arg0;
+    $dev = $skb->dev;
+    if ($dev != 0 && $dev->nd_net.net->ns.inum == $1 &&
+        $skb->tail >= $skb->network_header + 28) {
+        $ip = (uint8 *)($skb->head + $skb->network_header);
+        if ($ip[0] == 0x45 && $ip[9] == 1 &&
+            ($ip[6] & 0x3f) == 0 && $ip[7] == 0 &&
+            $ip[12] == 10 && $ip[13] == 73 && ($ip[14] == 1 || $ip[14] == 2) &&
+            $ip[16] == 10 && $ip[17] == 73 && ($ip[18] == 1 || $ip[18] == 2) &&
+            ($ip[20] == 8 || $ip[20] == 0) && $ip[21] == 0) {
+            $vec = @softirq[cpu];
+            $context = strcontains(comm, "ksoftirqd/") ? "ksoftirqd" :
+                       ($vec == 2 ? "NET_TX" : ($vec == 3 ? "NET_RX" : "task/unknown"));
+            printf("ip ts=%llu cpu=%u pid=%u comm=%s context=%s softirq=%s dev=%s skb=0x%lx type=%u id=%u seq=%u\n",
+                   nsecs, cpu, pid, comm, $context,
+                   $vec == 2 ? "NET_TX" : ($vec == 3 ? "NET_RX" : "none"),
+                   str($dev->name, 16), (uint64)$skb,
+                   $ip[20], $ip[24] * 256 + $ip[25], $ip[26] * 256 + $ip[27]);
+            @ip_cpu[cpu] = count();
+        }
+    }
+}
+
+tracepoint:irq:softirq_entry
+/args->vec == 2 || args->vec == 3/
+{
+    @softirq[cpu] = args->vec;
+    if (args->vec == 3) { @net_rx_entry[cpu] = count(); }
+}
+
+tracepoint:irq:softirq_exit
+/args->vec == 2 || args->vec == 3/
+{
+    @softirq[cpu] = 0;
+}
+
+tracepoint:sched:sched_switch
+/strcontains(str(args->next_comm), "ksoftirqd")/
+{
+    @ksoftirqd_in[cpu, str(args->next_comm)] = count();
+}
+
+END
+{
+    printf("\nlab receive events by CPU:\n");
+    print(@rx_cpu);
+    printf("lab ip_rcv events by CPU:\n");
+    print(@ip_cpu);
+    printf("lab receive execution contexts:\n");
+    print(@rx_context);
+    printf("host-wide NET_RX softirq entries during observation:\n");
+    print(@net_rx_entry);
+    printf("host-wide ksoftirqd schedules during observation:\n");
+    print(@ksoftirqd_in);
+    clear(@rx_cpu);
+    clear(@ip_cpu);
+    clear(@rx_context);
+    clear(@net_rx_entry);
+    clear(@ksoftirqd_in);
+    clear(@softirq);
+}

@@ -1,0 +1,117 @@
+// Usage: sudo bpftrace transmit.bt NETNS_INODE
+// Run on the host; Ctrl+C detaches.
+BEGIN
+{
+    if ($# != 1 || $1 <= 0) {
+        printf("usage: bpftrace transmit.bt NETNS_INODE\n");
+        exit();
+    }
+    printf("ready netns=%llu\n", $1);
+}
+
+kprobe:ip_output
+{
+    $skb = (struct sk_buff *)arg2;
+    $dev = $skb->dev;
+    $net = (struct net *)arg0;
+    if ($net != 0 && $net->ns.inum == $1 && $dev != 0 &&
+        $skb->tail >= $skb->network_header + 28) {
+        $ip = (uint8 *)($skb->head + $skb->network_header);
+        if ($ip[0] == 0x45 && $ip[9] == 1 &&
+            ($ip[6] & 0x3f) == 0 && $ip[7] == 0 &&
+            $ip[12] == 10 && $ip[13] == 73 && ($ip[14] == 1 || $ip[14] == 2) &&
+            $ip[16] == 10 && $ip[17] == 73 && ($ip[18] == 1 || $ip[18] == 2) &&
+            ($ip[20] == 8 || $ip[20] == 0) && $ip[21] == 0) {
+            $vec = @softirq[cpu];
+            $context = strcontains(comm, "ksoftirqd/") ? "ksoftirqd" :
+                       ($vec == 2 ? "NET_TX" : ($vec == 3 ? "NET_RX" : "task/unknown"));
+            printf("ipout ts=%llu cpu=%u pid=%u comm=%s context=%s softirq=%s dev=%s skb=0x%lx type=%u id=%u seq=%u\n",
+                   nsecs, cpu, pid, comm, $context,
+                   $vec == 2 ? "NET_TX" : ($vec == 3 ? "NET_RX" : "none"),
+                   str($dev->name, 16), (uint64)$skb,
+                   $ip[20], $ip[24] * 256 + $ip[25], $ip[26] * 256 + $ip[27]);
+            @ipout_cpu[cpu] = count();
+        }
+    }
+}
+
+tracepoint:net:net_dev_queue
+{
+    $skb = (struct sk_buff *)args->skbaddr;
+    $dev = $skb->dev;
+    if ($dev != 0 && $dev->nd_net.net->ns.inum == $1 &&
+        $skb->tail >= $skb->network_header + 28) {
+        $ip = (uint8 *)($skb->head + $skb->network_header);
+        if ($ip[0] == 0x45 && $ip[9] == 1 &&
+            ($ip[6] & 0x3f) == 0 && $ip[7] == 0 &&
+            $ip[12] == 10 && $ip[13] == 73 && ($ip[14] == 1 || $ip[14] == 2) &&
+            $ip[16] == 10 && $ip[17] == 73 && ($ip[18] == 1 || $ip[18] == 2) &&
+            ($ip[20] == 8 || $ip[20] == 0) && $ip[21] == 0) {
+            $vec = @softirq[cpu];
+            $context = strcontains(comm, "ksoftirqd/") ? "ksoftirqd" :
+                       ($vec == 2 ? "NET_TX" : ($vec == 3 ? "NET_RX" : "task/unknown"));
+            printf("queue ts=%llu cpu=%u pid=%u comm=%s context=%s softirq=%s dev=%s skb=0x%lx len=%u type=%u id=%u seq=%u\n",
+                   nsecs, cpu, pid, comm, $context,
+                   $vec == 2 ? "NET_TX" : ($vec == 3 ? "NET_RX" : "none"),
+                   str($dev->name, 16), (uint64)$skb, args->len,
+                   $ip[20], $ip[24] * 256 + $ip[25], $ip[26] * 256 + $ip[27]);
+            @queue_cpu[cpu] = count();
+            @tx_context[$context, comm] = count();
+        }
+    }
+}
+
+tracepoint:net:net_dev_start_xmit
+{
+    $skb = (struct sk_buff *)args->skbaddr;
+    $dev = $skb->dev;
+    if ($dev != 0 && $dev->nd_net.net->ns.inum == $1 &&
+        $skb->tail >= $skb->network_header + 28) {
+        $ip = (uint8 *)($skb->head + $skb->network_header);
+        if ($ip[0] == 0x45 && $ip[9] == 1 &&
+            ($ip[6] & 0x3f) == 0 && $ip[7] == 0 &&
+            $ip[12] == 10 && $ip[13] == 73 && ($ip[14] == 1 || $ip[14] == 2) &&
+            $ip[16] == 10 && $ip[17] == 73 && ($ip[18] == 1 || $ip[18] == 2) &&
+            ($ip[20] == 8 || $ip[20] == 0) && $ip[21] == 0) {
+            $vec = @softirq[cpu];
+            $context = strcontains(comm, "ksoftirqd/") ? "ksoftirqd" :
+                       ($vec == 2 ? "NET_TX" : ($vec == 3 ? "NET_RX" : "task/unknown"));
+            printf("xmit ts=%llu cpu=%u pid=%u comm=%s context=%s softirq=%s dev=%s skb=0x%lx q=%u len=%u gso=%u/%u type=%u id=%u seq=%u\n",
+                   nsecs, cpu, pid, comm, $context,
+                   $vec == 2 ? "NET_TX" : ($vec == 3 ? "NET_RX" : "none"),
+                   str(args->name), (uint64)$skb,
+                   args->queue_mapping, args->len, args->gso_size, args->gso_segs,
+                   $ip[20], $ip[24] * 256 + $ip[25], $ip[26] * 256 + $ip[27]);
+            @xmit_cpu[cpu] = count();
+        }
+    }
+}
+
+tracepoint:irq:softirq_entry
+/args->vec == 2 || args->vec == 3/
+{
+    @softirq[cpu] = args->vec;
+}
+
+tracepoint:irq:softirq_exit
+/args->vec == 2 || args->vec == 3/
+{
+    @softirq[cpu] = 0;
+}
+
+END
+{
+    printf("\nlab ip_output events by CPU:\n");
+    print(@ipout_cpu);
+    printf("lab net_dev_queue events by CPU:\n");
+    print(@queue_cpu);
+    printf("lab net_dev_start_xmit events by CPU:\n");
+    print(@xmit_cpu);
+    printf("lab transmit execution contexts:\n");
+    print(@tx_context);
+    clear(@ipout_cpu);
+    clear(@queue_cpu);
+    clear(@xmit_cpu);
+    clear(@tx_context);
+    clear(@softirq);
+}

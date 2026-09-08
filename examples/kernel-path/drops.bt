@@ -1,7 +1,11 @@
-// Rendered by trace.py; namespace inode comes from the selected namespace handle.
+// Usage: sudo bpftrace drops.bt NETNS_INODE
 BEGIN
 {
-    printf("ready netns=__NETNS__\n");
+    if ($# != 1 || $1 <= 0) {
+        printf("usage: bpftrace drops.bt NETNS_INODE\n");
+        exit();
+    }
+    printf("ready netns=%llu\n", $1);
 }
 
 tracepoint:skb:kfree_skb
@@ -9,7 +13,7 @@ tracepoint:skb:kfree_skb
     $skb = (struct sk_buff *)args->skbaddr;
     $dev = $skb->dev;
     if ($dev != 0 && args->protocol == 0x0800 &&
-        $dev->nd_net.net->ns.inum == __NETNS__ &&
+        $dev->nd_net.net->ns.inum == $1 &&
         $skb->tail >= $skb->network_header + 28) {
         $ip = (uint8 *)($skb->head + $skb->network_header);
         // This lab sends linear, unfragmented IPv4 ICMP, without IP options.
@@ -24,9 +28,4 @@ tracepoint:skb:kfree_skb
                    args->reason, ksym(args->location));
         }
     }
-}
-
-interval:s:__SECONDS__
-{
-    exit();
 }

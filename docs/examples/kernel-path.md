@@ -1,10 +1,10 @@
-# Kernel data path observation
+# Kernel Data Path Observation
 
-Observe normal IPv4 forwarding and local INPUT/OUTPUT, and diagnose failed traffic using packet identity and kernel drop reasons. Configuration changes are restricted to lab namespaces; no nslab core features or host sysctls are changed. The former drop-diagnosis example is now part of this directory; clean up an old deployment with `nslab destroy --name drop-diagnosis` first.
+Deploy, run bt, send packets, inspect output, and clean up manually. No Python automation. Requires `nslab bpftrace jq iproute2 iputils-ping`, optionally `tcpdump`, plus root, kernel BTF, tracefs and the selected tracepoints/kprobes. Drop tracing also needs kfree_skb's reason field (upstream Linux 5.17+). Outputs are illustrative; Ubuntu 24.04 or newer Linux is recommended.
 
-Run in this directory with `nslab`, `python3`, `iproute2`, `iputils-ping`, `tcpdump`, and `bpftrace`. Ubuntu 24.04 or newer Linux is recommended, with BTF, tracepoint/kprobe support, and root/BPF permissions. Only drop mode additionally requires the `reason` field in `skb:kfree_skb` (upstream Linux 5.17+); actual probes/fields depend on the running kernel. Tracefs must already be mounted; scripts do not mount it or install dependencies. Outputs below are illustrative.
+## 1. Deploy
 
-## Topology and baseline
+Run in this directory. Fixed MACs and permanent neighbors exclude ARP interference.
 
 ```bash
 nslab graph --format mermaid
@@ -19,35 +19,38 @@ flowchart LR
     n1 -- "eth1 <-> eth0" --- n2
 ```
 
-h1 is `10.73.1.1`, h2 is `10.73.2.2`, and r1 uses `.254` in both subnets. Fixed MACs and permanent neighbors exclude ARP resolution from these faults; see the neighbors example for neighbor-state experiments. Explicitly disable reverse-path filtering on r1 after deployment instead of relying on distribution defaults.
-
 ```console
 $ sudo nslab deploy
 deployed topology: kernel-path
 $ sudo nslab inspect
 status: deployed
 ...
-$ sudo nslab exec --node r1 -- sysctl -w net.ipv4.conf.all.rp_filter=0 net.ipv4.conf.default.rp_filter=0 net.ipv4.conf.eth0.rp_filter=0 net.ipv4.conf.eth1.rp_filter=0
+$ sudo nslab exec --node r1 -- sysctl -w net.ipv4.conf.all.rp_filter=0 net.ipv4.conf.eth0.rp_filter=0 net.ipv4.conf.eth1.rp_filter=0
 net.ipv4.conf.all.rp_filter = 0
-net.ipv4.conf.default.rp_filter = 0
 net.ipv4.conf.eth0.rp_filter = 0
 net.ipv4.conf.eth1.rp_filter = 0
-$ sudo nslab exec --node h1 -- ping -n -c 3 -W 1 10.73.2.2
-...
-3 packets transmitted, 3 received, 0% packet loss
 ```
 
-## Normal paths: forwarding and local traffic
+```bash
+lab_ns=$(sudo nslab inspect --format json | jq -er '.nodes[] | select(.name == "r1") | .namespace')
+lab_inode=$(sudo stat -Lc '%i' "/run/netns/$lab_ns")
+```
 
-Keep the healthy baseline above, without injecting faults. Start path mode in terminal A and wait for ready; run the three pings in terminal B. Tracing stops after 30 seconds; use --seconds 60 for more time. --stacks is optional; without it kernel stacks are not collected.
+Set these variables in the tracer terminal; resolve the inode again after redeploy. **Run bpftrace on the host**, not under nslab exec. The bt code filters the skb namespace, not the current PID. Clean up old deployments with `nslab destroy --name drop-diagnosis`.
+
+## 2. Normal Paths
+
+Start tracing in terminal A, wait for ready, then run the three pings in terminal B. Set the second argument to `1` for kernel stacks, or `0` for concise output. Ctrl+C stops tracing; append `| tee /tmp/kernel-path.log` to retain logs.
 
 ```console
-$ sudo python3 ./trace.py --mode path --seconds 30 --stacks | tee /tmp/kernel-path.log
-probes={"enabled": [...], "unavailable": [...]}
-ready netns=<inode>
-path ts=<ns> cpu=<cpu> ns=<inode> ifindex=<index> ifname=eth0 skb=0x... src=10.73.1.1 dst=10.73.2.2 type=8 id=<id> seq=1 stage=forward hook=kprobe:ip_forward
-    ip_forward+...
-    ...
+$ sudo bpftrace paths.bt "$lab_inode" 0
+...
+ready netns=<inode> stacks=0
+ts=... cpu=... ns=... dev=eth0(...) skb=0x... 10.73.1.1 -> 10.73.2.2 type=8 id=... seq=1 kprobe:ip_forward
+...
+```
+
+```console
 $ sudo nslab exec --node h1 -- ping -n -c 3 -W 1 10.73.2.2
 ...
 3 packets transmitted, 3 received, 0% packet loss
@@ -59,130 +62,43 @@ $ sudo nslab exec --node r1 -- ping -n -c 3 -W 1 10.73.2.2
 3 packets transmitted, 3 received, 0% packet loss
 ```
 
-| Traffic | Main observations on r1 | Distinction |
-| --- | --- | --- |
-| h1 → h2, requests and replies | `ip_rcv`, `ip_forward`, `ip_output`, transmit queue | Forwarding through r1 |
-| h1 → r1 | Request: `ip_local_deliver`; reply: output and transmit queue | Local delivery and a locally generated reply |
-| r1 → h2 | Request: output and transmit queue; reply: `ip_local_deliver` | Locally initiated traffic and its reply |
+| Traffic | Observe on r1 |
+| --- | --- |
+| h1 → h2 | ip_rcv → ip_forward → ip_output → net_dev_queue |
+| h1 → r1 | Request reaches ip_local_deliver; reply uses __ip_local_out and ip_output |
+| r1 → h2 | Request uses __ip_local_out and ip_output; reply reaches ip_local_deliver |
 
-After tracing, inspect packet groups instead of searching interleaved raw lines:
+Correlate source/destination, type (8 request, 0 reply), id/seq and timestamps. skb addresses are auxiliary. These are observation points, not a complete call chain. dev is the current skb device, not necessarily final egress. Local output can show `-(0)`; those probes use the function's net argument instead. Inlining/batching may bypass probes: not observed does not mean not traversed. Timings include tracing overhead, not benchmark latency.
+
+## 3. Drop Diagnosis
+
+Stop paths.bt and start drops.bt. Inject, probe, and revert each fault in another terminal. Do not stack faults or use set -e: failed ping is expected.
 
 ```console
-$ python3 ./paths.py /tmp/kernel-path.log
-10.73.1.1 -> 10.73.2.2 ICMP request id=<id> seq=1 netns=<inode>
-  +    0.000 us  tracepoint:net:netif_receive_skb     dev=eth0(...) cpu=... skb=0x...
-  +   ...       kprobe:ip_rcv                        dev=eth0(...) cpu=... skb=0x...
-  +   ...       kprobe:ip_forward                    dev=eth0(...) cpu=... skb=0x...
-  +   ...       kprobe:ip_output                     dev=eth0(...) cpu=... skb=0x...
-  +   ...       tracepoint:net:net_dev_queue          dev=eth1(...) cpu=... skb=0x...
+$ sudo bpftrace drops.bt "$lab_inode"
 ...
-$ python3 ./paths.py /tmp/kernel-path.log --stacks
-10.73.1.1 -> 10.73.2.2 ICMP request id=<id> seq=1 netns=<inode>
-  ...
-  +   ...       kprobe:ip_forward ...
-      ip_forward+...
-      ...
-$ python3 ./paths.py /tmp/kernel-path.log --json
-[
-  [
-    {"ts": ..., "namespace": ..., "hook": "...", "stack": [...]}
-  ],
-  ...
-]
-```
-
-These are **observation-point sequences, not complete kernel call graphs**. Groups use namespace, source/destination IP, ICMP type/id/seq, sorted by kernel timestamp with offsets from the first observation. Requests and replies have separate groups with matching id/seq. A changed skb address does not split the packet group; cloning can produce branches, so the list does not prove a unique linear path. Avoid reusing identical packet identities in one recording.
-
-Timings show relative event order with instrumentation overhead, not an uninstrumented latency benchmark; do not subtract pcap wall-clock timestamps directly. A stack may include upstream sending context during softirq processing. It is the stack at the observation point, not the packet's full history.
-
-`ip_local_out` / `__ip_local_out` are probed when available, but the compiler may inline actual ICMP call sites: **an available, attached symbol does not guarantee a hit on every path**. The checker records this as `enabled_but_unseen`, never fabricating events. Local OUTPUT checks require `ip_output` and transmit-queue observations, combined with the r1-originated command and endpoint captures; they do not separately prove execution of the Netfilter LOCAL_OUT hook.
-
-`dev=- (ifindex=0)` means the skb has no associated device at that point. Local output probes use the function's net argument to scope events. Other dev fields describe the skb's current device, not necessarily the eventual egress; the transmit-queue event adds egress evidence. Receive batching, inlining, unavailable probes, and lost events can leave gaps. “Not observed” does not mean “not traversed.”
-
-### Automated normal-path check
-
-```console
-$ sudo python3 ./check_paths.py
-results: /tmp/nslab-path-results-<random>
-forward: observed
-input: observed
-output: observed
-$ sudo python3 ./check_paths.py --scenario input --output /tmp/kernel-input-run1
-results: /tmp/kernel-input-run1
-input: observed
-$ sudo python3 ./paths.py /tmp/kernel-input-run1/input/paths.log --stacks
-10.73.1.1 -> 10.73.1.254 ICMP request id=20000 seq=1 netns=<inode>
-  ...
-  +   ...       kprobe:ip_local_deliver ...
-      ip_local_deliver+...
-      ...
-10.73.1.254 -> 10.73.1.1 ICMP reply id=20000 seq=1 netns=<inode>
-  ...
-  +   ...       kprobe:ip_output ...
-      ...
-```
-
-check_paths.py reuses the drop checker's controlled process/deployment lifecycle without injecting faults. It verifies three requests and three replies per case, endpoint pcaps, the r1 namespace filter, required observation order, and kernel stacks. Local traffic must not produce matching ip_forward events. Results include `paths.log`, `paths.txt`, `paths-stacks.txt`, and structured events.
-
-Required points differ for local and forwarding cases. Missing evidence yields `inconclusive`; unavailable dependencies yield `skipped`. Missing points are never inserted into the display. `probes.unavailable` lists unavailable probes; `enabled_but_unseen` lists enabled probes with no matching events in this run. An empty trace is not proof that no traffic passed.
-
-`NSLAB_BIN` / `BPFTRACE_BIN`, new-output-directory rules, exit codes, and interruption cleanup match check.py below. Privileged checks are not added to CI, and no host tools or kernel settings are installed or modified.
-
-## Drop diagnosis: three evidence sources
-
-Run the tracer in terminal A, the two captures in B/C, and inject faults/send probes in D. Restart observers for each experiment and wait for `ready` / `listening on`. A healthy baseline has no matching drop events; the drop line below illustrates a later fault. AF_PACKET capture precedes normal IP input and TC ingress, so all three faults can look like “visible at r1, absent at h2.”
-
-```console
-$ sudo python3 ./trace.py --mode drop --name kernel-path --node r1 --seconds 60
-reason_names={"2": "NOT_SPECIFIED", ...}
 ready netns=<inode>
-...
-drop ns=<inode> ifindex=<index> id=<id> seq=1 reason=<code> location=<kernel-function>
-$ sudo nslab exec --node r1 -- env -u LD_LIBRARY_PATH tcpdump -nni eth0 'icmp and src host 10.73.1.1 and dst host 10.73.2.2'
-... 10.73.1.1 > 10.73.2.2: ICMP echo request, id <id>, seq 1 ...
-$ sudo nslab exec --node h2 -- env -u LD_LIBRARY_PATH tcpdump -nni eth0 'icmp and src host 10.73.1.1 and dst host 10.73.2.2'
-... 10.73.1.1 > 10.73.2.2: ICMP echo request, id <id>, seq 1 ...
-$ sudo nslab exec --node r1 -- nstat -aszj
-{"kernel": {...}}
+drop ns=... ifindex=... id=... seq=1 reason=<number> location=<function>
 ```
 
-`nstat -aszj` reads absolute namespace counters without updating history files. Take snapshots before/after and subtract them; cumulative values are not per-experiment drops. `env -u LD_LIBRARY_PATH` prevents bundled nslab libraries from interfering with system tcpdump.
+```bash
+sudo cat /sys/kernel/tracing/events/skb/kfree_skb/format
+```
 
-**Run the tracer on the host, not inside nslab exec.** Kernel tracepoints are not namespace-isolated. Entering a namespace does not scope events and may hide the host tracefs mount. The script resolves the target namespace inode using inspect, checks `skb->dev->nd_net.net->ns.inum` in BPF, then filters the fixed IPv4 endpoints and ICMP Echo Requests. It does not filter by current PID: receive processing can occur in softirq/ksoftirqd.
-
-Events retain ICMP `id/seq`, `ifindex`, numeric `reason`, and release `location`. Interpret numbers using the initial `reason_names` table, read from the running kernel's trace format rather than hardcoded across versions. The automated checker also adds a human-readable `reason_name` field.
-
-## Fault 1: missing destination route
-
-Remove r1's route to h2's subnet. Requests should appear at r1 but not h2, with `IP_INNOROUTES` or the version's corresponding `IP_OUTNOROUTES`. Correlate with `IpExtInNoRoutes` / `IpOutNoRoutes` deltas. ICMP errors may be rate limited; do not require one error reply per request. This `ip route get` is a local routing lookup, not a complete forwarding-path simulation.
+Decode numeric reasons using the running kernel's format table, not hardcoded version-independent numbers. Expected reasons are `IP_INNOROUTES/IP_OUTNOROUTES`, `IP_RPFILTER`, and `TC_INGRESS`; old kernels may report only `NOT_SPECIFIED`. Commands below test missing routes, strict reverse-path filtering, then TC ingress drop:
 
 ```console
 $ sudo nslab exec --node r1 -- ip route del 10.73.2.0/24 dev eth1
 (no output)
-$ sudo nslab exec --node r1 -- ip route get 10.73.2.2
-RTNETLINK answers: Network is unreachable
 $ sudo nslab exec --node h1 -- ping -n -c 3 -W 1 10.73.2.2
 From 10.73.1.254 icmp_seq=1 Destination Net Unreachable
 ...
-3 packets transmitted, 0 received, ... 100% packet loss
 $ sudo nslab exec --node r1 -- ip route add 10.73.2.0/24 dev eth1
 (no output)
-$ sudo nslab exec --node h1 -- ping -n -c 3 -W 1 10.73.2.2
-...
-3 packets transmitted, 3 received, 0% packet loss
-```
-
-## Fault 2: strict reverse-path filtering
-
-Enable strict `rp_filter=1` on r1:eth0 and install a more-specific wrong reverse route. Requests arrive on eth0, but the best route to their source points to eth1. Require `IP_RPFILTER` events and correlate `TcpExtIPReversePathFilter` deltas, not merely missing replies.
-
-```console
 $ sudo nslab exec --node r1 -- sysctl -w net.ipv4.conf.eth0.rp_filter=1
 net.ipv4.conf.eth0.rp_filter = 1
 $ sudo nslab exec --node r1 -- ip route add 10.73.1.1/32 via 10.73.2.2 dev eth1
 (no output)
-$ sudo nslab exec --node r1 -- ip route get 10.73.1.1
-10.73.1.1 via 10.73.2.2 dev eth1 src 10.73.2.254 ...
 $ sudo nslab exec --node h1 -- ping -n -c 3 -W 1 10.73.2.2
 ...
 3 packets transmitted, 0 received, 100% packet loss
@@ -190,18 +106,6 @@ $ sudo nslab exec --node r1 -- sysctl -w net.ipv4.conf.eth0.rp_filter=0
 net.ipv4.conf.eth0.rp_filter = 0
 $ sudo nslab exec --node r1 -- ip route del 10.73.1.1/32 via 10.73.2.2 dev eth1
 (no output)
-$ sudo nslab exec --node h1 -- ping -n -c 3 -W 1 10.73.2.2
-...
-3 packets transmitted, 3 received, 0% packet loss
-```
-
-Effective rp_filter is the maximum of `conf.all` and the ingress interface value; the baseline sets all to 0. Recovery must also remove the wrong route; disabling filtering alone leaves replies misrouted. Permanent neighbors prevent ARP from failing before this IPv4 experiment.
-
-## Fault 3: TC ingress drop
-
-A flower filter matches the lab flow and gact drops it before IP routing input. r1 capture still sees requests, while IP counters need not increase. Correlate TC action drop deltas with `TC_INGRESS`. Older kernels may report only `NOT_SPECIFIED`, which must not be reinterpreted as an exact cause.
-
-```console
 $ sudo nslab exec --node r1 -- tc qdisc add dev eth0 clsact
 (no output)
 $ sudo nslab exec --node r1 -- tc filter add dev eth0 ingress protocol ip pref 10 flower src_ip 10.73.1.1 dst_ip 10.73.2.2 ip_proto icmp action drop
@@ -210,9 +114,7 @@ $ sudo nslab exec --node h1 -- ping -n -c 3 -W 1 10.73.2.2
 ...
 3 packets transmitted, 0 received, 100% packet loss
 $ sudo nslab exec --node r1 -- tc -s filter show dev eth0 ingress
-filter ... flower ...
-action order 1: gact action drop
-... Sent ... bytes 3 pkt (dropped 3, overlimits 0 requeues 0)
+... gact action drop ... dropped 3 ...
 $ sudo nslab exec --node r1 -- tc qdisc del dev eth0 clsact
 (no output)
 $ sudo nslab exec --node h1 -- ping -n -c 3 -W 1 10.73.2.2
@@ -220,63 +122,69 @@ $ sudo nslab exec --node h1 -- ping -n -c 3 -W 1 10.73.2.2
 3 packets transmitted, 3 received, 0% packet loss
 ```
 
-| Scenario | Requests at r1 eth0 | Requests at h2 | Key evidence |
-| --- | --- | --- | --- |
-| Baseline | 3 | 3 | Ping succeeds, no matching drop |
-| no-route | 3 | 0 | `IP_INNOROUTES` / `IP_OUTNOROUTES`, route lookup fails |
-| rp-filter | 3 | 0 | `IP_RPFILTER`, wrong reverse-path interface |
-| tc-ingress | 3 | 0 | `TC_INGRESS`, TC action drops increase |
+Optionally capture with `tcpdump -nni eth0 icmp` on r1 eth0 and h2 eth0, and compare before/after `nstat -aszj`. All three faults typically show requests at r1 but not h2; distinguish them using reasons, routes and TC counters. Restoring rp_filter also requires removing the wrong reverse route.
 
-## Automated check and results
+## 4. Receive Processing and CPU Scheduling
 
-`check.py` creates a randomly named temporary deployment without reusing the manual one. It verifies connectivity, collects traces, r1/h2 pcaps, nstat, routes, and TC state for each fault, restores the fault and pings again, then destroys the deployment and checks absent. It downloads no tools and adds no privileged CI tests.
+`context` is a concise classification: `NET_RX`, `NET_TX`, `ksoftirqd`, or `task/unknown`. `comm` and `softirq` remain separate, so `context=ksoftirqd softirq=NET_RX` retains both meanings. `task/unknown` only means neither tracked network softirq nor ksoftirqd was identified; it does not prove process context. Other softirq vectors, hard IRQ, threaded NAPI, and attachment during an already-running softirq are not classified by this lightweight tracer.
+
+`receive.bt` counts lab ICMP packets at `netif_receive_skb` and `ip_rcv` on r1 by CPU and records `pid/comm`. Its `NET_RX` softirq and `ksoftirqd` scheduling counts are host-wide background signals.
 
 ```console
-$ sudo python3 ./check.py
-results: /tmp/nslab-drop-results-<random>
-baseline: observed
-no-route: observed
-rp-filter: observed
-tc-ingress: observed
-$ sudo python3 ./check.py --scenario rp-filter --output /tmp/drop-rpf-run1
-results: /tmp/drop-rpf-run1
-rp-filter: observed
-$ sudo python3 -m json.tool /tmp/drop-rpf-run1/rp-filter/result.json
-{
-    "scenario": "rp-filter",
-    ...
-    "events": [
-        {
-            ...
-            "reason_name": "IP_RPFILTER",
-            "location": "<kernel-function>"
-        }
-    ],
-    ...
-}
+$ sudo bpftrace receive.bt "$lab_inode"
+ready netns=<inode>
+rx ts=... cpu=2 pid=... comm=ping context=task/unknown softirq=none dev=eth0 skb=0x... type=8 id=... seq=1
+ip ts=... cpu=2 pid=... comm=ping context=task/unknown softirq=none dev=eth0 skb=0x... type=8 id=... seq=1
 ```
 
-`--output` must name a new directory. For programs outside sudo's PATH, use `sudo env NSLAB_BIN=/absolute/path/nslab BPFTRACE_BIN=/absolute/path/bpftrace python3 ./check.py`.
+Capture a baseline and send traffic from another terminal. Press Ctrl+C afterward to inspect per-CPU and execution-context summaries:
 
-The checker also runs a simultaneous h2-namespace control tracer. It must not report the same flow's drops occurring in r1, checking that other namespaces are excluded. Its log is `other-netns.log`. Cases not reached after an earlier command failure are marked `not-run` in the summary.
+```bash
+sudo ip netns exec "$lab_ns" cat /sys/class/net/eth0/queues/rx-0/rps_cpus
+sudo cat /proc/softirqs
+sudo cat /proc/net/softnet_stat
+sudo nslab exec --node h1 -- ping -n -f -c 10000 10.73.2.2
+sudo cat /proc/softirqs
+sudo cat /proc/net/softnet_stat
+```
 
-Results remain in the printed directory. `summary.json` contains environment/version, source SHA256, full commands/exit codes/outputs, and final cleanup checks. Each scenario has `result.json`, `drops.log`, `r1.pcap`, `h2.pcap`, and decoded packets. Raw `drops.log` retains the kernel reason table.
+Receive processing may run in the process transmitting to a veth peer (`softirq=none`), in `NET_RX`, or as `ksoftirqd/N + NET_RX`. A veth commonly invokes peer receive directly on the sender CPU without a physical NIC interrupt. A softirq may borrow a normal task or `swapper/N`; only comm `ksoftirqd/N` means work was deferred to that kernel thread. PID does not identify the application that owns the packet.
 
-`observed` requires probe results, capture positions, namespace/id/reason evidence for all three ICMP sequence numbers, and successful recovery. The baseline requires delivery with no matching drops. Insufficient evidence or nonspecific kernel reasons produce `inconclusive`; missing tracing prerequisites produce `skipped` (standalone trace.py exits 77). Command failures produce `error` and stop subsequent cases to avoid stacking an unreverted fault. Incomplete checks exit 1, never a false success.
+Choose an online CPU (CPU 2, hexadecimal mask `4`, below), enable RPS, repeat tracing and traffic, then restore it:
 
-Ctrl+C/SIGTERM stops children, detaches tracing, and destroys the temporary deployment. Interrupts during deploy are deferred until the state transaction completes, then cleanup runs. SIGKILL/power loss cannot guarantee cleanup; use the deployment recorded in summary.json to destroy manually. The tracer pins no BPF objects, changes no global tracefs enable/filter settings, and clears nobody else's trace buffer.
+```bash
+grep '^processor' /proc/cpuinfo
+sudo ip netns exec "$lab_ns" sh -c 'echo 4 > /sys/class/net/eth0/queues/rx-0/rps_cpus'
+sudo nslab exec --node h1 -- ping -n -f -c 10000 10.73.2.2
+sudo ip netns exec "$lab_ns" sh -c 'echo 0 > /sys/class/net/eth0/queues/rx-0/rps_cpus'
+```
 
-## Observation limits
+Mask `4` selects CPU 2; `3` selects CPUs 0 and 1. One flow may stay on one CPU, so use concurrent flows to inspect distribution. The `/proc/softirqs` `NET_RX` row and `/proc/net/softnet_stat` are cumulative host counters: subtract before and after. Each softnet row is one CPU; its first three fields are processed, dropped, and time_squeeze. A veth/RPS experiment says nothing about physical NIC IRQ affinity, RSS queues, or hardware steering.
 
-- `kfree_skb` reports discarded skb release, not every packet's path. No events do not imply no drops. Skbs with NULL devices, unreadable/nonlinear headers, or a different packet format are outside this filter.
-- Only linear, unfragmented IPv4 Echo Requests without IP options are inspected. This is intentionally not a general TCP/UDP/IPv6 tracer, so evidence stays tied to controlled packets.
-- XDP, drivers, hardware, and other paths may bypass this event or lack useful reasons. Use XDP program counters for XDP_DROP instead of relying on this tracer.
-- `location` identifies the release caller, not necessarily the origin of the fault. Inlining, symbols/offsets, and reason numbers vary by kernel; never use a fixed function name as the sole criterion.
-- Tracing has overhead and may lose events. This is a low-rate learning experiment, not production full-traffic monitoring. For cross-hook skb correlation, explore [retis](https://github.com/retis-org/retis), still filtering by namespace and packet.
+## 5. Transmit Processing and CPU Scheduling
 
-## Cleanup
+`transmit.bt` observes `ip_output`, `net_dev_queue`, and `net_dev_start_xmit` on r1: IPv4 output, entry into the device transmit path, and the boundary before the driver transmit call. Start tracing in terminal A and send traffic from h1 in terminal B:
 
-Stop manual tracing/captures before destroy. trace.py exits after --seconds or Ctrl+C; its BPF links are released with the process. The automated checker already cleans up its own temporary deployment.
+```console
+$ sudo bpftrace transmit.bt "$lab_inode"
+ready netns=<inode>
+ipout ts=... cpu=2 pid=... comm=ping context=task/unknown softirq=none dev=eth0 skb=0x... type=8 id=... seq=1
+queue ts=... cpu=2 pid=... comm=ping context=task/unknown softirq=none dev=eth1 skb=0x... len=98 type=8 id=... seq=1
+xmit ts=... cpu=2 pid=... comm=ping context=task/unknown softirq=none dev=eth1 skb=0x... q=0 len=98 gso=0/0 type=8 id=... seq=1
+```
+
+```bash
+sudo nslab exec --node h1 -- ping -n -c 3 -W 1 10.73.2.2
+sudo nslab exec --node r1 -- tc -s -d qdisc show dev eth1
+```
+
+Transmit processing may run in a send syscall's process context (`none`), in the forwarding `NET_RX`, in deferred `NET_TX`, or in the matching `ksoftirqd/N`. Correlate type/id/seq and skb, then compare timestamp, CPU, comm, and softirq. For a forwarded packet, dev at `ip_output` may still be ingress; the device queue shows egress. `q` is the TX queue mapping, and small ICMP packets normally show `gso=0/0`.
+
+`net_dev_start_xmit` is the boundary before calling the virtual driver, not proof of transmission on a physical wire. The script does not dereference skb at the post-driver `net_dev_xmit` tracepoint because a successful driver may already have freed it. Use interface counters, `tc -s`, and drop tracing to inspect results and errors.
+
+## 6. Cleanup and Limits
+
+Stop all bpftrace/capture processes with Ctrl+C, then destroy. The bt files pin no objects and change no global tracefs configuration; process exit releases probes. **Faults and topology are not automatically cleaned up**, including after interruption.
 
 ```console
 $ sudo nslab destroy
@@ -285,3 +193,7 @@ $ sudo nslab inspect
 status: absent
 ...
 ```
+
+Unavailable probes cause bpftrace errors. Check `sudo bpftrace -l 'kprobe:ip_*'` and `sudo bpftrace -l 'tracepoint:net:*'`; remove unsupported attachment points for your kernel, rather than ignoring errors and interpreting empty logs.
+
+Only linear, unfragmented IPv4 ICMP without IP options in the lab subnets is inspected; drops.bt filters h1 → h2 requests only. NULL devices, unreadable headers and lost events can cause omissions. XDP/driver/hardware drops need not reach kfree_skb. location is the release site, and a stack is current execution context, not the packet's complete history. For richer cross-hook correlation, explore [retis](https://github.com/retis-org/retis).

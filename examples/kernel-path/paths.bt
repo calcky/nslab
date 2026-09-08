@@ -1,0 +1,95 @@
+// Usage: sudo bpftrace paths.bt NETNS_INODE STACKS_0_OR_1
+// Run on the host; Ctrl+C detaches. No pinned maps or tracefs changes.
+BEGIN
+{
+    if ($# != 2 || $1 <= 0 || ($2 != 0 && $2 != 1)) {
+        printf("usage: bpftrace paths.bt NETNS_INODE STACKS_0_OR_1\n");
+        exit();
+    }
+    printf("ready netns=%llu stacks=%d\n", $1, $2);
+}
+
+kprobe:ip_rcv,
+kprobe:ip_forward,
+kprobe:ip_local_deliver
+{
+    $skb = (struct sk_buff *)arg0;
+    $dev = $skb->dev;
+    $net = (struct net *)0;
+    if ($net == 0 && $dev != 0) { $net = $dev->nd_net.net; }
+    if ($net != 0 && $net->ns.inum == $1 &&
+        $skb->tail >= $skb->network_header + 28) {
+        $ip = (uint8 *)($skb->head + $skb->network_header);
+        // Only the two lab /24 networks, unfragmented IPv4 ICMP.
+        if ($ip[0] == 0x45 && $ip[9] == 1 &&
+            ($ip[6] & 0x3f) == 0 && $ip[7] == 0 &&
+            $ip[12] == 10 && $ip[13] == 73 && ($ip[14] == 1 || $ip[14] == 2) &&
+            $ip[16] == 10 && $ip[17] == 73 && ($ip[18] == 1 || $ip[18] == 2) &&
+            ($ip[20] == 8 || $ip[20] == 0) && $ip[21] == 0) {
+            $index = 0;
+            $name = "-";
+            if ($dev != 0) { $index = $dev->ifindex; $name = str($dev->name, 16); }
+            printf("ts=%llu cpu=%u ns=%u dev=%s(%d) skb=0x%lx %s -> %s type=%u id=%u seq=%u %s\n",
+                   nsecs, cpu, $net->ns.inum, $name, $index, (uint64)$skb,
+                   ntop(*(uint32 *)($ip + 12)), ntop(*(uint32 *)($ip + 16)),
+                   $ip[20], $ip[24] * 256 + $ip[25], $ip[26] * 256 + $ip[27], probe);
+            if ($2) { printf("%s\n", kstack(12)); }
+        }
+    }
+}
+
+kprobe:__ip_local_out,
+kprobe:ip_output
+{
+    $skb = (struct sk_buff *)arg2;
+    $dev = $skb->dev;
+    $net = (struct net *)arg0;
+    if ($net == 0 && $dev != 0) { $net = $dev->nd_net.net; }
+    if ($net != 0 && $net->ns.inum == $1 &&
+        $skb->tail >= $skb->network_header + 28) {
+        $ip = (uint8 *)($skb->head + $skb->network_header);
+        // Only the two lab /24 networks, unfragmented IPv4 ICMP.
+        if ($ip[0] == 0x45 && $ip[9] == 1 &&
+            ($ip[6] & 0x3f) == 0 && $ip[7] == 0 &&
+            $ip[12] == 10 && $ip[13] == 73 && ($ip[14] == 1 || $ip[14] == 2) &&
+            $ip[16] == 10 && $ip[17] == 73 && ($ip[18] == 1 || $ip[18] == 2) &&
+            ($ip[20] == 8 || $ip[20] == 0) && $ip[21] == 0) {
+            $index = 0;
+            $name = "-";
+            if ($dev != 0) { $index = $dev->ifindex; $name = str($dev->name, 16); }
+            printf("ts=%llu cpu=%u ns=%u dev=%s(%d) skb=0x%lx %s -> %s type=%u id=%u seq=%u %s\n",
+                   nsecs, cpu, $net->ns.inum, $name, $index, (uint64)$skb,
+                   ntop(*(uint32 *)($ip + 12)), ntop(*(uint32 *)($ip + 16)),
+                   $ip[20], $ip[24] * 256 + $ip[25], $ip[26] * 256 + $ip[27], probe);
+            if ($2) { printf("%s\n", kstack(12)); }
+        }
+    }
+}
+
+tracepoint:net:netif_receive_skb,
+tracepoint:net:net_dev_queue
+{
+    $skb = (struct sk_buff *)args->skbaddr;
+    $dev = $skb->dev;
+    $net = (struct net *)0;
+    if ($net == 0 && $dev != 0) { $net = $dev->nd_net.net; }
+    if ($net != 0 && $net->ns.inum == $1 &&
+        $skb->tail >= $skb->network_header + 28) {
+        $ip = (uint8 *)($skb->head + $skb->network_header);
+        // Only the two lab /24 networks, unfragmented IPv4 ICMP.
+        if ($ip[0] == 0x45 && $ip[9] == 1 &&
+            ($ip[6] & 0x3f) == 0 && $ip[7] == 0 &&
+            $ip[12] == 10 && $ip[13] == 73 && ($ip[14] == 1 || $ip[14] == 2) &&
+            $ip[16] == 10 && $ip[17] == 73 && ($ip[18] == 1 || $ip[18] == 2) &&
+            ($ip[20] == 8 || $ip[20] == 0) && $ip[21] == 0) {
+            $index = 0;
+            $name = "-";
+            if ($dev != 0) { $index = $dev->ifindex; $name = str($dev->name, 16); }
+            printf("ts=%llu cpu=%u ns=%u dev=%s(%d) skb=0x%lx %s -> %s type=%u id=%u seq=%u %s\n",
+                   nsecs, cpu, $net->ns.inum, $name, $index, (uint64)$skb,
+                   ntop(*(uint32 *)($ip + 12)), ntop(*(uint32 *)($ip + 16)),
+                   $ip[20], $ip[24] * 256 + $ip[25], $ip[26] * 256 + $ip[27], probe);
+            if ($2) { printf("%s\n", kstack(12)); }
+        }
+    }
+}
