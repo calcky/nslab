@@ -120,7 +120,7 @@ sudo nslab destroy
 | [wireguard](examples/wireguard/README.md) | WireGuard 双栈加密隧道与 AllowedIPs |
 | [ipsec](examples/ipsec/README.md) | 静态 XFRM、IKEv2 PSK 协商、ESP tunnel 与 rekey |
 | [bpf-path](examples/bpf-path/README.md) | XDP/TC、DEVMAP、CPUMAP、AF_XDP 用户态收发 |
-| [drop-diagnosis](examples/drop-diagnosis/README.md) | 抓包、skb drop reason 与路由/rp_filter/TC 丢包定位 |
+| [kernel-path](examples/kernel-path/README.md) | IPv4 正常路径、INPUT/OUTPUT、调用栈与丢包定位 |
 | [pmtu](examples/pmtu/README.md) | MTU、PMTU、IPv4 分片与 IPv6 Packet Too Big |
 | [neighbors](examples/neighbors/README.md) | 固定 MAC、静态 ARP/NDP 与 Proxy ARP/NDP |
 | [ecmp](examples/ecmp/README.md) | 静态等价多路径与逐流哈希 |

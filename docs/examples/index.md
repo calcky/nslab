@@ -83,7 +83,7 @@ sudo nslab destroy
 | [BPF data path](bpf-path.md) | XDP/TC, DEVMAP, CPUMAP, and AF_XDP userspace RX/TX |
 | [MTU and offload](mtu-offload.md) | MTU boundaries, segmentation, coalescing, and checksum capture artifacts |
 | [TCP behavior](tcp-behavior.md) | TCP windows, SACK/DSACK, RACK/TLP, and ECN controls |
-| [Drop diagnosis](drop-diagnosis.md) | Packet captures, skb drop reasons, and route/rp_filter/TC faults |
+| [Kernel paths](kernel-path.md) | Normal IPv4 paths, local INPUT/OUTPUT, kernel stacks, and drop diagnosis |
 
 ## Dynamic routing
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Trace lab ICMP drops from the host, filtered by the target network namespace."""
+"""Trace lab ICMP paths or drops from the host, filtered by the target namespace."""
 
 import argparse
 import json
@@ -10,6 +10,8 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
+
+import paths
 
 
 def reason_names(text):
@@ -37,7 +39,9 @@ def main():
     parser.add_argument(
         "--seconds", type=int, default=20, help="trace duration, 1..300 (default 20)"
     )
-    parser.add_argument("--name", default="drop-diagnosis", help="nslab deployment name")
+    parser.add_argument("--name", default="kernel-path", help="nslab deployment name")
+    parser.add_argument("--mode", choices=("path", "drop"), default="path")
+    parser.add_argument("--stacks", action="store_true", help="collect kernel stacks in path mode")
     parser.add_argument("--node", default="r1", help="target node (default r1)")
     parser.add_argument(
         "--netns", type=Path, help="explicit namespace handle instead of nslab lookup"
@@ -48,19 +52,24 @@ def main():
     if os.geteuid() != 0:
         parser.error("requires root")
     binary = shutil.which(os.environ.get("BPFTRACE_BIN", "bpftrace"))
-    formats = (
-        Path("/sys/kernel/tracing/events/skb/kfree_skb/format"),
-        Path("/sys/kernel/debug/tracing/events/skb/kfree_skb/format"),
+    roots = (
+        Path("/sys/kernel/tracing"),
+        Path("/sys/kernel/debug/tracing"),
     )
     try:
         if not binary:
             raise ValueError("bpftrace not found; install it separately or set BPFTRACE_BIN")
         if not Path("/sys/kernel/btf/vmlinux").exists():
             raise ValueError("kernel BTF is unavailable")
-        trace_format = next((path for path in formats if path.exists()), None)
-        if trace_format is None:
-            raise ValueError("kfree_skb format unavailable; tracing filesystem must be mounted")
-        names = reason_names(trace_format.read_text())
+        root = next(
+            (path for path in roots if (path / "available_filter_functions").exists()), None
+        )
+        if root is None:
+            raise ValueError("tracing filesystem unavailable; tracefs must already be mounted")
+        if args.mode == "drop":
+            names = reason_names((root / "events/skb/kfree_skb/format").read_text())
+        else:
+            probes, missing = paths.discover(root)
     except (OSError, ValueError) as error:
         print(f"skipped: {error}", file=sys.stderr)
         return 77
@@ -87,8 +96,16 @@ def main():
         namespace = handle.stat().st_ino
     except (OSError, ValueError, KeyError, StopIteration, subprocess.SubprocessError) as error:
         parser.error(f"cannot resolve deployed target namespace: {error}")
-    program = render(Path(__file__).with_name("drops.bt").read_text(), namespace, args.seconds)
-    print("reason_names=" + json.dumps(names, sort_keys=True), flush=True)
+    if args.mode == "drop":
+        program = render(Path(__file__).with_name("drops.bt").read_text(), namespace, args.seconds)
+        print("reason_names=" + json.dumps(names, sort_keys=True), flush=True)
+    else:
+        program = paths.program(namespace, args.seconds, probes, args.stacks)
+        print(
+            "probes="
+            + json.dumps({"enabled": [probe[0] for probe in probes], "unavailable": missing}),
+            flush=True,
+        )
     # exec preserves stdout/stderr and signals. bpftrace owns its BPF links;
     # process exit releases them without touching global tracefs settings.
     signal.signal(signal.SIGINT, signal.SIG_DFL)

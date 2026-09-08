@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inject, observe, and recover three IPv4 drop faults in a disposable nslab topology."""
+"""Check the drop-diagnosis portion of the kernel-path lab in a disposable topology."""
 
 import argparse
 import hashlib
@@ -264,6 +264,8 @@ class Lab:
                 [
                     "python3",
                     str(self.source.with_name("trace.py")),
+                    "--mode",
+                    "drop",
                     "--seconds",
                     "60",
                     "--netns",
@@ -281,6 +283,8 @@ class Lab:
                     [
                         "python3",
                         str(self.source.with_name("trace.py")),
+                        "--mode",
+                        "drop",
                         "--seconds",
                         "60",
                         "--netns",
@@ -424,7 +428,14 @@ class Lab:
             "manifest": self.source.with_name("nslab.yaml").read_text(),
             "sha256": {
                 name: hashlib.sha256(self.source.with_name(name).read_bytes()).hexdigest()
-                for name in ("nslab.yaml", "check.py", "trace.py", "drops.bt")
+                for name in (
+                    "nslab.yaml",
+                    "check.py",
+                    "trace.py",
+                    "drops.bt",
+                    "paths.py",
+                    "check_paths.py",
+                )
             },
         }
         self.save(report)

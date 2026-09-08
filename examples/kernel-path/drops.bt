@@ -1,4 +1,4 @@
-// Rendered by trace.py; namespace inode comes from the tracer's netns.
+// Rendered by trace.py; namespace inode comes from the selected namespace handle.
 BEGIN
 {
     printf("ready netns=__NETNS__\n");

@@ -2,12 +2,13 @@ import importlib.util
 import json
 import signal
 import subprocess
+import sys
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
-DIRECTORY = Path(__file__).resolve().parents[2] / "examples/drop-diagnosis"
+DIRECTORY = Path(__file__).resolve().parents[2] / "examples/kernel-path"
 
 
 def load_script(name):
@@ -18,7 +19,8 @@ def load_script(name):
     return module
 
 
-trace = load_script("trace")
+with patch.dict(sys.modules, {"paths": load_script("paths")}):
+    trace = load_script("trace")
 check = load_script("check")
 
 

@@ -83,7 +83,7 @@ sudo nslab destroy
 | [BPF 数据路径](bpf-path.md) | XDP/TC、DEVMAP、CPUMAP、AF_XDP 用户态收发 |
 | [MTU 与 offload](mtu-offload.md) | MTU 边界、分段、聚合与校验和抓包现象 |
 | [TCP 行为](tcp-behavior.md) | TCP 窗口、SACK/DSACK、RACK/TLP 与 ECN 对照实验 |
-| [观测与丢包定位](drop-diagnosis.md) | 抓包、skb drop reason 与路由/rp_filter/TC 故障 |
+| [内核数据路径观测](kernel-path.md) | IPv4 正常路径、INPUT/OUTPUT、调用栈与丢包定位 |
 
 ## 动态路由
 

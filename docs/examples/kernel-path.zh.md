@@ -1,8 +1,8 @@
-# 观测与丢包定位
+# 内核数据路径观测
 
-从“ping 不通”进一步定位到具体报文、丢包阶段和内核原因。所有配置只作用于实验 namespace，不新增 nslab 功能，也不修改宿主机 sysctl。
+观察正常 IPv4 转发、本机 INPUT/OUTPUT，也能从“ping 不通”定位具体报文和内核丢包原因。所有配置只作用于实验 namespace，不新增 nslab 功能，也不修改宿主机 sysctl。原 drop-diagnosis 已合并至本目录；旧部署可先用 `nslab destroy --name drop-diagnosis` 清理。
 
-在此目录执行，依赖 `nslab`、`python3`、`iproute2`、`iputils-ping`、`tcpdump` 和 `bpftrace`。推荐 Ubuntu 24.04 或更新的 Linux，跟踪需要 BTF、`skb:kfree_skb` 的 `reason` 字段（上游 Linux 5.17+）和 root/BPF 权限；字段、原因覆盖及符号可见性仍取决于实际内核。tracefs 必须已挂载，脚本不会自动挂载或安装依赖。以下输出为示意。
+在此目录执行，依赖 `nslab`、`python3`、`iproute2`、`iputils-ping`、`tcpdump` 和 `bpftrace`。推荐 Ubuntu 24.04 或更新的 Linux，需要 BTF、tracepoint/kprobe 和 root/BPF 权限。仅 drop 模式额外要求 `skb:kfree_skb` 的 `reason` 字段（上游 Linux 5.17+）；实际可用探针与字段以运行内核为准。tracefs 必须已挂载，脚本不会自动挂载或安装依赖。以下输出为示意。
 
 ## 拓扑与基线
 
@@ -23,7 +23,7 @@ h1 为 `10.73.1.1`，h2 为 `10.73.2.2`，r1 两端为各网段的 `.254`。mani
 
 ```console
 $ sudo nslab deploy
-deployed topology: drop-diagnosis
+deployed topology: kernel-path
 $ sudo nslab inspect
 status: deployed
 ...
@@ -37,12 +37,103 @@ $ sudo nslab exec --node h1 -- ping -n -c 3 -W 1 10.73.2.2
 3 packets transmitted, 3 received, 0% packet loss
 ```
 
-## 同时观察三个证据来源
+## 正常数据路径：转发与本机收发
+
+先保持上述正常基线，不注入故障。在终端 A 启动 path 模式，等待 ready；在终端 B 依次发送下面三组 ping。跟踪在 30 秒后自动停止；若需要更多操作时间可设 --seconds 60。--stacks 可选，未开启时不收集调用栈。
+
+```console
+$ sudo python3 ./trace.py --mode path --seconds 30 --stacks | tee /tmp/kernel-path.log
+probes={"enabled": [...], "unavailable": [...]}
+ready netns=<inode>
+path ts=<ns> cpu=<cpu> ns=<inode> ifindex=<index> ifname=eth0 skb=0x... src=10.73.1.1 dst=10.73.2.2 type=8 id=<id> seq=1 stage=forward hook=kprobe:ip_forward
+    ip_forward+...
+    ...
+$ sudo nslab exec --node h1 -- ping -n -c 3 -W 1 10.73.2.2
+...
+3 packets transmitted, 3 received, 0% packet loss
+$ sudo nslab exec --node h1 -- ping -n -c 3 -W 1 10.73.1.254
+...
+3 packets transmitted, 3 received, 0% packet loss
+$ sudo nslab exec --node r1 -- ping -n -c 3 -W 1 10.73.2.2
+...
+3 packets transmitted, 3 received, 0% packet loss
+```
+
+| 流量 | r1 上重点观察 | 区别 |
+| --- | --- | --- |
+| h1 → h2，请求和回复 | `ip_rcv`、`ip_forward`、`ip_output`、发送队列 | 经过 r1 转发 |
+| h1 → r1 | 请求：`ip_local_deliver`；回复：输出与发送队列 | 请求交给本机，回复由本机生成 |
+| r1 → h2 | 请求：输出与发送队列；回复：`ip_local_deliver` | 本机主动发送，再接收回复 |
+
+结束后按报文查看，不需要从混在一起的日志中手工找同一包：
+
+```console
+$ python3 ./paths.py /tmp/kernel-path.log
+10.73.1.1 -> 10.73.2.2 ICMP request id=<id> seq=1 netns=<inode>
+  +    0.000 us  tracepoint:net:netif_receive_skb     dev=eth0(...) cpu=... skb=0x...
+  +   ...       kprobe:ip_rcv                        dev=eth0(...) cpu=... skb=0x...
+  +   ...       kprobe:ip_forward                    dev=eth0(...) cpu=... skb=0x...
+  +   ...       kprobe:ip_output                     dev=eth0(...) cpu=... skb=0x...
+  +   ...       tracepoint:net:net_dev_queue          dev=eth1(...) cpu=... skb=0x...
+...
+$ python3 ./paths.py /tmp/kernel-path.log --stacks
+10.73.1.1 -> 10.73.2.2 ICMP request id=<id> seq=1 netns=<inode>
+  ...
+  +   ...       kprobe:ip_forward ...
+      ip_forward+...
+      ...
+$ python3 ./paths.py /tmp/kernel-path.log --json
+[
+  [
+    {"ts": ..., "namespace": ..., "hook": "...", "stack": [...]}
+  ],
+  ...
+]
+```
+
+这是**观测点序列，不是完整内核调用图**。每组使用 namespace、源/目的 IP、ICMP type/id/seq 关联，按内核时间戳排序，显示相对首个观测点的时间。request/reply 分组分开，但保留相同 id/seq 便于对照。skb 地址变化不会拆开同一个报文组；skb clone 也可能产生多个分支，列表不是证明它们都属于唯一线性路径。一次采集内避免重复使用完全相同的报文字段。
+
+时间用于观察这次事件的相对顺序，不是无探针开销的延迟基准，也不能直接和 pcap 的墙上时钟相减。调用栈可能包含 softirq 上下文中的上游发送路径；它是事件发生时的栈，不是该报文完整的历史。
+
+`ip_local_out` / `__ip_local_out` 在支持时挂探针，但编译器可能将实际 ICMP 调用点内联：**符号存在、探针挂载成功，不等于每条路径都会触发它**。自动检查将这种情况放入 `enabled_but_unseen`，不补出虚假的事件。本机 OUTPUT 检查要求观察到 `ip_output` 和发送队列，并结合从 r1 发包的命令及端点抓包；不声称单独验证了 Netfilter LOCAL_OUT hook。
+
+`dev=- (ifindex=0)` 表示该时刻 skb 没有关联设备；本机输出探针使用函数的 net 参数过滤 namespace。其它时刻的 dev 是 skb 当前关联接口，未必已是最终出口；发送队列事件能补充出口信息。入包批处理、函数内联、探针缺失或日志丢事件都可能造成空白，不能把“未观测到”解释为“没有经过”。
+
+### 一次性正常路径检查
+
+```console
+$ sudo python3 ./check_paths.py
+results: /tmp/nslab-path-results-<random>
+forward: observed
+input: observed
+output: observed
+$ sudo python3 ./check_paths.py --scenario input --output /tmp/kernel-input-run1
+results: /tmp/kernel-input-run1
+input: observed
+$ sudo python3 ./paths.py /tmp/kernel-input-run1/input/paths.log --stacks
+10.73.1.1 -> 10.73.1.254 ICMP request id=20000 seq=1 netns=<inode>
+  ...
+  +   ...       kprobe:ip_local_deliver ...
+      ip_local_deliver+...
+      ...
+10.73.1.254 -> 10.73.1.1 ICMP reply id=20000 seq=1 netns=<inode>
+  ...
+  +   ...       kprobe:ip_output ...
+      ...
+```
+
+check_paths.py 复用丢包检查的受控进程和部署清理逻辑，但不注入故障。每个场景同时验证 3 个请求和 3 个回复、端点 pcap、r1 namespace 过滤、必要观测点顺序和调用栈；本机收发不应出现匹配的 ip_forward 事件。结果还包括 `paths.log`、`paths.txt`、`paths-stacks.txt` 和结构化 events。
+
+本机收发和转发要求的观测点不同。缺少必要证据标记 `inconclusive`，依赖不可用标记 `skipped`，不把没观测到的节点补进输出。`probes.unavailable` 记录不可用探针，`enabled_but_unseen` 记录本次未产生匹配事件的已启用探针。无事件不是全路径无流量的证明。
+
+`NSLAB_BIN` / `BPFTRACE_BIN`、新输出目录要求、退出码及中断清理与下方 check.py 相同。特权检查不加入 CI；没有安装或修改宿主机工具与内核设置。
+
+## 丢包定位：同时观察三个证据来源
 
 分别在终端 A 运行跟踪器、终端 B/C 抓包，终端 D 注入后面的故障并发包。每次实验重新启动观测，等到 `ready` / `listening on` 后再发包。正常基线不会出现匹配的 drop 事件；下面 drop 行是随后注入故障时的示意。抓包先于常规 IP 输入和 TC ingress，所以三个故障都可能呈现“r1 看得到，h2 看不到”。
 
 ```console
-$ sudo python3 ./trace.py --name drop-diagnosis --node r1 --seconds 60
+$ sudo python3 ./trace.py --mode drop --name kernel-path --node r1 --seconds 60
 reason_names={"2": "NOT_SPECIFIED", ...}
 ready netns=<inode>
 ...
@@ -189,7 +280,7 @@ Ctrl+C/SIGTERM 会停止子进程、卸载跟踪并销毁临时拓扑；部署�
 
 ```console
 $ sudo nslab destroy
-destroyed topology: drop-diagnosis
+destroyed topology: kernel-path
 $ sudo nslab inspect
 status: absent
 ...
