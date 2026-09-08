@@ -182,7 +182,63 @@ sudo nslab exec --node r1 -- tc -s -d qdisc show dev eth1
 
 `net_dev_start_xmit` 是调用虚拟驱动前的边界，不表示物理线上已经发送。脚本不解引用驱动返回后的 `net_dev_xmit` skb，因为成功发送后 skb 可能已经释放；发送结果和错误结合接口计数、`tc -s` 及 drop trace 判断。
 
-## 6. 清理与限制
+## 6. qdisc 延迟发送
+
+在新部署的拓扑上，终端 A 启动跟踪并等待 ready。内核需提供两个 qdisc tracepoint 的 `txq`、`skbaddr`、`qdisc`、`ifindex`、`handle` 和 dequeue 的 `packets` 字段，可用 `bpftrace -lv 'tracepoint:qdisc:*'` 检查；旧内核可能缺少探针或字段。
+
+```bash
+sudo bpftrace transmit.bt "$lab_inode"
+```
+
+终端 B 依次测试 noqueue、netem、丢包和恢复。以下来自 PVE 实测，时间、handle、引用计数会变化。丢包测试的 ping 非零退出是预期行为，要继续执行恢复命令。
+
+```console
+$ sudo nslab exec --node r1 -- tc -s qdisc show dev eth1
+qdisc noqueue 0: root refcnt 2
+...
+$ sudo nslab exec --node h1 -- ping -n -c 3 -W 1 10.73.2.2
+...
+rtt min/avg/max/mdev = 0.157/0.176/0.198/0.016 ms
+$ sudo nslab exec --node r1 -- tc qdisc add dev eth1 root netem delay 100ms
+(no output)
+$ sudo nslab exec --node h1 -- ping -n -c 3 -W 1 10.73.2.2
+...
+rtt min/avg/max/mdev = 100.376/100.554/100.702/0.134 ms
+$ sudo nslab exec --node r1 -- tc -s qdisc show dev eth1
+qdisc netem ... root ... limit 1000 delay 100ms ...
+ Sent 294 bytes 3 pkt (dropped 0, overlimits 0 requeues 0)
+ backlog 0b 0p requeues 0
+$ sudo nslab exec --node r1 -- tc qdisc change dev eth1 root netem delay 100ms loss 100%
+(no output)
+$ sudo nslab exec --node h1 -- ping -n -c 3 -W 1 10.73.2.2
+...
+3 packets transmitted, 0 received, 100% packet loss
+$ sudo nslab exec --node r1 -- tc -s qdisc show dev eth1
+...
+ Sent 294 bytes 3 pkt (dropped 3, overlimits 0 requeues 0)
+ backlog 0b 0p requeues 0
+$ sudo nslab exec --node r1 -- tc qdisc del dev eth1 root
+(no output)
+$ sudo nslab exec --node h1 -- ping -n -c 3 -W 1 10.73.2.2
+...
+rtt min/avg/max/mdev = 0.183/0.191/0.204/0.009 ms
+```
+
+noqueue 基线只有 `queue → xmit`，没有 qdisc 入队/出队事件。netem 三次匹配的排队时间约为 100.146、100.333、100.338ms；同一请求的日志节选：
+
+```text
+qdisc_enqueue ... comm=ping context=NET_RX ... skb=0x...
+qdisc_dequeue ... comm=swapper/1 context=NET_TX ... skb=0x... queue_delay_ns=100145690 sample=matched
+xmit ... comm=swapper/1 context=NET_TX softirq=NET_TX dev=eth1 ...
+```
+
+这次延迟发送在同一 CPU 的 NET_TX 中完成，并不需要经过 ksoftirqd。只在 eth1 配置延迟，所以 RTT 增加约 100ms，而非 200ms。ping 结束后的 backlog 为零表示队列已排空，不能据此判断没有发生过排队。
+
+`sample=unknown queue_delay_ns=-1` 表示观测窗口内没有匹配的入队事件，不能解释为零延迟。关联同时校验 skb 和 qdisc 地址，在出队或 skb 释放时删除记录，并在新的设备发送入口重置旧记录。丢包没有出队延迟样本；退出时的 pending 也可能是真实尚未出队的包，检查清理结果前应先让队列排空。
+
+这个轻量实验面向单个 root qdisc 和未分片小包。qdisc 事件覆盖目标 namespace 的所有流量，只有 IP/设备输出行过滤实验 ICMP。多层 qdisc、批处理、clone、GSO、事件遗漏及未观测完整生命周期的地址复用可能破坏一一关联。时间包含探针开销，不是精确硬件延迟。恢复后在终端 A 用 Ctrl+C 停止跟踪。
+
+## 7. 清理与限制
 
 先 Ctrl+C 停止所有 bpftrace/抓包，再 destroy。bt 不 pin 对象、不修改 tracefs 全局配置；进程退出释放探针。**不会自动撤销故障或销毁拓扑**，中途退出也要执行下面的清理。
 

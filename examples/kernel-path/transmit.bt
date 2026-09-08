@@ -38,6 +38,11 @@ kprobe:ip_output
 tracepoint:net:net_dev_queue
 {
     $skb = (struct sk_buff *)args->skbaddr;
+    // A new device submission starts a new observation for this address.
+    if (@qdisc_enqueue_ts[(uint64)$skb]) {
+        $removed = delete(@qdisc_enqueue_ts[(uint64)$skb]);
+        $removed = delete(@qdisc_id[(uint64)$skb]);
+    }
     $dev = $skb->dev;
     if ($dev != 0 && $dev->nd_net.net->ns.inum == $1 &&
         $skb->tail >= $skb->network_header + 28) {
@@ -59,6 +64,54 @@ tracepoint:net:net_dev_queue
             @tx_context[$context, comm] = count();
         }
     }
+}
+
+tracepoint:qdisc:qdisc_enqueue
+{
+    $skb = (struct sk_buff *)args->skbaddr;
+    // enqueue may consume the skb; use the queue's device, not skb fields.
+    $dev = args->txq->dev;
+    if ($dev != 0 && $dev->nd_net.net->ns.inum == $1) {
+        $now = nsecs;
+        @qdisc_enqueue_ts[(uint64)$skb] = $now;
+        @qdisc_id[(uint64)$skb] = (uint64)args->qdisc;
+        printf("qdisc_enqueue ts=%llu cpu=%u pid=%u comm=%s context=%s ifindex=%d handle=0x%x skb=0x%lx\n",
+               $now, cpu, pid, comm,
+               strcontains(comm, "ksoftirqd/") ? "ksoftirqd" :
+               (@softirq[cpu] == 2 ? "NET_TX" : (@softirq[cpu] == 3 ? "NET_RX" : "task/unknown")),
+               args->ifindex, args->handle, (uint64)$skb);
+    }
+}
+
+tracepoint:qdisc:qdisc_dequeue
+{
+    $skb = (struct sk_buff *)args->skbaddr;
+    $dev = args->txq->dev;
+    if ($skb != 0 && args->packets > 0 && $dev != 0 && $dev->nd_net.net->ns.inum == $1) {
+        $now = nsecs;
+        $enqueue = @qdisc_enqueue_ts[(uint64)$skb];
+        $known = $enqueue != 0 && @qdisc_id[(uint64)$skb] == (uint64)args->qdisc;
+        $delay = (int64)-1;
+        if ($known) { $delay = (int64)$now - (int64)$enqueue; }
+        printf("qdisc_dequeue ts=%llu cpu=%u pid=%u comm=%s context=%s ifindex=%d handle=0x%x skb=0x%lx queue_delay_ns=%lld sample=%s\n",
+               $now, cpu, pid, comm,
+               strcontains(comm, "ksoftirqd/") ? "ksoftirqd" :
+               (@softirq[cpu] == 2 ? "NET_TX" : (@softirq[cpu] == 3 ? "NET_RX" : "task/unknown")),
+               args->ifindex, args->handle, (uint64)$skb,
+               $delay, $known ? "matched" : "unknown");
+        $removed = delete(@qdisc_enqueue_ts[(uint64)$skb]);
+        $removed = delete(@qdisc_id[(uint64)$skb]);
+    }
+}
+
+// Cleanup without dereferencing an skb that is being released.
+tracepoint:skb:kfree_skb,
+tracepoint:skb:consume_skb
+/@qdisc_enqueue_ts[(uint64)args->skbaddr]/
+{
+    $removed = delete(@qdisc_enqueue_ts[(uint64)args->skbaddr]);
+    $removed = delete(@qdisc_id[(uint64)args->skbaddr]);
+    @qdisc_release_cleanup = count();
 }
 
 tracepoint:net:net_dev_start_xmit
@@ -101,6 +154,9 @@ tracepoint:irq:softirq_exit
 
 END
 {
+    printf("qdisc pending correlations: %llu\n", len(@qdisc_enqueue_ts));
+    printf("qdisc release cleanup events:\n");
+    print(@qdisc_release_cleanup);
     printf("\nlab ip_output events by CPU:\n");
     print(@ipout_cpu);
     printf("lab net_dev_queue events by CPU:\n");
@@ -114,4 +170,7 @@ END
     clear(@xmit_cpu);
     clear(@tx_context);
     clear(@softirq);
+    clear(@qdisc_enqueue_ts);
+    clear(@qdisc_id);
+    clear(@qdisc_release_cleanup);
 }

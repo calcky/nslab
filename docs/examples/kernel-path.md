@@ -182,7 +182,63 @@ Transmit processing may run in a send syscall's process context (`none`), in the
 
 `net_dev_start_xmit` is the boundary before calling the virtual driver, not proof of transmission on a physical wire. The script does not dereference skb at the post-driver `net_dev_xmit` tracepoint because a successful driver may already have freed it. Use interface counters, `tc -s`, and drop tracing to inspect results and errors.
 
-## 6. Cleanup and Limits
+## 6. qdisc Delayed Transmit
+
+On a fresh deployment, run this in terminal A and wait for ready. Use a kernel exposing both qdisc tracepoints with `txq`, `skbaddr`, `qdisc`, `ifindex`, `handle` and dequeue `packets`; check `bpftrace -lv 'tracepoint:qdisc:*'`. Older kernels may lack these fields or probes.
+
+```bash
+sudo bpftrace transmit.bt "$lab_inode"
+```
+
+In terminal B, compare noqueue, netem, loss, and recovery. The outputs below are from PVE; timing, handles and reference counts vary. Failed ping during the loss test is expected: do not stop before restoring the qdisc.
+
+```console
+$ sudo nslab exec --node r1 -- tc -s qdisc show dev eth1
+qdisc noqueue 0: root refcnt 2
+...
+$ sudo nslab exec --node h1 -- ping -n -c 3 -W 1 10.73.2.2
+...
+rtt min/avg/max/mdev = 0.157/0.176/0.198/0.016 ms
+$ sudo nslab exec --node r1 -- tc qdisc add dev eth1 root netem delay 100ms
+(no output)
+$ sudo nslab exec --node h1 -- ping -n -c 3 -W 1 10.73.2.2
+...
+rtt min/avg/max/mdev = 100.376/100.554/100.702/0.134 ms
+$ sudo nslab exec --node r1 -- tc -s qdisc show dev eth1
+qdisc netem ... root ... limit 1000 delay 100ms ...
+ Sent 294 bytes 3 pkt (dropped 0, overlimits 0 requeues 0)
+ backlog 0b 0p requeues 0
+$ sudo nslab exec --node r1 -- tc qdisc change dev eth1 root netem delay 100ms loss 100%
+(no output)
+$ sudo nslab exec --node h1 -- ping -n -c 3 -W 1 10.73.2.2
+...
+3 packets transmitted, 0 received, 100% packet loss
+$ sudo nslab exec --node r1 -- tc -s qdisc show dev eth1
+...
+ Sent 294 bytes 3 pkt (dropped 3, overlimits 0 requeues 0)
+ backlog 0b 0p requeues 0
+$ sudo nslab exec --node r1 -- tc qdisc del dev eth1 root
+(no output)
+$ sudo nslab exec --node h1 -- ping -n -c 3 -W 1 10.73.2.2
+...
+rtt min/avg/max/mdev = 0.183/0.191/0.204/0.009 ms
+```
+
+The noqueue baseline emits `queue → xmit` without qdisc enqueue/dequeue. With netem, three matching residence times were approximately 100.146, 100.333, and 100.338ms. An abbreviated trace for one request:
+
+```text
+qdisc_enqueue ... comm=ping context=NET_RX ... skb=0x...
+qdisc_dequeue ... comm=swapper/1 context=NET_TX ... skb=0x... queue_delay_ns=100145690 sample=matched
+xmit ... comm=swapper/1 context=NET_TX softirq=NET_TX dev=eth1 ...
+```
+
+The delayed send ran in NET_TX on the same CPU, without requiring ksoftirqd. Only eth1 is delayed, so RTT rises by roughly 100ms, not 200ms. Empty backlog after ping means the queue has drained; it does not mean no queueing occurred.
+
+`sample=unknown queue_delay_ns=-1` means there was no matching enqueue in the observation window, not zero latency. Correlation checks the skb and qdisc address, deletes records on dequeue or skb release, and resets them on a fresh device submission. Loss has no dequeue latency sample. Pending entries at tracer exit may be real packets still queued; allow the queue to drain when checking cleanup.
+
+This lightweight experiment supports a single root qdisc and small, unfragmented packets. Qdisc events cover all traffic in the selected namespace; only the IP/device trace lines filter lab ICMP. Hierarchies, batching, clones, GSO, missed events and address reuse beyond the observed lifecycle can break one-to-one correlation. The interval includes tracing overhead and is not precise hardware latency. Stop the tracer with Ctrl+C after recovery.
+
+## 7. Cleanup and Limits
 
 Stop all bpftrace/capture processes with Ctrl+C, then destroy. The bt files pin no objects and change no global tracefs configuration; process exit releases probes. **Faults and topology are not automatically cleaned up**, including after interruption.
 
