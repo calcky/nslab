@@ -54,6 +54,10 @@ plugins:
             CLI reference: CLI 参考
             Examples: 实验示例
             Overview: 示例索引
+            Nodes: 节点
+            Routing: 路由
+            Links: 链路
+            Qdisc: Qdisc
             Layer 2 switching: 二层交换
             Namespace interfaces: Namespace 接口
             Tunnel devices: 隧道设备
@@ -127,11 +131,10 @@ nav:
   - Getting started: getting-started.md
   - Manifest:
       - Overview: manifest-overview.md
-      - Nodes and interfaces: manifest-nodes.md
-      - Routing and node policy: manifest-routing.md
-      - Links and link conditions: manifest-links.md
+      - Nodes: manifest-nodes.md
+      - Routing: manifest-routing.md
+      - Links: manifest-links.md
       - Qdisc: manifest-qdisc.md
-      - Complete field reference: manifest.md
   - CLI reference: cli.md
   - Examples:
       - Overview: examples/index.md

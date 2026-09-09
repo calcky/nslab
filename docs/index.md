@@ -37,7 +37,7 @@ succeeds.
 | Page | Contents |
 | --- | --- |
 | [Getting started](getting-started.md) | Installation, privileges, lifecycle, and recovery |
-| [Manifest](manifest.md) | `nslab.yaml` fields, constraints, and complete snippets |
+| [Manifest](manifest-overview.md) | `nslab.yaml` fields, constraints, and complete snippets |
 | [CLI reference](cli.md) | Commands, options, output formats, and completion |
 | [Examples](examples/index.md) | Bridge, VLAN, bond, PMTU, VRF, XDP, OSPF, BGP, and PIM labs |
 
