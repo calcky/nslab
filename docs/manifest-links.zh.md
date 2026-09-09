@@ -11,7 +11,7 @@
 | `endpoints` | 是 | 无 | 恰好两个 `node:interface` 字符串 |
 | `mtu` | 否 | `1500` | 两端 MTU，范围 `576..9216`；端点承载 IPv6 时不得小于 `1280` |
 | `netem` | 否 | `null` | 同时应用到两端 egress 的 netem 条件；不能与 `qdisc` 同时使用 |
-| `qdisc` | 否 | `null` | 两端各自的 egress 队列配置；完整接入 `tbf/fq_codel/htb/cake`，其余八种 kind 的限制见下文 |
+| `qdisc` | 否 | `null` | 两端各自的 egress 队列配置；root 和 HTB leaf 配置见 [Qdisc](manifest-qdisc.md) |
 
 ```yaml
 links:

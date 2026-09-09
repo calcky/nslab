@@ -11,7 +11,7 @@ topology. Node and interface references must be valid and cannot use `lo`.
 | `endpoints` | Yes | None | Exactly two `node:interface` strings |
 | `mtu` | No | `1500` | MTU on both ends in `576..9216`; at least `1280` when an endpoint carries IPv6 |
 | `netem` | No | `null` | Netem conditions applied to egress at both ends; mutually exclusive with `qdisc` |
-| `qdisc` | No | `null` | Independent egress queues at both ends; `tbf/fq_codel/htb/cake` are integrated; limitations for eight new kinds are documented below |
+| `qdisc` | No | `null` | Independent egress queues at both ends; see [Qdisc](manifest-qdisc.md) for root and HTB leaf configuration |
 
 ```yaml
 links:

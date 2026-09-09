@@ -14,7 +14,7 @@
 | `routes` | 否 | `[]` | 静态 IPv4/IPv6 路由列表 |
 | `neighbors` | 否 | `[]` | 静态 IPv4 ARP、IPv6 NDP 和代理邻居条目 |
 | `sysctls` | 否 | `{}` | nslab 允许修改的网络 sysctl |
-| `routing` | 否 | `null` | OSPF/BGP/PIM 配置，仅允许用于 `linux` 节点 |
+| `routing` | 否 | `null` | [OSPF/BGP/PIM 配置](manifest-routing.md#routing)，仅允许用于 `linux` 节点 |
 
 接口名必须为 1 到 15 个字符，可包含字母、数字、`_`、`.` 和 `-`。除 bridge 设备名外，
 `interfaces` 中声明的接口必须在 `links[].endpoints` 中出现。

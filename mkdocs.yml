@@ -53,7 +53,9 @@ plugins:
             Getting started: 快速开始
             CLI reference: CLI 参考
             Examples: 实验示例
-            Overview: 示例索引
+            Overview: 总览
+            Index: 示例索引
+            Fields: 字段
             Nodes: 节点
             Routing: 路由
             Links: 链路
@@ -131,13 +133,15 @@ nav:
   - Getting started: getting-started.md
   - Manifest:
       - Overview: manifest-overview.md
-      - Nodes: manifest-nodes.md
-      - Routing: manifest-routing.md
-      - Links: manifest-links.md
-      - Qdisc: manifest-qdisc.md
+      - Nodes:
+          - Fields: manifest-nodes.md
+          - Routing: manifest-routing.md
+      - Links:
+          - Fields: manifest-links.md
+          - Qdisc: manifest-qdisc.md
   - CLI reference: cli.md
   - Examples:
-      - Overview: examples/index.md
+      - Index: examples/index.md
       - Layer 2 switching:
           - Bridge FDB: examples/bridge-fdb.md
           - Bridge port controls: examples/bridge-port-controls.md

@@ -15,7 +15,7 @@ and `bridge`.
 | `routes` | No | `[]` | Static IPv4/IPv6 routes |
 | `neighbors` | No | `[]` | Static IPv4 ARP, IPv6 NDP, and proxy neighbor entries |
 | `sysctls` | No | `{}` | Network sysctls that nslab permits |
-| `routing` | No | `null` | OSPF/BGP/PIM configuration, allowed only on `linux` nodes |
+| `routing` | No | `null` | [OSPF/BGP/PIM configuration](manifest-routing.md#routing), allowed only on `linux` nodes |
 
 Interface names contain 1 to 15 letters, digits, `_`, `.`, or `-`. Except for a bridge device
 name, every interface declared in `interfaces` must appear in a `links[].endpoints` entry.
