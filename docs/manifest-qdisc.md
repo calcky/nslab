@@ -56,7 +56,8 @@ target namespace; pyroute2 remains responsible for topology operations.
 
 ## Root qdiscs
 
-`tbf`, `fq_codel`, and `cake` can also be used directly as root qdiscs. `tbf` uses `rate`,
+All listed qdiscs can also be used directly as root qdiscs. FIFO, fair-queueing, and AQM kinds
+do not provide aggregate shaping; `tbf` and `cake` do. `tbf` uses `rate`,
 `burst`, and `latency_ms`; `cake` uses `bandwidth`, `flow_mode`, `diffserv_mode`, `rtt_ms`,
 and `nat`.
 

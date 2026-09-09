@@ -56,7 +56,8 @@ pyroute2 完成。
 
 ## 根 qdisc
 
-`tbf`、`fq_codel` 和 `cake` 也可以直接作为根 qdisc。`tbf` 使用 `rate`、`burst`、
+上表中的所有 qdisc 都可以直接作为根 qdisc。FIFO、公平队列和 AQM 类型不提供总带宽整形，
+`tbf` 和 `cake` 提供整形。`tbf` 使用 `rate`、`burst`、
 `latency_ms`；`cake` 使用 `bandwidth`、`flow_mode`、`diffserv_mode`、`rtt_ms`、`nat`。
 
 ```yaml
