@@ -39,6 +39,7 @@ from nslab.manifest import (
     OspfConfig,
     PimConfig,
     QdiscConfig,
+    SimpleQdiscConfig,
     RoutingConfig,
     TbfConfig,
     VlanDeviceConfig,
@@ -378,8 +379,13 @@ class CakePlan:
     rtt_ms: int
     nat: bool
 
+@dataclass(frozen=True, slots=True)
+class SimpleQdiscPlan:
+    kind: str
+    options: Mapping[str, object]
 
-type QdiscPlan = TbfPlan | FqCodelPlan | HtbPlan | CakePlan
+
+type QdiscPlan = TbfPlan | FqCodelPlan | HtbPlan | CakePlan | SimpleQdiscPlan
 
 
 @dataclass(frozen=True, slots=True)
@@ -969,6 +975,9 @@ def _compile_endpoint(
 
 
 def _compile_qdisc(config: QdiscConfig) -> QdiscPlan:
+    if isinstance(config, SimpleQdiscConfig):
+        values = config.model_dump(exclude={"kind"}, exclude_none=True)
+        return SimpleQdiscPlan(config.kind, values)
     if isinstance(config, TbfConfig):
         return TbfPlan(
             rate=config.rate,

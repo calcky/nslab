@@ -43,6 +43,16 @@ topology:
       interfaces:
         eth0:
           addresses: [10.60.4.2/24]
+    h9:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.60.5.1/24]
+    h10:
+      kind: linux
+      interfaces:
+        eth0:
+          addresses: [10.60.5.2/24]
   links:
     - endpoints: [h1:eth0, h2:eth0]
       netem:
@@ -73,3 +83,13 @@ topology:
           interval_ms: 100
           limit: 10240
           ecn: true
+    - endpoints: [h9:eth0, h10:eth0]
+      qdisc:
+        kind: red
+        limit: 1000
+        min: 300
+        max: 900
+        avpkt: 1000
+        burst: 20
+        probability: 0.02
+        ecn: true

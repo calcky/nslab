@@ -24,6 +24,9 @@ flowchart LR
     n2 -- "eth0 <-> eth0" --- n3
     n4 -- "eth0 <-> eth0" --- n5
     n6 -- "eth0 <-> eth0" --- n7
+    n8["h9\nlinux"]
+    n9["h10\nlinux"]
+    n8 -- "eth0 <-> eth0" --- n9
 ```
 
 ## 运行
@@ -128,3 +131,20 @@ destroyed topology: qdisc
 
 [查看 nslab.yaml](https://github.com/calcky/nslab/blob/main/examples/qdisc/nslab.yaml) ·
 [查看示例 README](https://github.com/calcky/nslab/blob/main/examples/qdisc/README.md)
+
+## 其它 qdisc
+
+除示例中的 qdisc 外，还支持 `pfifo`、`bfifo`、`pfifo_fast`、`prio`、`sfq`、`fq`、`codel` 和 `red`。
+例如 RED 可配置最小/最大阈值、平均包大小、burst、概率和 ECN：
+
+```yaml
+qdisc:
+  kind: red
+  limit: 1000
+  min: 300
+  max: 900
+  avpkt: 1000
+  burst: 20
+  probability: 0.02
+  ecn: true
+```

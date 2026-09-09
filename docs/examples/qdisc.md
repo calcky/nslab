@@ -25,6 +25,9 @@ flowchart LR
     n2 -- "eth0 <-> eth0" --- n3
     n4 -- "eth0 <-> eth0" --- n5
     n6 -- "eth0 <-> eth0" --- n7
+    n8["h9\nlinux"]
+    n9["h10\nlinux"]
+    n8 -- "eth0 <-> eth0" --- n9
 ```
 
 ## Run
@@ -132,3 +135,8 @@ destroyed topology: qdisc
 
 [View nslab.yaml](https://github.com/calcky/nslab/blob/main/examples/qdisc/nslab.yaml) ·
 [View example README](https://github.com/calcky/nslab/blob/main/examples/qdisc/README.md)
+
+## Other qdiscs
+
+Additional lightweight qdiscs are supported: `pfifo`, `bfifo`, `pfifo_fast`, `prio`, `sfq`, `fq`,
+`codel`, and `red`. RED accepts queue thresholds, average packet size, burst, probability, and ECN.

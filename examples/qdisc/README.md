@@ -1,7 +1,7 @@
 # Linux qdisc 实验
 
 这个实验把四条独立的点到点链路分别配置为 netem（带 `rate`）、TBF、fq_codel 以及
-HTB + fq_codel，便于比较链路条件、简单整形、独立公平队列和“总带宽 + 多流公平”。
+HTB + fq_codel 和 RED，便于比较链路条件、简单整形、独立公平队列、主动队列管理和“总带宽 + 多流公平”。
 每个 qdisc 都会安装在链路两端的 egress。并发流实验需要安装 `iperf3`。
 
 ## 拓扑图
@@ -24,6 +24,9 @@ flowchart LR
     n2 -- "eth0 <-> eth0" --- n3
     n4 -- "eth0 <-> eth0" --- n5
     n6 -- "eth0 <-> eth0" --- n7
+    n8["h9\nlinux"]
+    n9["h10\nlinux"]
+    n8 -- "eth0 <-> eth0" --- n9
 ```
 
 ## 运行
@@ -118,6 +121,20 @@ qdisc fq_codel 10: parent 1:1 limit 10240p flows 1024 quantum 1514 target 5ms in
 
 每条链路的 qdisc 都会同时出现在两端；可将 `h1`/`h3`/`h5`/`h7` 换成对应的对端节点观察
 另一方向。`netem` 与 `qdisc` 是互斥字段，同一条链路只能选择其中一种。
+
+## 观察 RED
+
+`h9`/`h10` 使用 RED 主动队列管理：队列上限 1000，平均队列达到 300 个报文后开始
+概率丢弃，900 个报文达到最大概率，并启用 ECN：
+
+```console
+$ sudo nslab exec --node h9 -- tc -s -d qdisc show dev eth0
+qdisc red 1: root limit 1000 min 300 max 900 probability 0.02 ecn
+ Sent ... bytes ... pkt (dropped ..., overlimits ...)
+
+$ sudo nslab exec --node h9 -- ping -c 5 10.60.5.2
+5 packets transmitted, 5 received, 0% packet loss
+```
 
 ## 清理
 

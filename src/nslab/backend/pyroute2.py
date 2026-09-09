@@ -64,6 +64,7 @@ from nslab.planner import (
     QdiscPlan,
     RouteNextHopPlan,
     RoutePlan,
+    SimpleQdiscPlan,
     TbfPlan,
     TopologyPlan,
     VlanDevicePlan,
@@ -610,6 +611,8 @@ def _fq_codel_arguments(qdisc: FqCodelPlan) -> dict[str, object]:
 
 
 def _qdisc_kind(qdisc: QdiscPlan) -> str:
+    if isinstance(qdisc, SimpleQdiscPlan):
+        return qdisc.kind
     if isinstance(qdisc, TbfPlan):
         return "tbf"
     if isinstance(qdisc, FqCodelPlan):
@@ -622,7 +625,9 @@ def _qdisc_kind(qdisc: QdiscPlan) -> str:
 
 def _add_qdisc(handle: Any, index: int, qdisc: QdiscPlan, resource: str) -> None:
     try:
-        if isinstance(qdisc, TbfPlan):
+        if isinstance(qdisc, SimpleQdiscPlan):
+            handle.tc("add", qdisc.kind, index, "1:", **qdisc.options)
+        elif isinstance(qdisc, TbfPlan):
             handle.tc(
                 "add",
                 "tbf",

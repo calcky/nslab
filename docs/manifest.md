@@ -624,7 +624,7 @@ topology. Node and interface references must be valid and cannot use `lo`.
 | `endpoints` | Yes | None | Exactly two `node:interface` strings |
 | `mtu` | No | `1500` | MTU on both ends in `576..9216`; at least `1280` when an endpoint carries IPv6 |
 | `netem` | No | `null` | Netem conditions applied to egress at both ends; mutually exclusive with `qdisc` |
-| `qdisc` | No | `null` | Traffic-control qdisc applied to egress at both ends; `tbf`, `fq_codel`, `htb`, or `cake` |
+| `qdisc` | No | `null` | Traffic-control qdisc applied to egress at both ends; supports `pfifo`, `bfifo`, `pfifo_fast`, `prio`, `sfq`, `fq`, `codel`, `fq_codel`, `tbf`, `htb`, `cake`, and `red` |
 
 ```yaml
 links:

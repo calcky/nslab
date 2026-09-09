@@ -1509,6 +1509,23 @@ class FqCodelConfig(BaseModel):
         return self
 
 
+class SimpleQdiscConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    kind: Literal["pfifo", "bfifo", "pfifo_fast", "prio", "sfq", "fq", "codel", "red"]
+    limit: StrictInt | None = Field(default=None, ge=1)
+    target_ms: StrictInt | None = Field(default=None, ge=1)
+    interval_ms: StrictInt | None = Field(default=None, ge=1)
+    flows: StrictInt | None = Field(default=None, ge=1)
+    quantum: StrictInt | None = Field(default=None, ge=1)
+    perturb: StrictInt | None = Field(default=None, ge=1)
+    min: StrictInt | None = Field(default=None, ge=1)
+    max: StrictInt | None = Field(default=None, ge=1)
+    avpkt: StrictInt | None = Field(default=None, ge=1)
+    burst: StrictInt | None = Field(default=None, ge=1)
+    probability: float | None = Field(default=None, ge=0, le=1)
+    ecn: StrictBool | None = None
+
+
 class HtbConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -1553,7 +1570,7 @@ class CakeConfig(BaseModel):
 
 
 type QdiscConfig = Annotated[
-    TbfConfig | FqCodelConfig | HtbConfig | CakeConfig,
+    TbfConfig | FqCodelConfig | HtbConfig | CakeConfig | SimpleQdiscConfig,
     Field(discriminator="kind"),
 ]
 
