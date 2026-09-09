@@ -1,6 +1,6 @@
 # Linux qdisc 实验
 
-这个实验把四条独立的点到点链路分别配置为 netem（带 `rate`）、TBF、fq_codel 以及
+这个实验把五条独立的点到点链路分别配置为 netem（带 `rate`）、TBF、fq_codel 以及
 HTB + fq_codel 和 RED，便于比较链路条件、简单整形、独立公平队列、主动队列管理和“总带宽 + 多流公平”。
 每个 qdisc 都会安装在链路两端的 egress。并发流实验需要安装 `iperf3`。
 
@@ -20,12 +20,12 @@ flowchart LR
     n5["h6\nlinux"]
     n6["h7\nlinux"]
     n7["h8\nlinux"]
+    n8["h9\nlinux"]
+    n9["h10\nlinux"]
     n0 -- "eth0 <-> eth0" --- n1
     n2 -- "eth0 <-> eth0" --- n3
     n4 -- "eth0 <-> eth0" --- n5
     n6 -- "eth0 <-> eth0" --- n7
-    n8["h9\nlinux"]
-    n9["h10\nlinux"]
     n8 -- "eth0 <-> eth0" --- n9
 ```
 
@@ -48,6 +48,8 @@ h5    linux  matching  nslab-qdisc-h5-...
 h6    linux  matching  nslab-qdisc-h6-...
 h7    linux  matching  nslab-qdisc-h7-...
 h8    linux  matching  nslab-qdisc-h8-...
+h9    linux  matching  nslab-qdisc-h9-...
+h10   linux  matching  nslab-qdisc-h10-...
 ```
 
 ## 观察 netem + rate
@@ -124,12 +126,13 @@ qdisc fq_codel 10: parent 1:1 limit 10240p flows 1024 quantum 1514 target 5ms in
 
 ## 观察 RED
 
-`h9`/`h10` 使用 RED 主动队列管理：队列上限 1000，平均队列达到 300 个报文后开始
-概率丢弃，900 个报文达到最大概率，并启用 ECN：
+`h9`/`h10` 使用 RED 主动队列管理：队列上限 1514000 字节，平均队列阈值为
+125000/375000 字节，`avpkt` 为 1500 字节，`burst` 为 139 个报文，概率为 0.02，启用 ECN。
+RED 本身不限制总速率；阈值和队列上限都不是报文数。
 
 ```console
 $ sudo nslab exec --node h9 -- tc -s -d qdisc show dev eth0
-qdisc red 1: root limit 1000 min 300 max 900 probability 0.02 ecn
+qdisc red ... root limit ... min ... max ... ecn ... probability 0.02 ...
  Sent ... bytes ... pkt (dropped ..., overlimits ...)
 
 $ sudo nslab exec --node h9 -- ping -c 5 10.60.5.2

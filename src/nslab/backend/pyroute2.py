@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import json
 import os
 import signal
 import socket
@@ -40,6 +41,7 @@ from nslab.backend.base import (
     LiveInventory,
     NamespaceInventory,
 )
+from nslab.backend.tc_qdisc import SIMPLE_QDISC_KINDS, decode_simple_qdisc
 from nslab.errors import NslabError, OperationCancelled
 from nslab.planner import (
     BondDevicePlan,
@@ -634,7 +636,9 @@ def _tc_qdisc_arguments(qdisc: SimpleQdiscPlan) -> list[str]:
             name, value = "tupdate", f"{value}ms"
         elif name in {"ecn", "bytemode"}:
             if not value:
-                continue
+                if qdisc.kind not in {"codel", "pie", "fq_pie"}:
+                    continue
+                name = f"no{name}"
             value = None
         if value is None:
             args.append(str(name))
@@ -821,6 +825,7 @@ def _decode_htb(
     qdisc_messages: Sequence[Any],
     class_messages: Sequence[Any],
     namespace: str,
+    tc_qdiscs: Sequence[Mapping[str, object]] = (),
 ) -> HtbPlan:
     try:
         index = int(_value(root_message, "index"))
@@ -875,7 +880,6 @@ def _decode_htb(
         message
         for message in qdisc_messages
         if int(_value(message, "index", -1)) == index
-        and _attribute(message, "TCA_KIND") == "fq_codel"
         and int(_value(message, "parent", -1)) == _HTB_CLASS_HANDLE
     ]
     if len(leaves) != 1:
@@ -886,6 +890,16 @@ def _decode_htb(
     except (TypeError, ValueError):
         raise _unsupported_inventory_qdisc(namespace, "invalid_htb_leaf") from None
     if leaf_handle != _HTB_LEAF_HANDLE:
+        raise _unsupported_inventory_qdisc(namespace, "htb_leaf")
+    leaf_kind = _attribute(leaf_message, "TCA_KIND")
+    if leaf_kind in SIMPLE_QDISC_KINDS:
+        return HtbPlan(
+            rate=rate,
+            leaf=decode_simple_qdisc(
+                leaf_kind, leaf_handle, _HTB_CLASS_HANDLE, tc_qdiscs, namespace,
+            ),
+        )
+    if leaf_kind != "fq_codel":
         raise _unsupported_inventory_qdisc(namespace, "htb_leaf")
     leaf_options = _attribute(leaf_message, "TCA_OPTIONS")
     if leaf_options is None:
@@ -2339,6 +2353,28 @@ class Pyroute2Backend:
             ) from error
         return observed
 
+    def _read_tc_qdiscs(self, namespace: str, interface: str) -> list[dict[str, object]]:
+        result = self.execute(namespace, ("tc", "-j", "-d", "qdisc", "show", "dev", interface))
+        if result.returncode != 0:
+            raise NslabError(
+                code="INVENTORY_UNSUPPORTED",
+                message=f"cannot read tc qdiscs: {namespace}:{interface}",
+                details={
+                    "operation": "inventory",
+                    "resource": f"{namespace}:{interface}",
+                    "reason": "tc_failed",
+                    "returncode": result.returncode,
+                    "stderr": result.stderr.strip(),
+                },
+            )
+        try:
+            records = json.loads(result.stdout)
+        except ValueError:
+            raise _unsupported_inventory_qdisc(namespace, "tc_json") from None
+        if not isinstance(records, list) or any(not isinstance(row, dict) for row in records):
+            raise _unsupported_inventory_qdisc(namespace, "tc_json")
+        return records
+
     def _inventory_namespace(
         self,
         node: NodePlan,
@@ -2372,13 +2408,18 @@ class Pyroute2Backend:
             )
             qdisc_messages = tuple(handle.get_qdiscs()) if inspect_qdiscs else ()
             class_messages_list: list[Any] = []
+            tc_qdiscs: dict[str, Sequence[Mapping[str, object]]] = {}
             if inspect_qdiscs:
                 for interface, qdisc in declared_qdiscs.items():
-                    if not isinstance(qdisc, HtbPlan):
-                        continue
                     index = indexes_by_name.get(interface)
-                    if index is not None:
+                    if index is None:
+                        continue
+                    if isinstance(qdisc, HtbPlan):
                         class_messages_list.extend(handle.get_classes(index=index))
+                    if isinstance(qdisc, SimpleQdiscPlan) or (
+                        isinstance(qdisc, HtbPlan) and isinstance(qdisc.leaf, SimpleQdiscPlan)
+                    ):
+                        tc_qdiscs[interface] = self._read_tc_qdiscs(node.namespace, interface)
             class_messages = tuple(class_messages_list)
             route_messages = tuple(
                 (
@@ -2449,6 +2490,7 @@ class Pyroute2Backend:
                 if endpoint.namespace == node.namespace
             },
             declared_qdiscs=declared_qdiscs,
+            tc_qdiscs=tc_qdiscs,
         )
         observed_routes = tuple(
             route
@@ -2545,6 +2587,7 @@ class Pyroute2Backend:
         declared_addresses: Mapping[str, Sequence[IPInterface]] | None = None,
         declared_netem_interfaces: set[str] | None = None,
         declared_qdiscs: Mapping[str, QdiscPlan | None] | None = None,
+        tc_qdiscs: Mapping[str, Sequence[Mapping[str, object]]] | None = None,
     ) -> tuple[dict[str, InterfaceInventory], dict[int, str]]:
         names_by_index: dict[int, str] = {}
         for message in link_messages:
@@ -2613,6 +2656,18 @@ class Pyroute2Backend:
             if declared_names is not None and interface_name not in declared_names:
                 continue
             kind = _attribute(message, "TCA_KIND")
+            tc_records = (tc_qdiscs or {}).get(interface_name or "", ())
+            if kind in SIMPLE_QDISC_KINDS:
+                if index in netem_by_index or index in qdisc_by_index:
+                    raise _unsupported_inventory_qdisc(namespace, "multiple_root_qdiscs")
+                try:
+                    root_handle = int(_value(message, "handle"))
+                except (TypeError, ValueError):
+                    raise _unsupported_inventory_qdisc(namespace, "invalid_handle") from None
+                qdisc_by_index[index] = decode_simple_qdisc(
+                    kind, root_handle, TC_H_ROOT, tc_records, namespace,
+                )
+                continue
             if kind not in {"netem", "tbf", "fq_codel", "htb", "cake"}:
                 continue
             options = _attribute(message, "TCA_OPTIONS")
@@ -2720,6 +2775,7 @@ class Pyroute2Backend:
                     qdisc_messages,
                     class_messages,
                     namespace,
+                    tc_records,
                 )
             else:
                 assert kind == "cake"

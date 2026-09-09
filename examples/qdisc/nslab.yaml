@@ -86,10 +86,10 @@ topology:
     - endpoints: [h9:eth0, h10:eth0]
       qdisc:
         kind: red
-        limit: 1000
-        min: 300
-        max: 900
-        avpkt: 1000
-        burst: 20
+        limit: 1514000
+        min: 125000
+        max: 375000
+        avpkt: 1500
+        burst: 139
         probability: 0.02
         ecn: true

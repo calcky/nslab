@@ -1,8 +1,8 @@
 # Linux qdisc lab
 
-This lab puts four traffic-control configurations on independent point-to-point links: netem
-with a rate, TBF, fq_codel, and HTB with an fq_codel leaf. They compare link conditions, simple
-shaping, standalone fair queueing, and multi-flow fairness under one aggregate rate. Each qdisc
+This lab puts five traffic-control configurations on independent point-to-point links: netem
+with a rate, TBF, fq_codel, HTB with an fq_codel leaf, and RED. They compare link conditions, simple
+shaping, standalone fair queueing, AQM, and multi-flow fairness under one aggregate rate. Each qdisc
 is installed at egress on both ends of its link. The concurrent-flow exercise requires `iperf3`.
 
 ## Graph
@@ -21,12 +21,12 @@ flowchart LR
     n5["h6\nlinux"]
     n6["h7\nlinux"]
     n7["h8\nlinux"]
+    n8["h9\nlinux"]
+    n9["h10\nlinux"]
     n0 -- "eth0 <-> eth0" --- n1
     n2 -- "eth0 <-> eth0" --- n3
     n4 -- "eth0 <-> eth0" --- n5
     n6 -- "eth0 <-> eth0" --- n7
-    n8["h9\nlinux"]
-    n9["h10\nlinux"]
     n8 -- "eth0 <-> eth0" --- n9
 ```
 
@@ -49,6 +49,8 @@ h5    linux  matching  nslab-qdisc-h5-...
 h6    linux  matching  nslab-qdisc-h6-...
 h7    linux  matching  nslab-qdisc-h7-...
 h8    linux  matching  nslab-qdisc-h8-...
+h9    linux  matching  nslab-qdisc-h9-...
+h10   linux  matching  nslab-qdisc-h10-...
 ```
 
 ## Observe netem + rate
@@ -125,6 +127,21 @@ qdisc fq_codel 10: parent 1:1 limit 10240p flows 1024 quantum 1514 target 5ms in
 Each link has the same qdisc at both ends; replace `h1`, `h3`, `h5`, or `h7` with its peer to inspect
 the reverse direction. `netem` and `qdisc` are mutually exclusive, so a link selects one or the
 other.
+
+## Observe RED
+
+The `h9`/`h10` link uses a 1514000-byte limit, 125000/375000-byte average-queue thresholds,
+a 1500-byte `avpkt`, a 139-packet `burst`, probability 0.02, and ECN. RED does not shape the
+aggregate rate. Its queue limit and thresholds are byte counts, not packet counts.
+
+```console
+$ sudo nslab exec --node h9 -- tc -s -d qdisc show dev eth0
+qdisc red ... root limit ... min ... max ... ecn ... probability 0.02 ...
+ Sent ... bytes ... pkt (dropped ..., overlimits ...)
+
+$ sudo nslab exec --node h9 -- ping -c 5 10.60.5.2
+5 packets transmitted, 5 received, 0% packet loss
+```
 
 ## Clean up
 

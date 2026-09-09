@@ -26,6 +26,7 @@ from nslab.planner import (
     NetemPlan,
     QdiscPlan,
     RoutePlan,
+    SimpleQdiscPlan,
     TbfPlan,
     TopologyPlan,
     compile_plan,
@@ -405,6 +406,9 @@ def test_fake_backend_applies_link_netem_to_both_endpoints_and_detects_drift(
     "qdisc",
     [
         TbfPlan(rate="10mbit", burst_bytes=32 * 1024, latency_ms=400),
+        SimpleQdiscPlan("pfifo", {"limit": 1000}),
+        SimpleQdiscPlan("red", {"limit": 1514000, "avpkt": 1500}),
+        HtbPlan("100mbit", SimpleQdiscPlan("red", {"limit": 1514000, "avpkt": 1500})),
         FqCodelPlan(target_ms=5, interval_ms=100, limit=10240, ecn=True),
         HtbPlan(
             rate="20mbit",

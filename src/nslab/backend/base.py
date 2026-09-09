@@ -6,6 +6,7 @@ from ipaddress import IPv4Interface, IPv4Network
 from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
+from nslab.backend.tc_qdisc import simple_qdisc_matches
 from nslab.manifest import PIM_REGISTER_INTERFACE_NAME
 from nslab.planner import (
     BondDevicePlan,
@@ -13,6 +14,7 @@ from nslab.planner import (
     DummyDevicePlan,
     GeneveDevicePlan,
     GreDevicePlan,
+    HtbPlan,
     IPAddress,
     IPInterface,
     IpipDevicePlan,
@@ -26,6 +28,7 @@ from nslab.planner import (
     PolicyRulePlan,
     QdiscPlan,
     RoutePlan,
+    SimpleQdiscPlan,
     TbfPlan,
     TopologyPlan,
     VlanDevicePlan,
@@ -614,12 +617,18 @@ def runtime_managed_interface_names(node: NodePlan) -> frozenset[str]:
 
 
 def _qdisc_matches(desired: QdiscPlan | None, observed: QdiscPlan | None) -> bool:
-    """Compare qdisc state while allowing TBF's kernel tick quantization."""
+    """Compare requested options, accounting for kernel defaults and quantization."""
 
     if desired is None or observed is None:
         return desired is observed
     if type(desired) is not type(observed):
         return False
+    if isinstance(desired, SimpleQdiscPlan):
+        assert isinstance(observed, SimpleQdiscPlan)
+        return simple_qdisc_matches(desired, observed)
+    if isinstance(desired, HtbPlan):
+        assert isinstance(observed, HtbPlan)
+        return desired.rate == observed.rate and _qdisc_matches(desired.leaf, observed.leaf)
     if isinstance(desired, TbfPlan):
         assert isinstance(observed, TbfPlan)
         burst_tolerance = max(2, desired.burst_bytes // 1000)

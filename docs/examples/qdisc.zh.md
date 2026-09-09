@@ -1,7 +1,7 @@
 # Linux qdisc 实验
 
-这个实验在四条独立的点到点链路上分别配置 netem（带速率）、TBF、fq_codel 和
-HTB + fq_codel，用来比较链路条件、简单整形、独立公平队列以及“总带宽 + 多流公平”。
+这个实验在五条独立的点到点链路上分别配置 netem（带速率）、TBF、fq_codel、
+HTB + fq_codel 和 RED，用来比较链路条件、简单整形、独立公平队列、主动队列管理以及“总带宽 + 多流公平”。
 每种 qdisc 都会安装在对应链路两端的 egress。并发流实验需要安装 `iperf3`。
 
 ## 拓扑图
@@ -20,12 +20,12 @@ flowchart LR
     n5["h6\nlinux"]
     n6["h7\nlinux"]
     n7["h8\nlinux"]
+    n8["h9\nlinux"]
+    n9["h10\nlinux"]
     n0 -- "eth0 <-> eth0" --- n1
     n2 -- "eth0 <-> eth0" --- n3
     n4 -- "eth0 <-> eth0" --- n5
     n6 -- "eth0 <-> eth0" --- n7
-    n8["h9\nlinux"]
-    n9["h10\nlinux"]
     n8 -- "eth0 <-> eth0" --- n9
 ```
 
@@ -48,6 +48,8 @@ h5    linux  matching  nslab-qdisc-h5-...
 h6    linux  matching  nslab-qdisc-h6-...
 h7    linux  matching  nslab-qdisc-h7-...
 h8    linux  matching  nslab-qdisc-h8-...
+h9    linux  matching  nslab-qdisc-h9-...
+h10   linux  matching  nslab-qdisc-h10-...
 ```
 
 ## 观察 netem + rate
@@ -122,6 +124,21 @@ qdisc fq_codel 10: parent 1:1 limit 10240p flows 1024 quantum 1514 target 5ms in
 每条链路两端都安装相同的 qdisc；可将 `h1`、`h3`、`h5` 或 `h7` 换成对端节点观察反方向。`netem`
 与 `qdisc` 互斥，同一条链路只能选择其中一种。
 
+## 观察 RED
+
+`h9`/`h10` 使用 RED 主动队列管理：队列上限 1514000 字节，平均队列阈值为
+125000/375000 字节，`avpkt` 为 1500 字节，`burst` 为 139 个报文，概率为 0.02，启用 ECN。
+RED 本身不限制总速率；阈值和队列上限都不是报文数。
+
+```console
+$ sudo nslab exec --node h9 -- tc -s -d qdisc show dev eth0
+qdisc red ... root limit ... min ... max ... ecn ... probability 0.02 ...
+ Sent ... bytes ... pkt (dropped ..., overlimits ...)
+
+$ sudo nslab exec --node h9 -- ping -c 5 10.60.5.2
+5 packets transmitted, 5 received, 0% packet loss
+```
+
 ## 清理
 
 ```console
@@ -140,11 +157,11 @@ destroyed topology: qdisc
 ```yaml
 qdisc:
   kind: red
-  limit: 1000
-  min: 300
-  max: 900
-  avpkt: 1000
-  burst: 20
+  limit: 1514000
+  min: 125000
+  max: 375000
+  avpkt: 1500
+  burst: 139
   probability: 0.02
   ecn: true
 ```
