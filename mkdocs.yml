@@ -125,7 +125,13 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting started: getting-started.md
-  - Manifest: manifest.md
+  - Manifest:
+      - Overview: manifest-overview.md
+      - Nodes and interfaces: manifest-nodes.md
+      - Routing and node policy: manifest-routing.md
+      - Links and link conditions: manifest-links.md
+      - Qdisc: manifest-qdisc.md
+      - Complete field reference: manifest.md
   - CLI reference: cli.md
   - Examples:
       - Overview: examples/index.md
