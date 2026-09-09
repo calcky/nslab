@@ -38,6 +38,7 @@ from nslab.planner import (
     QdiscPlan,
     RouteNextHopPlan,
     RoutePlan,
+    SimpleQdiscPlan,
     TbfPlan,
     TopologyPlan,
     VlanDevicePlan,
@@ -531,7 +532,14 @@ def _qdisc_string(qdisc: QdiscPlan | None) -> str | None:
     if isinstance(qdisc, FqCodelPlan):
         return _fq_codel_string(qdisc)
     if isinstance(qdisc, HtbPlan):
-        return f"htb rate {qdisc.rate} leaf {_fq_codel_string(qdisc.leaf)}"
+        leaf = (
+            _fq_codel_string(qdisc.leaf)
+            if isinstance(qdisc.leaf, FqCodelPlan)
+            else qdisc.leaf.kind
+        )
+        return f"htb rate {qdisc.rate} leaf {leaf}"
+    if isinstance(qdisc, SimpleQdiscPlan):
+        return qdisc.kind
     assert isinstance(qdisc, CakePlan)
     return (
         f"cake bandwidth {qdisc.bandwidth} flow-mode {qdisc.flow_mode} "

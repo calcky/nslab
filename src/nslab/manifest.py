@@ -1511,7 +1511,9 @@ class FqCodelConfig(BaseModel):
 
 class SimpleQdiscConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    kind: Literal["pfifo", "bfifo", "pfifo_fast", "prio", "sfq", "fq", "codel", "red"]
+    kind: Literal[
+        "pfifo", "bfifo", "pfifo_fast", "prio", "sfq", "fq", "codel", "red", "pie", "fq_pie"
+    ]
     limit: StrictInt | None = Field(default=None, ge=1)
     target_ms: StrictInt | None = Field(default=None, ge=1)
     interval_ms: StrictInt | None = Field(default=None, ge=1)
@@ -1524,6 +1526,10 @@ class SimpleQdiscConfig(BaseModel):
     burst: StrictInt | None = Field(default=None, ge=1)
     probability: float | None = Field(default=None, ge=0, le=1)
     ecn: StrictBool | None = None
+    tupdate_ms: StrictInt | None = Field(default=None, ge=1)
+    alpha: StrictInt | None = Field(default=None, ge=0)
+    beta: StrictInt | None = Field(default=None, ge=0)
+    bytemode: StrictBool | None = None
 
 
 class HtbConfig(BaseModel):
@@ -1531,7 +1537,7 @@ class HtbConfig(BaseModel):
 
     kind: Literal["htb"]
     rate: str
-    leaf: FqCodelConfig
+    leaf: FqCodelConfig | SimpleQdiscConfig
 
     @field_validator("rate", mode="before")
     @classmethod

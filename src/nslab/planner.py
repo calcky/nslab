@@ -39,8 +39,8 @@ from nslab.manifest import (
     OspfConfig,
     PimConfig,
     QdiscConfig,
-    SimpleQdiscConfig,
     RoutingConfig,
+    SimpleQdiscConfig,
     TbfConfig,
     VlanDeviceConfig,
     VrfDeviceConfig,
@@ -368,7 +368,7 @@ class FqCodelPlan:
 @dataclass(frozen=True, slots=True)
 class HtbPlan:
     rate: str
-    leaf: FqCodelPlan
+    leaf: FqCodelPlan | SimpleQdiscPlan
 
 
 @dataclass(frozen=True, slots=True)
@@ -987,7 +987,13 @@ def _compile_qdisc(config: QdiscConfig) -> QdiscPlan:
     if isinstance(config, FqCodelConfig):
         return _compile_fq_codel(config)
     if isinstance(config, HtbConfig):
-        return HtbPlan(rate=config.rate, leaf=_compile_fq_codel(config.leaf))
+        leaf = config.leaf
+        return HtbPlan(
+            rate=config.rate,
+            leaf=_compile_fq_codel(leaf) if isinstance(leaf, FqCodelConfig) else SimpleQdiscPlan(
+                leaf.kind, leaf.model_dump(exclude={"kind"}, exclude_none=True)
+            ),
+        )
     assert isinstance(config, CakeConfig)
     return CakePlan(
         bandwidth=config.bandwidth,

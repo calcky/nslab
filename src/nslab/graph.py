@@ -23,6 +23,7 @@ from nslab.planner import (
     NetemPlan,
     NodePlan,
     QdiscPlan,
+    SimpleQdiscPlan,
     TbfPlan,
     TopologyPlan,
     VlanDevicePlan,
@@ -160,7 +161,14 @@ def _qdisc_text(qdisc: QdiscPlan) -> str:
     if isinstance(qdisc, FqCodelPlan):
         return _fq_codel_text(qdisc)
     if isinstance(qdisc, HtbPlan):
-        return f"htb rate {qdisc.rate} · leaf {_fq_codel_text(qdisc.leaf)}"
+        leaf = (
+            _fq_codel_text(qdisc.leaf)
+            if isinstance(qdisc.leaf, FqCodelPlan)
+            else qdisc.leaf.kind
+        )
+        return f"htb rate {qdisc.rate} · leaf {leaf}"
+    if isinstance(qdisc, SimpleQdiscPlan):
+        return qdisc.kind
     assert isinstance(qdisc, CakePlan)
     return (
         f"cake bandwidth {qdisc.bandwidth} · {qdisc.flow_mode} · {qdisc.diffserv_mode}"
@@ -930,17 +938,24 @@ def _link_document(link: LinkPlan) -> dict[str, object]:
                 "target_ms": link.qdisc.target_ms,
             }
         elif isinstance(link.qdisc, HtbPlan):
-            document["qdisc"] = {
-                "kind": "htb",
-                "leaf": {
+            leaf = (
+                {
+                    "kind": "fq_codel",
                     "ecn": link.qdisc.leaf.ecn,
                     "interval_ms": link.qdisc.leaf.interval_ms,
-                    "kind": "fq_codel",
                     "limit": link.qdisc.leaf.limit,
                     "target_ms": link.qdisc.leaf.target_ms,
-                },
+                }
+                if isinstance(link.qdisc.leaf, FqCodelPlan)
+                else {"kind": link.qdisc.leaf.kind, **link.qdisc.leaf.options}
+            )
+            document["qdisc"] = {
+                "kind": "htb",
+                "leaf": leaf,
                 "rate": link.qdisc.rate,
             }
+        elif isinstance(link.qdisc, SimpleQdiscPlan):
+            document["qdisc"] = {"kind": link.qdisc.kind, **link.qdisc.options}
         else:
             assert isinstance(link.qdisc, CakePlan)
             document["qdisc"] = {

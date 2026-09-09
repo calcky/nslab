@@ -623,10 +623,50 @@ def _qdisc_kind(qdisc: QdiscPlan) -> str:
     return "cake"
 
 
-def _add_qdisc(handle: Any, index: int, qdisc: QdiscPlan, resource: str) -> None:
+def _tc_qdisc_arguments(qdisc: SimpleQdiscPlan) -> list[str]:
+    args = [qdisc.kind]
+    for name, value in qdisc.options.items():
+        if name == "target_ms":
+            name, value = "target", f"{value}ms"
+        elif name == "interval_ms":
+            name, value = "interval", f"{value}ms"
+        elif name == "tupdate_ms":
+            name, value = "tupdate", f"{value}ms"
+        elif name in {"ecn", "bytemode"}:
+            if not value:
+                continue
+            value = None
+        if value is None:
+            args.append(str(name))
+        else:
+            args.extend((str(name), str(value)))
+    return args
+
+
+def _add_qdisc(
+    handle: Any,
+    index: int,
+    qdisc: QdiscPlan,
+    resource: str,
+    tc_executor: Callable[..., ExecResult] | None = None,
+    interface: str | None = None,
+) -> None:
     try:
         if isinstance(qdisc, SimpleQdiscPlan):
-            handle.tc("add", qdisc.kind, index, "1:", **qdisc.options)
+            if tc_executor is None or interface is None:
+                raise NslabError(
+                    code="QDISC_UNSUPPORTED",
+                    message=f"tc execution is required for qdisc: {qdisc.kind}",
+                    details={"qdisc": qdisc.kind, "resource": resource},
+                )
+            result = tc_executor(
+                resource.split(":", 1)[0],
+                ("tc", "qdisc", "replace", "dev", interface, "root", *_tc_qdisc_arguments(qdisc)),
+            )
+            if result.returncode != 0:
+                raise OSError(
+                    errno.EOPNOTSUPP, result.stderr.strip() or f"tc failed for {qdisc.kind}"
+                )
         elif isinstance(qdisc, TbfPlan):
             handle.tc(
                 "add",
@@ -656,14 +696,29 @@ def _add_qdisc(handle: Any, index: int, qdisc: QdiscPlan, resource: str) -> None
                 rate=qdisc.rate,
                 ceil=qdisc.rate,
             )
-            handle.tc(
-                "add",
-                "fq_codel",
-                index,
-                "10:",
-                parent="1:1",
-                **_fq_codel_arguments(qdisc.leaf),
-            )
+            if isinstance(qdisc.leaf, SimpleQdiscPlan):
+                if tc_executor is None or interface is None:
+                    raise NslabError(
+                        code="QDISC_UNSUPPORTED",
+                        message=f"tc execution is required for qdisc: {qdisc.leaf.kind}",
+                        details={"qdisc": qdisc.leaf.kind, "resource": resource},
+                    )
+                result = tc_executor(
+                    resource.split(":", 1)[0],
+                    (
+                        "tc", "qdisc", "replace", "dev", interface, "parent", "1:1",
+                        "handle", "10:", *_tc_qdisc_arguments(qdisc.leaf)
+                    ),
+                )
+                if result.returncode != 0:
+                    raise OSError(
+                        errno.EOPNOTSUPP,
+                        result.stderr.strip() or f"tc failed for {qdisc.leaf.kind}",
+                    )
+            else:
+                handle.tc(
+                    "add", "fq_codel", index, "10:", parent="1:1", **_fq_codel_arguments(qdisc.leaf)
+                )
         else:
             assert isinstance(qdisc, CakePlan)
             handle.tc(
@@ -1452,6 +1507,8 @@ class Pyroute2Backend:
                             index,
                             qdisc,
                             f"{endpoint.namespace}:{endpoint.interface}",
+                            tc_executor=self.execute,
+                            interface=endpoint.interface,
                         )
                 return
             except (Exception, KeyboardInterrupt) as error:
